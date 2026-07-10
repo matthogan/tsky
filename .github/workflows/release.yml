@@ -62,9 +62,9 @@ jobs:
           dotnet publish .\tsky.csproj `
             -c Release `
             -r ${{ matrix.runtime }} `
-            --self-contained true `
+            --self-contained false `
             -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:IncludeNativeLibrariesForSelfExtract=false `
             -p:Version=$env:APP_VERSION `
             -p:AssemblyVersion=$env:ASSEMBLY_VERSION `
             -p:FileVersion=$env:ASSEMBLY_VERSION `

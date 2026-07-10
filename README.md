@@ -1,6 +1,6 @@
 # tsky
 
-![tsky hero](hero.png)
+<img src="hero.png" alt="tsky hero" width="720" />
 
 Tsky is a Windows desktop task launcher built with .NET WPF.
 It reads a `tasks.json` configuration file at startup and creates one button per configured task.
@@ -29,43 +29,168 @@ Each task supports:
 
 - `name`: Display text for the button
 - `description`: Optional body text shown below the task name on the card
+- `group`: Logical grouping label used for organization in the UI
 - `commandLine`: Command to run
 - `runner`: Execution mode (`exe`, `cmd`, `powershell`)
+- `waitForExit`: Optional; default `true`. Set `false` for fire-and-forget tasks (continue immediately after process start)
 - `env`: Optional environment variable overrides for the launched process
 - `workingDirectory`: Optional working folder for the launched process
+- `inputs`: Optional input port defaults for this task
+- `inputBindings`: Optional input port bindings from prior task outputs or shared ports
+- `outputs`: Optional output ports published after successful task execution
 
 If `runner` is omitted, the default is `exe`.
+
+If `waitForExit` is omitted, the default is `true`.
+
+Tasks can be stored either as a legacy flat `tasks` array or the grouped `groups` format.
+
+### Ritual Chains
+
+Rituals let you run themed sequences of tasks from the `Rituals` menu.
+
+- `rituals`: Optional top-level array of ritual definitions.
+- `rituals[].name`: Ritual display name.
+- `rituals[].description`: Optional description shown in tooltip.
+- `rituals[].steps`: Ordered list of steps.
+- `rituals[].steps[].taskName`: Task name to execute.
+- `rituals[].steps[].group`: Optional group filter when task names are reused.
+- `rituals[].steps[].delayMs`: Optional delay before step execution.
+- `rituals[].steps[].continueOnError`: Optional; continue ritual even if step fails or task is missing.
+
+Ritual steps honor each task's `waitForExit` flag, so GUI launchers can be fire-and-forget while other steps remain blocking.
+
+```json
+{
+  "groups": [
+    {
+      "name": "Utilities",
+      "tasks": [
+        {
+          "name": "Open Browser",
+          "group": "Utilities",
+          "runner": "exe",
+          "commandLine": "\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\"",
+          "waitForExit": false
+        },
+        {
+          "name": "Open Notepad",
+          "group": "Utilities",
+          "runner": "exe",
+          "commandLine": "notepad.exe",
+          "waitForExit": false
+        }
+      ]
+    }
+  ],
+  "rituals": [
+    {
+      "name": "Start Coding",
+      "description": "Warm up my coding workspace.",
+      "steps": [
+        { "taskName": "Open Browser", "group": "Utilities" },
+        { "taskName": "Open Notepad", "group": "Utilities", "delayMs": 300 }
+      ]
+    }
+  ]
+}
+```
+
+### Compact Dataflow Chain Example
+
+This example shows a same-group chain where each task can consume values from previous task outputs.
+Use the task card menu action `Run Chain (Same Group)` starting from `Resolve Context`.
+
+```json
+{
+  "groups": [
+    {
+      "name": "BuildFlow",
+      "tasks": [
+        {
+          "name": "Resolve Context",
+          "group": "BuildFlow",
+          "runner": "cmd",
+          "inputs": {
+            "repoRoot": "C:\\_dev_env_\\code\\tsky",
+            "buildConfig": "Release"
+          },
+          "commandLine": "echo preparing ${input:repoRoot}",
+          "outputs": {
+            "repoPath": "${input:repoRoot}",
+            "config": "${input:buildConfig}"
+          }
+        },
+        {
+          "name": "Compile",
+          "group": "BuildFlow",
+          "runner": "cmd",
+          "inputBindings": {
+            "repo": "Resolve Context.repoPath",
+            "cfg": "Resolve Context.config"
+          },
+          "workingDirectory": "${input:repo}",
+          "commandLine": "dotnet build -c ${input:cfg}",
+          "outputs": {
+            "artifactDir": "${input:repo}\\bin\\${input:cfg}"
+          }
+        },
+        {
+          "name": "Report",
+          "group": "BuildFlow",
+          "runner": "powershell",
+          "inputBindings": {
+            "outDir": "Compile.artifactDir"
+          },
+          "commandLine": "Write-Host \"Artifacts at ${input:outDir}\""
+        }
+      ]
+    }
+  ]
+}
+```
+
+Supported binding/reference forms:
+
+- `TaskName.outputName`
+- `output:TaskName.outputName`
+- `port:sharedName`
+- `${input:name}` / `${port:name}` / `${output:TaskName.outputName}` placeholders
 
 ### Example
 
 ```json
 {
-  "tasks": [
+  "groups": [
     {
-      "name": "Clean Logs",
-      "description": "Deletes old log files and keeps recent history.",
-      "commandLine": "C:\\_dev_env_\\bin\\cleanlogs.bat",
-      "runner": "cmd"
+      "name": "Maintenance",
+      "tasks": [
+        {
+          "name": "Clean Logs",
+          "group": "Maintenance",
+          "description": "Deletes old log files and keeps recent history.",
+          "commandLine": "C:\\_dev_env_\\bin\\cleanlogs.bat",
+          "runner": "cmd"
+        }
+      ]
     },
     {
-      "name": "Open Notepad",
-      "description": "Quick scratch pad for notes.",
-      "commandLine": "notepad.exe",
-      "runner": "exe"
-    },
-    {
-      "name": "List Log Files",
-      "commandLine": "Get-ChildItem C:\\_dev_env_\\logs",
-      "runner": "powershell"
-    },
-    {
-      "name": "Java Tool",
-      "commandLine": "javaw.exe X.class",
-      "runner": "exe",
-      "env": {
-        "PATH": "%JAVA_HOME%\\bin;%PATH%"
-      },
-      "workingDirectory": "C:\\_dev_env_\\tools"
+      "name": "Utilities",
+      "tasks": [
+        {
+          "name": "Open Notepad",
+          "group": "Utilities",
+          "description": "Quick scratch pad for notes.",
+          "commandLine": "notepad.exe",
+          "runner": "exe"
+        },
+        {
+          "name": "List Log Files",
+          "group": "Utilities",
+          "commandLine": "Get-ChildItem C:\\_dev_env_\\logs",
+          "runner": "powershell"
+        }
+      ]
     }
   ]
 }
@@ -82,6 +207,8 @@ Use this for:
 - `.exe` programs
 - Commands available on PATH
 
+For GUI launchers (browser, editor, etc.) that should not block downstream tasks, set `waitForExit` to `false`.
+
 Tips:
 
 - If the executable path contains spaces, quote it inside `commandLine`.
@@ -93,7 +220,8 @@ Example:
 {
   "name": "Tool With Args",
   "commandLine": "\"C:\\Program Files\\MyTool\\tool.exe\" --input file.txt",
-  "runner": "exe"
+  "runner": "exe",
+  "waitForExit": false
 }
 ```
 
@@ -200,6 +328,9 @@ This repository includes a GitHub Actions workflow at `.github/workflows/release
 
 The workflow is triggered by version tags that start with `v` (for example `v1.0.0`).
 It builds release artifacts for Windows runtimes, packages them as zip files, and publishes them to a GitHub Release.
+
+Published assets are framework-dependent single-file builds to keep download size smaller.
+Target machines need the .NET 8 Desktop Runtime installed.
 
 ### Will GitHub Actions incur costs?
 

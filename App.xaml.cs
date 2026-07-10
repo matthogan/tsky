@@ -49,6 +49,14 @@ public partial class App : System.Windows.Application
 		SetBrush("MenuButtonBackgroundBrush", useDarkTheme ? "#88303030" : "#CCFFFFFF");
 		SetBrush("MenuButtonHoverBrush", useDarkTheme ? "#AA3A3A3A" : "#F2FFFFFF");
 		SetBrush("MenuButtonPressedBrush", useDarkTheme ? "#CC444444" : "#E0FFFFFF");
+		SetBrush("ConnectorResolvedBrush", useDarkTheme ? "#FF57D3C8" : "#FF0C8A83");
+		SetBrush("ConnectorUnresolvedBrush", useDarkTheme ? "#FFFF7878" : "#FFC62828");
+		SetBrush("ConnectorFocusedBrush", useDarkTheme ? "#FFFFD166" : "#FFF59E0B");
+		SetBrush("InputPortDotBrush", useDarkTheme ? "#FF9FB8C6" : "#FF455A64");
+		SetBrush("OutputPortDotBrush", useDarkTheme ? "#FF67E8D9" : "#FF009688");
+		SetDouble("PortDotSize", useDarkTheme ? 10.0 : 8.0);
+		SetDouble("PortDotStrokeThickness", useDarkTheme ? 1.4 : 1.0);
+		SetThickness("PortDotMargin", useDarkTheme ? new Thickness(0, 3, 0, 3) : new Thickness(0, 2, 0, 2));
 
 		ThemeChanged?.Invoke(useDarkTheme);
 	}
@@ -84,6 +92,16 @@ public partial class App : System.Windows.Application
 	private void SetBrush(string key, string hexColor)
 	{
 		Resources[key] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hexColor));
+	}
+
+	private void SetDouble(string key, double value)
+	{
+		Resources[key] = value;
+	}
+
+	private void SetThickness(string key, Thickness value)
+	{
+		Resources[key] = value;
 	}
 }
 

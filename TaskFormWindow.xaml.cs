@@ -26,7 +26,7 @@ public partial class TaskFormWindow : Window
 
     private void ApplyTheme()
     {
-        foreach (var textBox in new[] { NameTextBox, DescriptionTextBox, CommandLineTextBox, WorkingDirectoryTextBox, EnvVarsTextBox })
+        foreach (var textBox in new[] { NameTextBox, DescriptionTextBox, GroupTextBox, CommandLineTextBox, WorkingDirectoryTextBox, EnvVarsTextBox })
         {
             textBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
             textBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
@@ -67,6 +67,7 @@ public partial class TaskFormWindow : Window
         {
             Name = NameTextBox.Text.Trim(),
             Description = string.IsNullOrWhiteSpace(DescriptionTextBox.Text) ? null : DescriptionTextBox.Text.Trim(),
+            Group = string.IsNullOrWhiteSpace(GroupTextBox.Text) ? "General" : GroupTextBox.Text.Trim(),
             Runner = runner,
             CommandLine = CommandLineTextBox.Text.Trim(),
             WorkingDirectory = WorkingDirectoryTextBox.Text.Trim(),

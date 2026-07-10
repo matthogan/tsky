@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Linq;
 
 namespace tsky;
 
@@ -17,9 +18,14 @@ public sealed class TaskConfiguration
 
     public List<LauncherTask> Tasks { get; set; } = [];
 
+    public List<LauncherTaskGroup> Groups { get; set; } = [];
+
+    public List<RitualDefinition> Rituals { get; set; } = [];
+
     public static TaskConfiguration Load(string path)
     {
-        return JsonFileStorage.LoadOrDefault<TaskConfiguration>(path, JsonOptions);
+        var fileModel = JsonFileStorage.LoadOrDefault<TaskConfigurationFileModel>(path, JsonOptions);
+        return FromFileModel(fileModel);
     }
 
     public static void EnsureValidFileOrReset(string path)
@@ -52,8 +58,8 @@ public sealed class TaskConfiguration
     {
         try
         {
-            var config = JsonSerializer.Deserialize<TaskConfiguration>(rawText, JsonOptions);
-            return config is not null && config.Tasks is not null;
+            var config = JsonSerializer.Deserialize<TaskConfigurationFileModel>(rawText, JsonOptions);
+            return config is not null;
         }
         catch
         {
@@ -75,7 +81,8 @@ public sealed class TaskConfiguration
 
     public static void Save(string path, TaskConfiguration config)
     {
-        JsonFileStorage.Save(path, config, JsonOptions);
+        var fileModel = ToFileModel(config);
+        JsonFileStorage.Save(path, fileModel, JsonOptions);
     }
 
     public static string SerializeTask(LauncherTask task)
@@ -98,6 +105,168 @@ public sealed class TaskConfiguration
             return false;
         }
     }
+
+    private static TaskConfiguration FromFileModel(TaskConfigurationFileModel fileModel)
+    {
+        var tasks = new List<LauncherTask>();
+
+        if (fileModel.Groups is { Count: > 0 })
+        {
+            foreach (var group in fileModel.Groups)
+            {
+                var groupName = string.IsNullOrWhiteSpace(group.Name) ? "General" : group.Name.Trim();
+                foreach (var task in group.Tasks ?? [])
+                {
+                    NormalizeTask(task, groupName);
+                    tasks.Add(task);
+                }
+            }
+        }
+        else if (fileModel.Tasks is { Count: > 0 })
+        {
+            foreach (var task in fileModel.Tasks)
+            {
+                NormalizeTask(task, "General");
+                tasks.Add(task);
+            }
+        }
+
+        var rituals = NormalizeRituals(fileModel.Rituals);
+
+        var normalizedGroups = BuildGroups(tasks);
+        return new TaskConfiguration
+        {
+            Tasks = tasks,
+            Groups = normalizedGroups,
+            Rituals = rituals
+        };
+    }
+
+    private static TaskConfigurationFileModel ToFileModel(TaskConfiguration config)
+    {
+        var groups = BuildGroups(config.Tasks);
+        return new TaskConfigurationFileModel
+        {
+            Groups = groups,
+            Tasks = null,
+            Rituals = config.Rituals
+        };
+    }
+
+    private static List<LauncherTaskGroup> BuildGroups(IEnumerable<LauncherTask> tasks)
+    {
+        var grouped = new List<LauncherTaskGroup>();
+        var lookup = new Dictionary<string, LauncherTaskGroup>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var task in tasks)
+        {
+            var groupName = string.IsNullOrWhiteSpace(task.Group) ? "General" : task.Group.Trim();
+
+            if (!lookup.TryGetValue(groupName, out var group))
+            {
+                group = new LauncherTaskGroup
+                {
+                    Name = groupName,
+                    Tasks = []
+                };
+
+                lookup[groupName] = group;
+                grouped.Add(group);
+            }
+
+            group.Tasks.Add(task);
+        }
+
+        return grouped;
+    }
+
+    private static void NormalizeTask(LauncherTask task, string fallbackGroupName)
+    {
+        task.Group = string.IsNullOrWhiteSpace(task.Group) ? fallbackGroupName : task.Group.Trim();
+        task.Env ??= [];
+        task.Inputs ??= [];
+        task.InputBindings ??= [];
+        task.Outputs ??= [];
+    }
+
+    private static List<RitualDefinition> NormalizeRituals(List<RitualDefinition>? rituals)
+    {
+        if (rituals is null || rituals.Count == 0)
+        {
+            return [];
+        }
+
+        var normalized = new List<RitualDefinition>();
+
+        foreach (var ritual in rituals)
+        {
+            if (string.IsNullOrWhiteSpace(ritual.Name))
+            {
+                continue;
+            }
+
+            ritual.Name = ritual.Name.Trim();
+            ritual.Steps ??= [];
+
+            ritual.Steps = ritual.Steps
+                .Where(step => !string.IsNullOrWhiteSpace(step.TaskName))
+                .Select(step =>
+                {
+                    step.TaskName = step.TaskName.Trim();
+                    step.Group = string.IsNullOrWhiteSpace(step.Group) ? null : step.Group.Trim();
+                    step.DelayMs = Math.Max(0, step.DelayMs);
+                    return step;
+                })
+                .ToList();
+
+            if (ritual.Steps.Count == 0)
+            {
+                continue;
+            }
+
+            normalized.Add(ritual);
+        }
+
+        return normalized;
+    }
+}
+
+public sealed class LauncherTaskGroup
+{
+    public string Name { get; set; } = "General";
+
+    public List<LauncherTask> Tasks { get; set; } = [];
+}
+
+public sealed class TaskConfigurationFileModel
+{
+    public List<LauncherTask>? Tasks { get; set; }
+
+    public List<LauncherTaskGroup>? Groups { get; set; }
+
+    public List<RitualDefinition>? Rituals { get; set; }
+}
+
+public sealed class RitualDefinition
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+
+    public List<RitualStepDefinition> Steps { get; set; } = [];
+}
+
+public sealed class RitualStepDefinition
+{
+    public string TaskName { get; set; } = string.Empty;
+
+    public string? Group { get; set; }
+
+    public int DelayMs { get; set; }
+
+    public bool ContinueOnError { get; set; }
+
+    public bool? WaitForExit { get; set; }
 }
 
 public sealed class LauncherTask
@@ -106,6 +275,8 @@ public sealed class LauncherTask
 
     public string? Description { get; set; }
 
+    public string? Group { get; set; }
+
     public string CommandLine { get; set; } = string.Empty;
 
     public string Runner { get; set; } = "exe";
@@ -113,4 +284,12 @@ public sealed class LauncherTask
     public Dictionary<string, string> Env { get; set; } = [];
 
     public string WorkingDirectory { get; set; } = string.Empty;
+
+    public bool WaitForExit { get; set; } = true;
+
+    public Dictionary<string, string> Inputs { get; set; } = [];
+
+    public Dictionary<string, string> InputBindings { get; set; } = [];
+
+    public Dictionary<string, string> Outputs { get; set; } = [];
 }

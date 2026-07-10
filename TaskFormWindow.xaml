@@ -105,6 +105,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
@@ -119,8 +120,11 @@
                     <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Description" />
                     <TextBox x:Name="DescriptionTextBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" />
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
-                    <ComboBox x:Name="RunnerComboBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0">
+                    <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Group" />
+                    <TextBox x:Name="GroupTextBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="General" />
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
+                    <ComboBox x:Name="RunnerComboBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0">
                         <ComboBox.ItemContainerStyle>
                             <Style TargetType="ComboBoxItem">
                                 <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
@@ -143,19 +147,19 @@
                         <ComboBoxItem Content="powershell" />
                     </ComboBox>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Command Line" />
-                    <TextBox x:Name="CommandLineTextBox" Grid.Row="3" Grid.Column="1" Margin="0,0,8,10" Height="32" />
-                    <Button Grid.Row="3" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseCommandButton_Click" />
+                    <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Command Line" />
+                    <TextBox x:Name="CommandLineTextBox" Grid.Row="4" Grid.Column="1" Margin="0,0,8,10" Height="32" />
+                    <Button Grid.Row="4" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseCommandButton_Click" />
 
-                    <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Working Directory" />
-                    <TextBox x:Name="WorkingDirectoryTextBox" Grid.Row="4" Grid.Column="1" Margin="0,0,8,10" Height="32" />
-                    <Button Grid.Row="4" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseDirectoryButton_Click" />
+                    <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Working Directory" />
+                    <TextBox x:Name="WorkingDirectoryTextBox" Grid.Row="5" Grid.Column="1" Margin="0,0,8,10" Height="32" />
+                    <Button Grid.Row="5" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseDirectoryButton_Click" />
 
-                    <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
-                    <TextBlock Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
+                    <TextBlock Grid.Row="6" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                    <TextBlock Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
 
                     <TextBox x:Name="EnvVarsTextBox"
-                             Grid.Row="6"
+                             Grid.Row="7"
                              Grid.Column="0"
                              Grid.ColumnSpan="3"
                              AcceptsReturn="True"

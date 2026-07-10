@@ -1,0 +1,89 @@
+﻿using Microsoft.Win32;
+using System.Windows;
+using System.Windows.Media;
+
+namespace tsky;
+
+/// <summary>
+/// Interaction logic for App.xaml
+/// </summary>
+public partial class App : System.Windows.Application
+{
+    public static event Action<bool>? ThemeChanged;
+
+	protected override void OnStartup(StartupEventArgs e)
+	{
+		base.OnStartup(e);
+
+		ApplySystemThemeResources();
+		SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+	}
+
+	protected override void OnExit(ExitEventArgs e)
+	{
+		SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+		base.OnExit(e);
+	}
+
+	private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+	{
+		if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.Color)
+		{
+			Dispatcher.Invoke(ApplySystemThemeResources);
+		}
+	}
+
+	private void ApplySystemThemeResources()
+	{
+		var useDarkTheme = IsDarkThemeEnabled();
+
+		SetBrush("AppBackgroundBrush", useDarkTheme ? "#FF1E1E1E" : "#FFF7F7F8");
+		SetBrush("PrimaryTextBrush", useDarkTheme ? "#FFF1F1F1" : "#FF1F2328");
+		SetBrush("SecondaryTextBrush", useDarkTheme ? "#FFC9D1D9" : "#FF57606A");
+		SetBrush("PanelBackgroundBrush", useDarkTheme ? "#FF252526" : "#FFFFFFFF");
+		SetBrush("PanelBorderBrush", useDarkTheme ? "#55FFFFFF" : "#22000000");
+		SetBrush("TabHeaderBackgroundBrush", useDarkTheme ? "#FF2D2D30" : "#FFF3F4F6");
+		SetBrush("TabHeaderHoverBackgroundBrush", useDarkTheme ? "#FF37373B" : "#FFE9EBEF");
+		SetBrush("TabHeaderSelectedBackgroundBrush", useDarkTheme ? "#FF3F3F46" : "#FFDDE2E8");
+		SetBrush("SplitterBrush", useDarkTheme ? "#55FFFFFF" : "#22000000");
+		SetBrush("MenuButtonBackgroundBrush", useDarkTheme ? "#88303030" : "#CCFFFFFF");
+		SetBrush("MenuButtonHoverBrush", useDarkTheme ? "#AA3A3A3A" : "#F2FFFFFF");
+		SetBrush("MenuButtonPressedBrush", useDarkTheme ? "#CC444444" : "#E0FFFFFF");
+
+		ThemeChanged?.Invoke(useDarkTheme);
+	}
+
+	public static bool IsDarkThemeEnabled()
+	{
+		const string personalizePath = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+		const string valueName = "AppsUseLightTheme";
+
+		try
+		{
+			using var key = Registry.CurrentUser.OpenSubKey(personalizePath);
+			var value = key?.GetValue(valueName);
+
+			if (value is int intValue)
+			{
+				return intValue == 0;
+			}
+
+			if (value is byte[] bytes && bytes.Length >= 4)
+			{
+				return BitConverter.ToInt32(bytes, 0) == 0;
+			}
+		}
+		catch
+		{
+			return false;
+		}
+
+		return false;
+	}
+
+	private void SetBrush(string key, string hexColor)
+	{
+		Resources[key] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hexColor));
+	}
+}
+

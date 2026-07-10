@@ -1,0 +1,43 @@
+# Build artifacts
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / ReSharper
+.idea/
+*.DotSettings.user
+
+# VS Code workspace settings (machine-specific)
+.vscode/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Test output
+TestResults/
+*.trx
+
+# Publish output
+publish/
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.cache
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# User-specific files
+tasks.json*

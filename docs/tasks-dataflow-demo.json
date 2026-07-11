@@ -1,0 +1,72 @@
+{
+  "groups": [
+    {
+      "name": "Dataflow Demo",
+      "tasks": [
+        {
+          "name": "1 - Seed Context",
+          "description": "Publishes initial ports for later tasks.",
+          "group": "Dataflow Demo",
+          "commandLine": "Write-Host \"Seeded context for ${input:userName}.\"",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "userName": "Ada",
+            "targetHost": "www.microsoft.com"
+          },
+          "inputBindings": {},
+          "outputs": {
+            "greeting": "Hello ${input:userName}",
+            "targetHost": "${input:targetHost}"
+          }
+        },
+        {
+          "name": "2 - Use Ports",
+          "description": "Consumes greeting and host from ports, then publishes summary and raw command output.",
+          "group": "Dataflow Demo",
+          "commandLine": "Write-Host \"${input:greeting} -> testing ${input:host}\"; Test-Connection \"${input:host}\" -Count 1",
+          "runner": "powershell",
+          "env": {
+            "DEMO_GREETING": "${input:greeting}"
+          },
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "host": "localhost",
+            "greeting": "Hello"
+          },
+          "inputBindings": {
+            "host": "port:targetHost",
+            "greeting": "port:greeting"
+          },
+          "outputs": {
+            "summary": "Checked ${input:host} after receiving '${input:greeting}'.",
+            "lastStdout": "${stdout}"
+          }
+        },
+        {
+          "name": "3 - Final Report",
+          "description": "Reads the summary and stdout output produced by the previous task.",
+          "group": "Dataflow Demo",
+          "commandLine": "Write-Host \"FINAL: ${input:summary}\"; Write-Host \"RAW OUTPUT:\"; Write-Host \"${input:lastStdout}\"",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "summary": "No summary available.",
+            "lastStdout": ""
+          },
+          "inputBindings": {
+            "summary": "port:summary",
+            "lastStdout": "port:lastStdout"
+          },
+          "outputs": {}
+        }
+      ]
+    }
+  ],
+  "rituals": []
+}

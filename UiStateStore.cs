@@ -16,6 +16,8 @@ public sealed class UiState
     public bool IsMaximized { get; set; }
 
     public double OutputHeight { get; set; } = 220;
+
+    public double SidebarWidth { get; set; } = 220;
 }
 
 public static class UiStateStore

@@ -234,6 +234,111 @@
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
 
+        <Style x:Key="SidebarTreeGroupHeaderButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#FFD0D7DE" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="RowBorder"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="6">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="#FF1E252B" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="RowBorder" Property="Background" Value="#FF1A2127" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SidebarTreeExpanderStyle" TargetType="Expander">
+            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="Foreground" Value="#FFD0D7DE" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <StackPanel>
+                            <ToggleButton x:Name="HeaderSite"
+                                          Focusable="False"
+                                          IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                          Background="Transparent"
+                                          BorderBrush="Transparent"
+                                          BorderThickness="0"
+                                          Padding="0"
+                                          Cursor="Hand"
+                                          Content="{TemplateBinding Header}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <ContentPresenter />
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <Border x:Name="ExpandRegion"
+                                    Background="#FF171D22"
+                                    CornerRadius="0,0,6,6"
+                                    Padding="0,0,0,2"
+                                    Margin="0,0,0,2"
+                                    Visibility="Collapsed">
+                                <ContentPresenter Margin="0"
+                                                  ContentSource="Content" />
+                            </Border>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ExpandRegion" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SidebarBottomSectionStyle" TargetType="Expander">
+            <Setter Property="Foreground" Value="#FF8C959F" />
+            <Setter Property="Margin" Value="0,2,0,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <StackPanel>
+                            <Border BorderBrush="#FF30363D" BorderThickness="0,1,0,0" Padding="0">
+                                <ToggleButton x:Name="HeaderToggle"
+                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                              Background="Transparent"
+                                              BorderThickness="0"
+                                              Padding="6,8"
+                                              Focusable="False"
+                                              Content="{TemplateBinding Header}" />
+                            </Border>
+                            <Border x:Name="SectionContent"
+                                    Background="#FF151A1F"
+                                    Visibility="Collapsed"
+                                    Padding="6,4,6,6">
+                                <ContentPresenter ContentSource="Content" />
+                            </Border>
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="SectionContent" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="OutputTabControlStyle" TargetType="TabControl">
             <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
@@ -271,6 +376,68 @@
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BottomPaneTabControlStyle" TargetType="TabControl">
+            <Setter Property="Background" Value="#FF1E1E1E" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Background="#FF252526" BorderBrush="#FF3C3C3C" BorderThickness="0,0,0,1">
+                                <TabPanel IsItemsHost="True" Background="Transparent" Margin="6,0,0,0" />
+                            </Border>
+                            <Border Grid.Row="1" Background="#FF1E1E1E" BorderBrush="#FF3C3C3C" BorderThickness="0">
+                                <ContentPresenter ContentSource="SelectedContent" Margin="0" />
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BottomPaneTabItemStyle" TargetType="TabItem">
+            <Setter Property="Foreground" Value="#FFCCCCCC" />
+            <Setter Property="Background" Value="#00000000" />
+            <Setter Property="BorderBrush" Value="#00000000" />
+            <Setter Property="Padding" Value="14,7" />
+            <Setter Property="Margin" Value="0,0,2,0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Grid>
+                            <Border x:Name="TabBorder" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter ContentSource="Header" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="ActiveIndicator"
+                                    Height="2"
+                                    VerticalAlignment="Bottom"
+                                    Background="#FF007ACC"
+                                    Visibility="Collapsed" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#FF2A2D2E" />
+                                <Setter Property="Foreground" Value="#FFFFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#FF1E1E1E" />
+                                <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible" />
+                                <Setter Property="Foreground" Value="#FFFFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -525,6 +692,12 @@
                                     <TextBlock Text="Edit" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
+                            <Button x:Name="RibbonToggleTaskEnabledButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonToggleTaskEnabledButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE7E8;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock x:Name="RibbonToggleTaskEnabledLabel" Text="Enable" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
                             <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonDeleteTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
@@ -534,7 +707,7 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="12,0,0,0">
-                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonRunChainButton_Click">
+                            <Button x:Name="RibbonRunChainButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonRunChainButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
                                     <TextBlock Text="Run Chain" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
@@ -568,8 +741,29 @@
                     </StackPanel>
 
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
-                        <Button Style="{StaticResource RibbonSecondaryActionStyle}" Content="Share" Click="RibbonShareButton_Click" />
-                        <Button Style="{StaticResource RibbonImportActionStyle}" Content="Import" Margin="12,0,0,0" Click="RibbonImportButton_Click" />
+                        <Button x:Name="RibbonShareButton"
+                                Style="{StaticResource RibbonSecondaryActionStyle}"
+                                Click="RibbonShareButton_Click"
+                                Padding="14,8">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Share" VerticalAlignment="Center" />
+                                <TextBlock Text=" &#xE70D;"
+                                           FontFamily="Segoe MDL2 Assets"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="RibbonImportButton"
+                                Style="{StaticResource RibbonImportActionStyle}"
+                                Click="RibbonImportButton_Click"
+                                Margin="12,0,0,0"
+                                Padding="14,8">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Import" VerticalAlignment="Center" />
+                                <TextBlock Text=" &#xE70D;"
+                                           FontFamily="Segoe MDL2 Assets"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -604,27 +798,142 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="SidebarColumnDefinition" Width="220" />
-                <ColumnDefinition x:Name="SidebarSpacerColumnDefinition" Width="12" />
+                <ColumnDefinition x:Name="SidebarColumnDefinition" Width="220" MinWidth="180" MaxWidth="520" />
+                <ColumnDefinition x:Name="SidebarSpacerColumnDefinition" Width="6" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
         <Border x:Name="SidebarPaneBorder"
                 Grid.Column="0"
                 CornerRadius="12"
-                Background="{DynamicResource PanelBackgroundBrush}"
-                BorderBrush="{DynamicResource PanelBorderBrush}"
+                Background="#FF1B2026"
+                BorderBrush="#FF30363D"
             BorderThickness="0"
-                Padding="12">
+                Padding="10,10,8,8">
             <Grid>
-                <ScrollViewer Grid.Row="0"
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0">
+                    <Expander x:Name="SidebarGroupsExpander"
+                              Style="{StaticResource SidebarBottomSectionStyle}"
+                              IsExpanded="True"
+                              Expanded="SidebarGroupsExpander_Expanded"
+                              Collapsed="SidebarGroupsExpander_Collapsed">
+                        <Expander.Header>
+                            <DockPanel>
+                                <TextBlock x:Name="GroupsSectionChevronText"
+                                           Text="▼"
+                                           Foreground="#FF6E7681"
+                                           FontSize="9"
+                                           Margin="0,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <TextBlock Text="GROUPS"
+                                           Foreground="#FF8B949E"
+                                           FontSize="10"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center" />
+                                <TextBlock x:Name="GroupsHeaderCountText"
+                                           DockPanel.Dock="Right"
+                                           Text="(0)"
+                                           Foreground="#FFC9A74D"
+                                           FontSize="10"
+                                           Margin="8,0,0,0"
+                                           MinWidth="32"
+                                           TextAlignment="Right"
+                                           VerticalAlignment="Center" />
+                            </DockPanel>
+                        </Expander.Header>
+
+                        <StackPanel x:Name="GroupsSectionContentPanel" Margin="0,4,0,0">
+                            <DockPanel Margin="0,0,0,8">
+                                <TextBlock x:Name="GroupsSummaryText"
+                                           Text="0 groups created"
+                                           Foreground="#FF8B949E"
+                                           FontSize="11"
+                                           VerticalAlignment="Center" />
+                            </DockPanel>
+
+                            <Border Background="#FF151A1F" CornerRadius="14" Padding="8,4" MinHeight="30">
+                                <DockPanel LastChildFill="True">
+                                    <TextBlock Text="🔍"
+                                               Foreground="#FF6E7681"
+                                               Margin="0,0,6,0"
+                                               VerticalAlignment="Center" />
+                                    <TextBox x:Name="GroupSearchTextBox"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Foreground="#FFB7C0C8"
+                                             CaretBrush="#FFB7C0C8"
+                                             Padding="0"
+                                             MinHeight="18"
+                                             VerticalContentAlignment="Center"
+                                             TextChanged="GroupSearchTextBox_TextChanged"
+                                             ToolTip="File, folder or project" />
+                                </DockPanel>
+                            </Border>
+                        </StackPanel>
+                    </Expander>
+                </StackPanel>
+
+                <ScrollViewer x:Name="GroupsTreeScrollViewer"
+                              Grid.Row="1"
                               Margin="0"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="GroupListPanel" />
                 </ScrollViewer>
+
+                <StackPanel Grid.Row="2" Margin="0,8,0,0">
+                    <Expander x:Name="SidebarRitualsExpander" Style="{StaticResource SidebarBottomSectionStyle}" IsExpanded="True">
+                        <Expander.Header>
+                            <DockPanel>
+                                <TextBlock Text="▶" Foreground="#FF6E7681" FontSize="9" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                <TextBlock Text="RITUALS" Foreground="#FF8B949E" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock x:Name="SidebarRitualsCountText"
+                                           DockPanel.Dock="Right"
+                                           Text="(0)"
+                                           Foreground="#FFC9A74D"
+                                           FontSize="10"
+                                           Margin="8,0,0,0"
+                                           MinWidth="32"
+                                           TextAlignment="Right"
+                                           VerticalAlignment="Center" />
+                            </DockPanel>
+                        </Expander.Header>
+                        <StackPanel x:Name="SidebarRitualsListPanel" />
+                    </Expander>
+                </StackPanel>
             </Grid>
         </Border>
+
+        <GridSplitter Grid.Column="1"
+                  Width="6"
+                  HorizontalAlignment="Stretch"
+                  VerticalAlignment="Stretch"
+                      Background="Transparent"
+                      Cursor="SizeWE"
+                  ResizeDirection="Columns"
+                  ResizeBehavior="PreviousAndNext"
+                      ShowsPreview="True">
+            <GridSplitter.Style>
+                <Style TargetType="GridSplitter">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Opacity" Value="1" />
+                    <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource SplitterBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter Property="Background" Value="{DynamicResource SplitterBrush}" />
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </GridSplitter.Style>
+        </GridSplitter>
 
         <Grid Grid.Column="2">
             <Grid.RowDefinitions>
@@ -659,15 +968,8 @@
             </StackPanel>
 
             <Grid Grid.Row="1" Margin="0,8,0,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition x:Name="HistorySpacerColumnDefinition" Width="10" />
-                    <ColumnDefinition x:Name="HistoryColumnDefinition" Width="300" />
-                </Grid.ColumnDefinitions>
-
                 <ScrollViewer
                     x:Name="TaskScrollViewer"
-                    Grid.Column="0"
                     VerticalScrollBarVisibility="Hidden"
                     HorizontalScrollBarVisibility="Hidden"
                     HorizontalContentAlignment="Center"
@@ -679,48 +981,6 @@
                                 Panel.ZIndex="20" />
                     </Grid>
                 </ScrollViewer>
-
-                <Border x:Name="HistoryPanelBorder"
-                    Grid.Column="2"
-                        Padding="10"
-                        CornerRadius="10"
-                        Background="{DynamicResource PanelBackgroundBrush}"
-                        BorderBrush="{DynamicResource PanelBorderBrush}"
-                        BorderThickness="0">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-
-                        <DockPanel Grid.Row="0" Margin="0,0,0,8">
-                            <TextBlock Text="History"
-                                       FontSize="13"
-                                       FontWeight="SemiBold"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,10,0" />
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right">
-                                <Button x:Name="ReplaySelectedButton"
-                                        Content="Replay Selected"
-                                        Style="{StaticResource HistoryActionButtonStyle}"
-                                        Click="ReplaySelectedButton_Click" />
-                                <Button x:Name="ClearHistorySelectionButton"
-                                        Content="Clear"
-                                        Margin="0"
-                                        Style="{StaticResource HistoryActionButtonStyle}"
-                                        Click="ClearHistorySelectionButton_Click" />
-                            </StackPanel>
-                        </DockPanel>
-
-                        <ListBox x:Name="HistoryListBox"
-                                 Grid.Row="1"
-                                 SelectionMode="Extended"
-                                 Background="Transparent"
-                                 BorderThickness="0"
-                                 Foreground="{DynamicResource PrimaryTextBrush}"
-                                 SelectionChanged="HistoryListBox_SelectionChanged" />
-                    </Grid>
-                </Border>
             </Grid>
 
             <GridSplitter x:Name="OutputGridSplitter"
@@ -728,28 +988,146 @@
                 Height="6"
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Center"
-                Background="{DynamicResource SplitterBrush}"
+                Background="Transparent"
+                Cursor="SizeNS"
                 ResizeDirection="Rows"
                 ResizeBehavior="PreviousAndNext"
-                ShowsPreview="True" />
+                ShowsPreview="True">
+                <GridSplitter.Style>
+                    <Style TargetType="GridSplitter">
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="Opacity" Value="1" />
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource SplitterBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource SplitterBrush}" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </GridSplitter.Style>
+            </GridSplitter>
 
             <Grid x:Name="OutputContainer" Grid.Row="3" Margin="0,0,0,0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
+                <TabControl x:Name="BottomPaneTabControl"
+                            Style="{StaticResource BottomPaneTabControlStyle}"
+                            ItemContainerStyle="{StaticResource BottomPaneTabItemStyle}"
+                            SelectionChanged="BottomPaneTabControl_SelectionChanged">
+                    <TabItem x:Name="OutputPaneTabItem" Header="Task Output">
+                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                            <Grid x:Name="OutputTabHost"
+                                  Background="{DynamicResource PanelBackgroundBrush}" />
+                        </Grid>
+                    </TabItem>
+                    <TabItem x:Name="HistoryPaneTabItem" Header="History">
+                        <TabItem.Resources>
+                            <Style TargetType="Thumb">
+                                <Setter Property="MinHeight" Value="28" />
+                                <Setter Property="MinWidth" Value="28" />
+                            </Style>
+                            <Style TargetType="ScrollBar">
+                                <Setter Property="Width" Value="16" />
+                                <Setter Property="Height" Value="16" />
+                            </Style>
+                        </TabItem.Resources>
+                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                            <Border x:Name="HistoryPanelBorder"
+                                    Padding="10"
+                                    CornerRadius="0"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource PanelBorderBrush}"
+                                    BorderThickness="0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
 
-                <TextBlock
-                    x:Name="OutputHeaderText"
-                    Grid.Row="0"
-                    Margin="0,8,0,6"
-                    FontSize="14"
-                    FontWeight="SemiBold"
-                    Text="Task Output" />
+                                    <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                                        <TextBlock Text="History"
+                                                   FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,10,0" />
+                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" DockPanel.Dock="Right">
+                                            <Button x:Name="ToggleHistoryDetailsButton"
+                                                Content="Hide Details"
+                                                Style="{StaticResource HistoryActionButtonStyle}"
+                                                Click="ToggleHistoryDetailsButton_Click" />
+                                            <Button x:Name="ReplaySelectedButton"
+                                                    Content="Replay Selected"
+                                                    Style="{StaticResource HistoryActionButtonStyle}"
+                                                    Click="ReplaySelectedButton_Click" />
+                                            <Button x:Name="ClearHistorySelectionButton"
+                                                    Content="Clear"
+                                                    Margin="0"
+                                                    Style="{StaticResource HistoryActionButtonStyle}"
+                                                    Click="ClearHistorySelectionButton_Click" />
+                                        </StackPanel>
+                                    </DockPanel>
 
-                <Grid x:Name="OutputTabHost"
-                      Grid.Row="1"
-                      Background="{DynamicResource PanelBackgroundBrush}" />
+                                    <Grid Grid.Row="1">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition x:Name="HistoryListRow" Height="2*" />
+                                            <RowDefinition x:Name="HistoryDetailsGapRow" Height="6" />
+                                            <RowDefinition x:Name="HistoryDetailsRow" Height="3*" />
+                                        </Grid.RowDefinitions>
+
+                                        <ListBox x:Name="HistoryListBox"
+                                                 Grid.Row="0"
+                                                 SelectionMode="Extended"
+                                                 Background="Transparent"
+                                                 BorderThickness="0"
+                                                 Foreground="{DynamicResource PrimaryTextBrush}"
+                                                 SelectionChanged="HistoryListBox_SelectionChanged" />
+
+                                        <GridSplitter Grid.Row="1"
+                                                      Height="6"
+                                                      HorizontalAlignment="Stretch"
+                                                      VerticalAlignment="Center"
+                                                      Background="{DynamicResource SplitterBrush}"
+                                                      ResizeDirection="Rows"
+                                                      ResizeBehavior="PreviousAndNext"
+                                                      ShowsPreview="True" />
+
+                                        <Border x:Name="HistoryDetailsBorder"
+                                            Grid.Row="2"
+                                                Background="#1A000000"
+                                                BorderBrush="{DynamicResource PanelBorderBrush}"
+                                                BorderThickness="1"
+                                                Padding="8">
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+
+                                                <TextBlock Text="Details"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource SecondaryTextBrush}"
+                                                           Margin="0,0,0,6" />
+
+                                                <TextBox x:Name="HistoryDetailsTextBox"
+                                                         Grid.Row="1"
+                                                         IsReadOnly="True"
+                                                         TextWrapping="Wrap"
+                                                         AcceptsReturn="True"
+                                                         VerticalScrollBarVisibility="Auto"
+                                                         HorizontalScrollBarVisibility="Disabled"
+                                                         Background="#00000000"
+                                                         BorderThickness="0"
+                                                         Foreground="{DynamicResource PrimaryTextBrush}"
+                                                         FontFamily="{DynamicResource AppMonoFontFamily}" />
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
             </Grid>
         </Grid>
         </Grid>

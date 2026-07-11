@@ -29,6 +29,9 @@ public partial class MainWindow : Window
     private const double DefaultWindowHeight = 420;
     private const double DefaultOutputHeight = 220;
     private const double MinOutputHeight = 120;
+    private const double DefaultSidebarWidth = 220;
+    private const double MinSidebarWidth = 180;
+    private const double MaxSidebarWidth = 520;
     private const string TaskEditorTitle = "Task Editor";
     private const string TaskUnavailableMessage = "The selected task is no longer available.";
     private const int MaxRunHistoryEntries = 300;
@@ -44,7 +47,7 @@ public partial class MainWindow : Window
     private string? _selectedGroupName;
     private int? _selectedTaskIndex;
     private readonly List<int> _visibleTaskIndexes = [];
-    private readonly Dictionary<string, TabControl> _groupOutputTabs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, OutputGroupPanelContext> _groupOutputPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupExpandedStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TaskRunState> _taskRunStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupHistoryVisibility = new(StringComparer.OrdinalIgnoreCase);
@@ -59,6 +62,7 @@ public partial class MainWindow : Window
     private List<TaskRunHistoryEntry> _runHistory = [];
     private bool _isReplayingHistoryBatch;
     private bool _isRunningRitual;
+    private bool _isHistoryDetailsVisible = true;
     private readonly DispatcherTimer _sidebarStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private int _sidebarSpinnerFrameIndex;
     private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
@@ -99,17 +103,32 @@ public partial class MainWindow : Window
 
     private sealed class TaskTabContext
     {
-        public required TabControl HostTabControl { get; init; }
+        public required OutputGroupPanelContext HostOutputPanel { get; init; }
 
-        public required TabItem TabItem { get; init; }
+        public required Border RunItemContainer { get; init; }
+
+        public required Expander RunItemExpander { get; init; }
 
         public required RichTextBox OutputTextBox { get; init; }
 
         public required TextBlock StatusText { get; init; }
 
+        public required TextBlock TitleText { get; init; }
+
         public required DispatcherTimer SpinnerTimer { get; init; }
 
         public int SpinnerFrameIndex { get; set; }
+    }
+
+    private sealed class OutputGroupPanelContext
+    {
+        public required Grid RootGrid { get; init; }
+
+        public required StackPanel RunListPanel { get; init; }
+
+        public required TextBlock EmptyListText { get; init; }
+
+        public List<TaskTabContext> Runs { get; } = [];
     }
 
     private sealed class TaskCardVisual
@@ -245,8 +264,10 @@ public partial class MainWindow : Window
 
         _uiState = UiStateStore.Load();
         ApplyPersistedUiState();
+        ApplyHistoryDetailsVisibility();
 
         TaskConfiguration.EnsureValidFileOrReset(_userProfileConfigPath);
+        LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json");
 
         LoadTaskButtons();
         SyncTaskSurfaceToViewport();
@@ -336,17 +357,17 @@ public partial class MainWindow : Window
 
     private static Brush GetResolvedConnectorBrush()
     {
-        return ResolveThemeBrush("ConnectorResolvedBrush", Color.FromRgb(0x2E, 0x7D, 0x7A));
+        return new SolidColorBrush(Color.FromRgb(0x00, 0xF5, 0xFF));
     }
 
     private static Brush GetUnresolvedConnectorBrush()
     {
-        return ResolveThemeBrush("ConnectorUnresolvedBrush", Color.FromRgb(0xD3, 0x2F, 0x2F));
+        return new SolidColorBrush(Color.FromRgb(0xFF, 0x2D, 0x95));
     }
 
     private static Brush GetFocusedConnectorBrush()
     {
-        return ResolveThemeBrush("ConnectorFocusedBrush", Color.FromRgb(0xF9, 0xA8, 0x25));
+        return new SolidColorBrush(Color.FromRgb(0xD7, 0xFF, 0x00));
     }
 
     private void ApplyTitleBarTheme(bool useDarkTheme)
@@ -402,6 +423,15 @@ public partial class MainWindow : Window
 
         OutputRowDefinition.Height = new GridLength(persistedHeight);
 
+        var persistedSidebarWidth = _uiState.SidebarWidth;
+        if (double.IsNaN(persistedSidebarWidth) || persistedSidebarWidth < MinSidebarWidth)
+        {
+            persistedSidebarWidth = DefaultSidebarWidth;
+        }
+
+        persistedSidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, persistedSidebarWidth));
+        SidebarColumnDefinition.Width = new GridLength(persistedSidebarWidth);
+
         if (_uiState.IsMaximized)
         {
             WindowState = WindowState.Maximized;
@@ -425,6 +455,7 @@ public partial class MainWindow : Window
         }
 
         _uiState.OutputHeight = Math.Max(MinOutputHeight, height);
+        _uiState.SidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, SidebarColumnDefinition.ActualWidth));
         UiStateStore.Save(_uiState);
     }
 
@@ -440,7 +471,15 @@ public partial class MainWindow : Window
 
     private void LoadTaskButtons()
     {
-        _currentConfiguration = TaskConfiguration.LoadMerged(_currentDirectoryConfigPath, _userProfileConfigPath);
+        var currentDirectoryConfig = File.Exists(_currentDirectoryConfigPath)
+            ? LoadConfigurationWithValidation(_currentDirectoryConfigPath, "Read workspace tasks.json")
+            : new TaskConfiguration();
+
+        var userProfileConfig = File.Exists(_userProfileConfigPath)
+            ? LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json")
+            : new TaskConfiguration();
+
+        _currentConfiguration = TaskConfiguration.MergeWithOverlay(currentDirectoryConfig, userProfileConfig);
 
         TaskPanel.AllowDrop = true;
         TaskPanel.DragOver -= TaskPanel_DragOver;
@@ -451,6 +490,8 @@ public partial class MainWindow : Window
         TaskPanel.DragLeave += TaskPanel_DragLeave;
 
         var groupNames = GetGroupNames();
+        GroupsHeaderCountText.Text = $"({groupNames.Count})";
+        GroupsSummaryText.Text = $"{groupNames.Count} groups created";
         if (string.IsNullOrWhiteSpace(_selectedGroupName) || !groupNames.Contains(_selectedGroupName, StringComparer.OrdinalIgnoreCase))
         {
             _selectedGroupName = groupNames.FirstOrDefault();
@@ -458,6 +499,7 @@ public partial class MainWindow : Window
 
         RebuildGroupsMenu(groupNames);
         RebuildRitualsMenu();
+        RebuildSidebarRitualsSection();
         RebuildGroupNavigator(GetGroupSidebarItems(groupNames));
         RenderSelectedGroupTasks();
         ShowSelectedGroupOutputTabControl();
@@ -469,26 +511,61 @@ public partial class MainWindow : Window
     {
         GroupListPanel.Children.Clear();
 
+        var searchTerm = GroupSearchTextBox?.Text?.Trim();
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            groups = groups
+                .Where(group =>
+                    group.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
+                    || group.Tasks.Any(task => task.Name.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+
         foreach (var group in groups)
         {
             var groupName = group.Name;
 
             var headerButton = new Button
             {
-                Style = (Style)Resources["SidebarGroupHeaderButtonStyle"],
+                Style = (Style)Resources["SidebarTreeGroupHeaderButtonStyle"],
                 Tag = groupName,
                 Background = string.Equals(groupName, _selectedGroupName, StringComparison.OrdinalIgnoreCase)
-                    ? (Brush)Resources["TabHeaderHoverBackgroundBrush"]
-                    : (Brush)Resources["PanelBackgroundBrush"]
+                    ? new SolidColorBrush(Color.FromRgb(0x11, 0x15, 0x1A))
+                    : Brushes.Transparent
             };
 
             headerButton.Click += GroupHeaderButton_Click;
 
             var headerLayout = new DockPanel();
 
+            var chevronText = new TextBlock
+            {
+                Text = group.IsExpanded ? "▼" : "▶",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                FontSize = 10,
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            DockPanel.SetDock(chevronText, Dock.Left);
+
+            var folderIcon = new TextBlock
+            {
+                Text = "📁",
+                FontSize = 12,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0)),
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            DockPanel.SetDock(folderIcon, Dock.Left);
+
             var badge = new Border
             {
-                Style = (Style)Resources["GroupCountBadgeStyle"]
+                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38)),
+                CornerRadius = new CornerRadius(9),
+                Padding = new Thickness(7, 1, 7, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                MinWidth = 22
             };
             DockPanel.SetDock(badge, Dock.Right);
             badge.Child = new TextBlock
@@ -496,7 +573,7 @@ public partial class MainWindow : Window
                 Text = group.TaskCount.ToString(),
                 FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = Brushes.White,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0xA7, 0x4D)),
                 HorizontalAlignment = HorizontalAlignment.Center
             };
 
@@ -504,11 +581,15 @@ public partial class MainWindow : Window
             {
                 Text = groupName,
                 VerticalAlignment = VerticalAlignment.Center,
-                FontSize = 12,
+                FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
-                Margin = new Thickness(0, 0, 8, 0)
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD0, 0xD7, 0xDE)),
+                Margin = new Thickness(0, 0, 8, 0),
+                TextTrimming = TextTrimming.CharacterEllipsis
             };
 
+            headerLayout.Children.Add(chevronText);
+            headerLayout.Children.Add(folderIcon);
             headerLayout.Children.Add(badge);
             headerLayout.Children.Add(groupNameText);
             headerButton.Content = headerLayout;
@@ -518,13 +599,14 @@ public partial class MainWindow : Window
             {
                 var row = new DockPanel
                 {
-                    Margin = new Thickness(2, 2, 2, 0)
+                    Margin = new Thickness(34, 2, 8, 0),
+                    Height = 28
                 };
 
                 var stateText = new TextBlock
                 {
                     Text = GetStateIcon(preview.State),
-                    Width = 18,
+                    Width = 16,
                     FontSize = 12,
                     FontWeight = FontWeights.SemiBold,
                     VerticalAlignment = VerticalAlignment.Center,
@@ -535,18 +617,35 @@ public partial class MainWindow : Window
                 var taskText = new TextBlock
                 {
                     Text = preview.Name,
-                    Style = (Style)Resources["GroupPreviewTextStyle"],
-                    Margin = new Thickness(4, 0, 0, 0)
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)),
+                    FontSize = 11,
+                    Margin = new Thickness(6, 0, 0, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    TextTrimming = TextTrimming.CharacterEllipsis
                 };
 
                 row.Children.Add(stateText);
                 row.Children.Add(taskText);
-                previewPanel.Children.Add(row);
+
+                var taskRowButton = new Button
+                {
+                    Tag = new SidebarTaskSelectionTarget(groupName, preview.Name),
+                    Background = Brushes.Transparent,
+                    BorderBrush = Brushes.Transparent,
+                    BorderThickness = new Thickness(0),
+                    Padding = new Thickness(0),
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                    Cursor = Cursors.Hand,
+                    Content = row
+                };
+                taskRowButton.Click += SidebarTaskRowButton_Click;
+
+                previewPanel.Children.Add(taskRowButton);
             }
 
             var expander = new Expander
             {
-                Style = (Style)Resources["SidebarGroupExpanderStyle"],
+                Style = (Style)Resources["SidebarTreeExpanderStyle"],
                 Header = headerButton,
                 Content = previewPanel,
                 IsExpanded = group.IsExpanded,
@@ -558,7 +657,74 @@ public partial class MainWindow : Window
             expander.PreviewMouseLeftButtonUp += GroupExpander_PreviewMouseLeftButtonUp;
             GroupListPanel.Children.Add(expander);
         }
+
+        if (GroupListPanel.Children.Count == 0)
+        {
+            GroupListPanel.Children.Add(new TextBlock
+            {
+                Text = "No groups match your search.",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                Margin = new Thickness(6, 8, 6, 0),
+                FontSize = 11
+            });
+        }
     }
+
+    private void GroupSearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        RebuildGroupNavigator(GetGroupSidebarItems(GetGroupNames()));
+    }
+
+    private void SidebarGroupsExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (GroupsTreeScrollViewer is not null)
+        {
+            GroupsTreeScrollViewer.Visibility = Visibility.Visible;
+        }
+
+        if (GroupsSectionChevronText is not null)
+        {
+            GroupsSectionChevronText.Text = "▼";
+        }
+    }
+
+    private void SidebarGroupsExpander_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (GroupsTreeScrollViewer is not null)
+        {
+            GroupsTreeScrollViewer.Visibility = Visibility.Collapsed;
+        }
+
+        if (GroupsSectionChevronText is not null)
+        {
+            GroupsSectionChevronText.Text = "▶";
+        }
+    }
+
+    private void SidebarTaskRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: SidebarTaskSelectionTarget target })
+        {
+            return;
+        }
+
+        SelectGroup(target.GroupName);
+
+        var selectedIndex = _currentConfiguration.Tasks.FindIndex(task =>
+            string.Equals(NormalizeGroupName(task.Group), target.GroupName, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(task.Name.Trim(), target.TaskName, StringComparison.OrdinalIgnoreCase));
+
+        if (selectedIndex < 0)
+        {
+            return;
+        }
+
+        _selectedTaskIndex = selectedIndex;
+        ApplyTaskCardSelectionVisuals();
+        FocusSelectedTaskCard();
+    }
+
+    private sealed record SidebarTaskSelectionTarget(string GroupName, string TaskName);
 
     private void GroupExpander_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
@@ -717,6 +883,107 @@ public partial class MainWindow : Window
         }
 
         RitualsMenuItem.IsEnabled = true;
+    }
+
+    private void RebuildSidebarRitualsSection()
+    {
+        SidebarRitualsListPanel.Children.Clear();
+
+        var rituals = _currentConfiguration.Rituals
+            .OrderBy(ritual => ritual.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        SidebarRitualsCountText.Text = $"({rituals.Count})";
+
+        if (rituals.Count == 0)
+        {
+            SidebarRitualsListPanel.Children.Add(new TextBlock
+            {
+                Text = "No rituals defined",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                FontSize = 11,
+                Margin = new Thickness(2, 2, 2, 2)
+            });
+
+            return;
+        }
+
+        foreach (var ritual in rituals)
+        {
+            var row = new DockPanel
+            {
+                Margin = new Thickness(0, 1, 0, 3),
+                LastChildFill = true,
+                Height = 28
+            };
+
+            var runButton = new Button
+            {
+                Content = "▶",
+                Tag = ritual,
+                Width = 20,
+                Height = 20,
+                Margin = new Thickness(0, 0, 4, 0),
+                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x9B, 0xB5, 0x6A)),
+                BorderThickness = new Thickness(0),
+                Cursor = Cursors.Hand,
+                ToolTip = "Run ritual"
+            };
+            runButton.Click += SidebarRunRitualButton_Click;
+            DockPanel.SetDock(runButton, Dock.Left);
+
+            var editButton = new Button
+            {
+                Content = "✎",
+                Tag = ritual,
+                Width = 20,
+                Height = 20,
+                Margin = new Thickness(0, 0, 6, 0),
+                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)),
+                BorderThickness = new Thickness(0),
+                Cursor = Cursors.Hand,
+                ToolTip = "Edit ritual"
+            };
+            editButton.Click += SidebarEditRitualButton_Click;
+            DockPanel.SetDock(editButton, Dock.Left);
+
+            var ritualNameText = new TextBlock
+            {
+                Text = ritual.Name,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xB7, 0xC0, 0xC8)),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = ritual.Description
+            };
+
+            row.Children.Add(runButton);
+            row.Children.Add(editButton);
+            row.Children.Add(ritualNameText);
+            SidebarRitualsListPanel.Children.Add(row);
+        }
+    }
+
+    private async void SidebarRunRitualButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: RitualDefinition ritual })
+        {
+            return;
+        }
+
+        await ExecuteRitualAsync(ritual);
+    }
+
+    private void SidebarEditRitualButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: RitualDefinition ritual })
+        {
+            return;
+        }
+
+        EditRitualMenuEntry_Click(new MenuItem { Tag = ritual }, new RoutedEventArgs());
     }
 
     private bool HasSelectedGroupTasks()
@@ -897,6 +1164,12 @@ public partial class MainWindow : Window
                     continue;
                 }
 
+                if (!IsTaskEnabled(stepTask))
+                {
+                    AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: skipped disabled task '{stepTask.Name}'.");
+                    continue;
+                }
+
                 var effectiveTask = CreateRitualStepExecutionTask(stepTask, step);
                 AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: running '{effectiveTask.Name}' (waitForExit={effectiveTask.WaitForExit}).");
                 SelectGroup(NormalizeGroupName(effectiveTask.Group));
@@ -1022,6 +1295,12 @@ public partial class MainWindow : Window
     private void ViewHistoryMenuItem_Click(object sender, RoutedEventArgs e)
     {
         var groupKey = NormalizeGroupName(_selectedGroupName);
+        if (ViewHistoryMenuItem.IsChecked)
+        {
+            ViewOutputMenuItem.IsChecked = true;
+            _groupOutputVisibility[groupKey] = true;
+        }
+
         _groupHistoryVisibility[groupKey] = ViewHistoryMenuItem.IsChecked;
         ApplyGroupViewState();
     }
@@ -1030,6 +1309,13 @@ public partial class MainWindow : Window
     {
         var groupKey = NormalizeGroupName(_selectedGroupName);
         _groupOutputVisibility[groupKey] = ViewOutputMenuItem.IsChecked;
+
+        if (!ViewOutputMenuItem.IsChecked)
+        {
+            _groupHistoryVisibility[groupKey] = false;
+            ViewHistoryMenuItem.IsChecked = false;
+        }
+
         ApplyGroupViewState();
     }
 
@@ -1040,7 +1326,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        ViewHistoryMenuItem.IsChecked = !ViewHistoryMenuItem.IsChecked;
+        ViewHistoryMenuItem.IsChecked = true;
         ViewHistoryMenuItem_Click(ViewHistoryMenuItem, new RoutedEventArgs());
     }
 
@@ -1051,7 +1337,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        ViewHistoryMenuItem.IsChecked = !ViewHistoryMenuItem.IsChecked;
+        ViewHistoryMenuItem.IsChecked = true;
         ViewHistoryMenuItem_Click(ViewHistoryMenuItem, new RoutedEventArgs());
     }
 
@@ -1093,6 +1379,12 @@ public partial class MainWindow : Window
             _groupOutputVisibility[groupKey] = true;
         }
 
+        if (!outputVisible && historyVisible)
+        {
+            historyVisible = false;
+            _groupHistoryVisibility[groupKey] = false;
+        }
+
         ApplySidebarVisibility(sidebarVisible);
         ApplyHistoryVisibility(historyVisible);
         ApplyOutputVisibility(groupKey, outputVisible);
@@ -1120,21 +1412,18 @@ public partial class MainWindow : Window
 
     private void ApplyHistoryVisibility(bool isVisible)
     {
-        if (isVisible)
+        if (BottomPaneTabControl is null)
         {
-            HistoryPanelBorder.Visibility = Visibility.Visible;
-            AnimateColumnWidth(HistorySpacerColumnDefinition, 10);
-            AnimateColumnWidth(HistoryColumnDefinition, 300, RecalibrateTaskScrollViewport);
             return;
         }
 
-        HistoryPanelBorder.Visibility = Visibility.Visible;
-        AnimateColumnWidth(HistorySpacerColumnDefinition, 0);
-        AnimateColumnWidth(HistoryColumnDefinition, 0, () =>
+        if (isVisible)
         {
-            HistoryPanelBorder.Visibility = Visibility.Collapsed;
-            RecalibrateTaskScrollViewport();
-        });
+            BottomPaneTabControl.SelectedItem = HistoryPaneTabItem;
+            return;
+        }
+
+        BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
     }
 
     private void AnimateColumnWidth(ColumnDefinition columnDefinition, double targetWidth, Action? onCompleted = null)
@@ -1293,7 +1582,7 @@ public partial class MainWindow : Window
         }
 
         RibbonHistoryButton.IsEnabled = ViewHistoryMenuItem.IsEnabled;
-        if (historyVisible)
+        if (HasHistoryForSelectedGroup())
         {
             RibbonHistoryButton.Foreground = RibbonHistoryActiveBrush;
             return;
@@ -1301,6 +1590,31 @@ public partial class MainWindow : Window
 
         // Let the button style control foreground so it matches peer commands (for example, Edit).
         RibbonHistoryButton.ClearValue(Control.ForegroundProperty);
+    }
+
+    private bool HasHistoryForSelectedGroup()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            return false;
+        }
+
+        return _runHistory.Any(entry => string.Equals(entry.Snapshot.Group, _selectedGroupName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void BottomPaneTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not TabControl || string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            return;
+        }
+
+        var groupKey = NormalizeGroupName(_selectedGroupName);
+        var isHistorySelected = ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem);
+
+        _groupHistoryVisibility[groupKey] = isHistorySelected;
+        ViewHistoryMenuItem.IsChecked = isHistorySelected;
+        UpdateRibbonHistoryButtonState(isHistorySelected);
     }
 
     private void UpdateRibbonRitualsButtonState()
@@ -1338,12 +1652,113 @@ public partial class MainWindow : Window
             .ToList();
 
         HistoryListBox.ItemsSource = items;
+        UpdateHistoryPreview();
         UpdateHistoryActionState();
     }
 
     private void HistoryListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateHistoryPreview();
         UpdateHistoryActionState();
+    }
+
+    private void ToggleHistoryDetailsButton_Click(object sender, RoutedEventArgs e)
+    {
+        _isHistoryDetailsVisible = !_isHistoryDetailsVisible;
+        ApplyHistoryDetailsVisibility();
+    }
+
+    private void ApplyHistoryDetailsVisibility()
+    {
+        if (HistoryDetailsBorder is null || HistoryDetailsRow is null || HistoryDetailsGapRow is null || HistoryListRow is null || ToggleHistoryDetailsButton is null)
+        {
+            return;
+        }
+
+        if (_isHistoryDetailsVisible)
+        {
+            HistoryDetailsBorder.Visibility = Visibility.Visible;
+            HistoryListRow.Height = new GridLength(2, GridUnitType.Star);
+            HistoryDetailsGapRow.Height = new GridLength(6, GridUnitType.Pixel);
+            HistoryDetailsRow.Height = new GridLength(3, GridUnitType.Star);
+            ToggleHistoryDetailsButton.Content = "Hide Details";
+            return;
+        }
+
+        HistoryDetailsBorder.Visibility = Visibility.Collapsed;
+        HistoryListRow.Height = new GridLength(1, GridUnitType.Star);
+        HistoryDetailsGapRow.Height = new GridLength(0, GridUnitType.Pixel);
+        HistoryDetailsRow.Height = new GridLength(0, GridUnitType.Pixel);
+        ToggleHistoryDetailsButton.Content = "Show Details";
+    }
+
+    private void UpdateHistoryPreview()
+    {
+        if (HistoryDetailsTextBox is null)
+        {
+            return;
+        }
+
+        var selectedItems = HistoryListBox.SelectedItems.OfType<HistoryListItem>().ToList();
+        if (selectedItems.Count == 0)
+        {
+            HistoryDetailsTextBox.Text = "Select a history item to view details.";
+            return;
+        }
+
+        var firstEntry = selectedItems[0].Entry;
+        var builder = new StringBuilder();
+
+        if (selectedItems.Count > 1)
+        {
+            builder.AppendLine($"{selectedItems.Count} items selected. Showing details for the first selected item.");
+            builder.AppendLine();
+        }
+
+        var startedLocal = firstEntry.StartedAtUtc.ToLocalTime();
+        builder.AppendLine($"Run: {firstEntry.Snapshot.Name}");
+        builder.AppendLine($"Group: {firstEntry.Snapshot.Group}");
+        builder.AppendLine($"Status: {firstEntry.Outcome}");
+        builder.AppendLine($"Started: {startedLocal:yyyy-MM-dd HH:mm:ss}");
+
+        if (firstEntry.CompletedAtUtc.HasValue)
+        {
+            var completedLocal = firstEntry.CompletedAtUtc.Value.ToLocalTime();
+            builder.AppendLine($"Completed: {completedLocal:yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine($"Duration: {(completedLocal - startedLocal).TotalSeconds:F1}s");
+        }
+
+        if (firstEntry.ExitCode.HasValue)
+        {
+            builder.AppendLine($"Exit code: {firstEntry.ExitCode.Value}");
+        }
+
+        if (firstEntry.IsReplay)
+        {
+            builder.AppendLine($"Replay: yes (from {firstEntry.ReplayFromRunId ?? "unknown"})");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("Task Snapshot");
+        builder.AppendLine($"Description: {firstEntry.Snapshot.Description ?? "(none)"}");
+        builder.AppendLine($"Runner: {firstEntry.Snapshot.Runner}");
+        builder.AppendLine($"Command: {firstEntry.Snapshot.CommandLine}");
+        builder.AppendLine($"Working directory: {firstEntry.Snapshot.WorkingDirectory}");
+        builder.AppendLine($"Wait for exit: {firstEntry.Snapshot.WaitForExit}");
+        builder.AppendLine($"Requires elevation: {firstEntry.Snapshot.RequiresElevation}");
+
+        if (firstEntry.Snapshot.Env.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("Environment");
+            foreach (var env in firstEntry.Snapshot.Env.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                builder.AppendLine($"{env.Key}={env.Value}");
+            }
+        }
+
+        HistoryDetailsTextBox.Text = builder.ToString().TrimEnd();
+        HistoryDetailsTextBox.ScrollToHome();
     }
 
     private void UpdateHistoryActionState()
@@ -1377,12 +1792,26 @@ public partial class MainWindow : Window
 
         try
         {
+            var skippedDisabledCount = 0;
+
             foreach (var entry in selectedEntries)
             {
                 var replayTask = ToTask(entry.Snapshot);
+
+                if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
+                {
+                    skippedDisabledCount++;
+                    continue;
+                }
+
                 SelectGroup(NormalizeGroupName(replayTask.Group));
 
                 await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: entry.Id);
+            }
+
+            if (skippedDisabledCount > 0)
+            {
+                MessageBox.Show($"Skipped {skippedDisabledCount} disabled task replay(s).", "Replay Selected", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
         finally
@@ -1407,14 +1836,12 @@ public partial class MainWindow : Window
             GroupMetaText.Text = "Replay snapshots are available from each task menu.";
             EmptyStateText.Text = "No groups are configured. Add a task to create your first group.";
             EmptyStateText.Visibility = Visibility.Visible;
-            OutputHeaderText.Text = "Task Output";
             return;
         }
 
         GroupTitleText.Text = _selectedGroupName;
         var snapshotCount = _runHistory.Count(entry => string.Equals(entry.Snapshot.Group, _selectedGroupName, StringComparison.OrdinalIgnoreCase));
         GroupMetaText.Text = $"Snapshots in this group: {snapshotCount}";
-        OutputHeaderText.Text = $"Task Output · {_selectedGroupName}";
 
         for (var index = 0; index < _currentConfiguration.Tasks.Count; index++)
         {
@@ -1438,6 +1865,8 @@ public partial class MainWindow : Window
         {
             _selectedTaskIndex = _visibleTaskIndexes[0];
         }
+
+        TaskPanel.AllowDrop = !IsCurrentGroupDataflowLocked();
 
         for (var displayIndex = 0; displayIndex < _visibleTaskIndexes.Count; displayIndex++)
         {
@@ -1514,11 +1943,75 @@ public partial class MainWindow : Window
                 Margin = new Thickness(0)
             };
 
+            var importGlyph = new TextBlock
+            {
+                Text = "I",
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = foregroundBrush,
+                Opacity = 0.9,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0),
+                Visibility = string.IsNullOrWhiteSpace(task.ImportedFromFile) ? Visibility.Collapsed : Visibility.Visible,
+                ToolTip = BuildImportedTaskTooltip(task)
+            };
+
+            var bottomGlyphs = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var disabledText = new TextBlock
+            {
+                Text = "DISABLED",
+                FontFamily = cardFontFamily,
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = foregroundBrush,
+                Opacity = 0.8,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0),
+                Visibility = IsTaskEnabled(task) ? Visibility.Collapsed : Visibility.Visible,
+                ToolTip = "This task is disabled and will not run"
+            };
+            if (disabledText.Visibility == Visibility.Visible)
+            {
+                bottomGlyphs.Children.Add(disabledText);
+            }
+
+            var orderText = new TextBlock
+            {
+                Text = $"#{displayIndex + 1}",
+                FontFamily = cardFontFamily,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = foregroundBrush,
+                Opacity = 0.88,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0),
+                ToolTip = "Task order in current group"
+            };
+            bottomGlyphs.Children.Add(orderText);
+
+            if (importGlyph.Visibility == Visibility.Visible)
+            {
+                importGlyph.Margin = new Thickness(0, 0, task.RequiresElevation ? 8 : 0, 0);
+                bottomGlyphs.Children.Add(importGlyph);
+            }
+
+            if (adminGlyph.Visibility == Visibility.Visible)
+            {
+                bottomGlyphs.Children.Add(adminGlyph);
+            }
+
             var adminBar = new Border
             {
                 Background = Brushes.Transparent,
                 Padding = new Thickness(8, 6, 8, 6),
-                Child = adminGlyph
+                Child = bottomGlyphs
             };
             Grid.SetRow(adminBar, 2);
 
@@ -1556,7 +2049,8 @@ public partial class MainWindow : Window
                 Background = new SolidColorBrush(cardColor),
                 Foreground = foregroundBrush,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                VerticalContentAlignment = VerticalAlignment.Stretch
+                VerticalContentAlignment = VerticalAlignment.Stretch,
+                Opacity = IsTaskEnabled(task) ? 1.0 : 0.66
             };
 
             card.Tag = new TaskCardVisual
@@ -1590,20 +2084,30 @@ public partial class MainWindow : Window
             ApplyTaskCardRunningVisual(task);
 
             var inputPorts = GetInputPortNames(task);
+            StackPanel? leftPorts = null;
             if (inputPorts.Count > 0)
             {
-                var leftPorts = CreatePortStack(inputPorts, isInput: true);
-                card.Children.Add(leftPorts);
+                leftPorts = CreatePortStack(inputPorts, isInput: true);
             }
 
             var outputPorts = GetOutputPortNames(task);
+            StackPanel? rightPorts = null;
             if (outputPorts.Count > 0)
             {
-                var rightPorts = CreatePortStack(outputPorts, isInput: false);
-                card.Children.Add(rightPorts);
+                rightPorts = CreatePortStack(outputPorts, isInput: false);
             }
 
             card.Children.Add(button);
+            if (leftPorts is not null)
+            {
+                card.Children.Add(leftPorts);
+            }
+
+            if (rightPorts is not null)
+            {
+                card.Children.Add(rightPorts);
+            }
+
             card.Children.Add(selectionBorder);
             card.Children.Add(dropCueBorder);
             card.Children.Add(menuButton);
@@ -1613,6 +2117,15 @@ public partial class MainWindow : Window
 
         ScheduleConnectorRefresh();
         ApplyTaskCardSelectionVisuals();
+    }
+
+    private bool IsCurrentGroupDataflowLocked()
+    {
+        return _visibleTaskIndexes.Any(index =>
+        {
+            var task = _currentConfiguration.Tasks[index];
+            return task.InputBindings.Count > 0 || task.Outputs.Count > 0;
+        });
     }
 
     private static List<string> GetInputPortNames(LauncherTask task)
@@ -1671,19 +2184,20 @@ public partial class MainWindow : Window
             IsHitTestVisible = false
         };
 
+        Panel.SetZIndex(stack, 15);
+
         foreach (var portName in portNames)
         {
             var dot = new Ellipse
             {
-                ToolTip = portName
+                ToolTip = portName,
+                Width = 12,
+                Height = 12,
+                StrokeThickness = 1.5,
+                Margin = new Thickness(0, 2, 0, 2),
+                Fill = new SolidColorBrush(isInput ? Color.FromRgb(0x7C, 0xFF, 0x00) : Color.FromRgb(0x00, 0xE5, 0xFF)),
+                Stroke = new SolidColorBrush(Color.FromRgb(0x12, 0x1E, 0x2A))
             };
-
-            dot.SetResourceReference(FrameworkElement.MarginProperty, "PortDotMargin");
-            dot.SetResourceReference(FrameworkElement.WidthProperty, "PortDotSize");
-            dot.SetResourceReference(FrameworkElement.HeightProperty, "PortDotSize");
-            dot.SetResourceReference(Shape.StrokeThicknessProperty, "PortDotStrokeThickness");
-            dot.SetResourceReference(Shape.FillProperty, isInput ? "InputPortDotBrush" : "OutputPortDotBrush");
-            dot.SetResourceReference(Shape.StrokeProperty, "PanelBackgroundBrush");
 
             stack.Children.Add(dot);
         }
@@ -1729,8 +2243,10 @@ public partial class MainWindow : Window
             .GroupBy(item => item.Task.Name.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-        foreach (var target in selectedGroupTasks)
+        for (var targetOrder = 0; targetOrder < selectedGroupTasks.Count; targetOrder++)
         {
+            var target = selectedGroupTasks[targetOrder];
+
             if (!_taskCardsByIndex.TryGetValue(target.Index, out var targetCard))
             {
                 continue;
@@ -1752,21 +2268,77 @@ public partial class MainWindow : Window
                 var binding = bindingEntries[bindingIndex];
                 var targetPoint = GetCardPortPoint(targetCard, isOutput: false, targetInputNames, binding.InputName);
 
-                if (!TryParseBindingTaskOutputReference(binding.Reference, out var sourceTaskName, out var sourceOutputName) ||
-                    !taskByName.TryGetValue(sourceTaskName, out var sourceTaskInfo) ||
-                    !_taskCardsByIndex.TryGetValue(sourceTaskInfo.Index, out var sourceCard))
+                string? sourceTaskName = null;
+                string? sourceOutputName = null;
+                Grid? sourceCard = null;
+                var hasOutput = false;
+                var status = string.Empty;
+
+                if (TryParseBindingTaskOutputReference(binding.Reference, out var explicitSourceTaskName, out var explicitSourceOutputName))
                 {
-                    var fallbackStart = new Point(Math.Max(0, targetPoint.X - 56), targetPoint.Y);
-                    var status = string.IsNullOrWhiteSpace(binding.Reference)
+                    sourceTaskName = explicitSourceTaskName;
+                    sourceOutputName = explicitSourceOutputName;
+
+                    if (taskByName.TryGetValue(sourceTaskName, out var sourceTaskInfo) &&
+                        _taskCardsByIndex.TryGetValue(sourceTaskInfo.Index, out var explicitSourceCard))
+                    {
+                        var sourceOutputNames = GetOutputPortNames(sourceTaskInfo.Task);
+                        hasOutput = sourceOutputNames.Contains(sourceOutputName, StringComparer.OrdinalIgnoreCase);
+                        sourceCard = explicitSourceCard;
+                        status = hasOutput
+                            ? "Binding resolved."
+                            : $"Source task '{sourceTaskName}' does not declare output '{sourceOutputName}'.";
+                    }
+                    else
+                    {
+                        status = "Binding source task could not be matched in this group.";
+                    }
+                }
+                else if (TryParseBindingPortReference(binding.Reference, out var boundPortName))
+                {
+                    sourceOutputName = boundPortName;
+
+                    for (var sourceOrder = targetOrder - 1; sourceOrder >= 0; sourceOrder--)
+                    {
+                        var candidate = selectedGroupTasks[sourceOrder];
+                        var candidateOutputNames = GetOutputPortNames(candidate.Task);
+                        if (!candidateOutputNames.Contains(boundPortName, StringComparer.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if (_taskCardsByIndex.TryGetValue(candidate.Index, out var candidateCard))
+                        {
+                            sourceTaskName = candidate.Task.Name;
+                            sourceCard = candidateCard;
+                            hasOutput = true;
+                            status = $"Port binding resolved from nearest upstream output '{boundPortName}'.";
+                            break;
+                        }
+                    }
+
+                    if (!hasOutput)
+                    {
+                        status = $"No upstream task output found for port '{boundPortName}'.";
+                    }
+                }
+                else
+                {
+                    status = string.IsNullOrWhiteSpace(binding.Reference)
                         ? "Binding reference is empty."
                         : "Binding could not be matched to a task output in this group.";
+                }
+
+                if (sourceCard is null || string.IsNullOrWhiteSpace(sourceOutputName))
+                {
+                    var fallbackStart = new Point(Math.Max(0, targetPoint.X - 56), targetPoint.Y);
 
                     AddConnector(
                         fallbackStart,
                         targetPoint,
                         resolved: false,
-                        sourceTaskName: null,
-                        sourceOutputName: null,
+                        sourceTaskName: sourceTaskName,
+                        sourceOutputName: sourceOutputName,
                         targetTaskName: target.Task.Name,
                         targetInputName: binding.InputName,
                         bindingReference: binding.Reference,
@@ -1774,13 +2346,10 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                var sourceOutputNames = GetOutputPortNames(sourceTaskInfo.Task);
-                var hasOutput = sourceOutputNames.Contains(sourceOutputName, StringComparer.OrdinalIgnoreCase);
-                var sourcePoint = GetCardPortPoint(sourceCard, isOutput: true, sourceOutputNames, sourceOutputName);
-
-                var detail = hasOutput
-                    ? "Binding resolved."
-                    : $"Source task '{sourceTaskName}' does not declare output '{sourceOutputName}'.";
+                var sourcePortsForAnchor = GetOutputPortNames(selectedGroupTasks
+                    .First(item => _taskCardsByIndex.ContainsKey(item.Index) && ReferenceEquals(_taskCardsByIndex[item.Index], sourceCard))
+                    .Task);
+                var sourcePoint = GetCardPortPoint(sourceCard, isOutput: true, sourcePortsForAnchor, sourceOutputName);
 
                 AddConnector(
                     sourcePoint,
@@ -1791,9 +2360,21 @@ public partial class MainWindow : Window
                     target.Task.Name,
                     binding.InputName,
                     binding.Reference,
-                    detail);
+                    status);
             }
         }
+    }
+
+    private static bool TryParseBindingPortReference(string reference, out string portName)
+    {
+        portName = string.Empty;
+        if (string.IsNullOrWhiteSpace(reference) || !reference.StartsWith("port:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        portName = reference[5..].Trim();
+        return !string.IsNullOrWhiteSpace(portName);
     }
 
     private static bool TryParseBindingTaskOutputReference(string reference, out string taskName, out string outputName)
@@ -1825,6 +2406,34 @@ public partial class MainWindow : Window
 
     private Point GetCardPortPoint(Grid card, bool isOutput, IReadOnlyList<string> portNames, string portName)
     {
+        var portStack = FindPortStack(card, isOutput);
+        if (portStack is not null)
+        {
+            var dotPortIndex = -1;
+            for (var i = 0; i < portNames.Count; i++)
+            {
+                if (string.Equals(portNames[i], portName, StringComparison.OrdinalIgnoreCase))
+                {
+                    dotPortIndex = i;
+                    break;
+                }
+            }
+
+            if (dotPortIndex < 0)
+            {
+                dotPortIndex = 0;
+            }
+
+            if (dotPortIndex >= 0 && dotPortIndex < portStack.Children.Count && portStack.Children[dotPortIndex] is Ellipse dot)
+            {
+                var center = dot.TranslatePoint(new Point(dot.ActualWidth / 2, dot.ActualHeight / 2), TaskConnectorOverlay);
+                if (!double.IsNaN(center.X) && !double.IsNaN(center.Y) && !double.IsInfinity(center.X) && !double.IsInfinity(center.Y))
+                {
+                    return center;
+                }
+            }
+        }
+
         var cardOrigin = card.TranslatePoint(new Point(0, 0), TaskConnectorOverlay);
         var x = isOutput ? cardOrigin.X + card.ActualWidth : cardOrigin.X;
 
@@ -1853,6 +2462,33 @@ public partial class MainWindow : Window
         return new Point(x, y);
     }
 
+    private static StackPanel? FindPortStack(Grid card, bool isOutput)
+    {
+        var alignment = isOutput ? HorizontalAlignment.Right : HorizontalAlignment.Left;
+
+        foreach (var child in card.Children)
+        {
+            if (child is not StackPanel stack)
+            {
+                continue;
+            }
+
+            if (stack.Orientation != Orientation.Vertical)
+            {
+                continue;
+            }
+
+            if (stack.HorizontalAlignment != alignment)
+            {
+                continue;
+            }
+
+            return stack;
+        }
+
+        return null;
+    }
+
     private void AddConnector(
         Point start,
         Point end,
@@ -1878,15 +2514,15 @@ public partial class MainWindow : Window
         {
             Data = new PathGeometry([figure]),
             Stroke = stroke,
-            StrokeThickness = resolved ? 2.2 : 2,
-            Opacity = 0.9,
+            StrokeThickness = resolved ? 4.4 : 4,
+            Opacity = 0.98,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round
         };
 
         if (!resolved)
         {
-            path.StrokeDashArray = [4, 4];
+            path.StrokeDashArray = [6, 4];
         }
 
         var connector = new ConnectorVisual
@@ -1979,8 +2615,8 @@ public partial class MainWindow : Window
         foreach (var connector in _connectorVisuals)
         {
             connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
-            connector.Path.StrokeThickness = connector.Resolved ? 2.2 : 2;
-            connector.Path.Opacity = 0.9;
+            connector.Path.StrokeThickness = connector.Resolved ? 4.4 : 4;
+            connector.Path.Opacity = 0.98;
         }
     }
 
@@ -1996,7 +2632,7 @@ public partial class MainWindow : Window
             if (ReferenceEquals(connector, focal))
             {
                 connector.Path.Stroke = focusedStroke;
-                connector.Path.StrokeThickness = 3.6;
+                connector.Path.StrokeThickness = 6.2;
                 connector.Path.Opacity = 1;
                 continue;
             }
@@ -2004,14 +2640,14 @@ public partial class MainWindow : Window
             if (related.Contains(connector))
             {
                 connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
-                connector.Path.StrokeThickness = connector.Resolved ? 2.8 : 2.6;
+                connector.Path.StrokeThickness = connector.Resolved ? 5 : 4.7;
                 connector.Path.Opacity = 1;
                 continue;
             }
 
             connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
-            connector.Path.StrokeThickness = connector.Resolved ? 1.8 : 1.7;
-            connector.Path.Opacity = 0.22;
+            connector.Path.StrokeThickness = connector.Resolved ? 3.2 : 3;
+            connector.Path.Opacity = 0.38;
         }
     }
 
@@ -2350,15 +2986,31 @@ public partial class MainWindow : Window
         EditTask(taskIndex);
     }
 
+    private void RibbonToggleTaskEnabledButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
+        {
+            MessageBox.Show("No tasks are available in the current group.", "Enable/Disable Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        ToggleTaskEnabled(taskIndex);
+    }
+
     private async void RibbonRunChainButton_Click(object sender, RoutedEventArgs e)
     {
         if (_visibleTaskIndexes.Count == 0)
         {
-            MessageBox.Show("No tasks are available in the current group.", "Run Chain", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        await RunTaskChainFromTaskAsync(_visibleTaskIndexes[0]);
+        var firstEnabledTaskIndex = _visibleTaskIndexes.FirstOrDefault(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
+        if (!_visibleTaskIndexes.Contains(firstEnabledTaskIndex))
+        {
+            return;
+        }
+
+        await RunTaskChainFromTaskAsync(firstEnabledTaskIndex);
     }
 
     private void RibbonPreviousGroupButton_Click(object sender, RoutedEventArgs e)
@@ -2541,57 +3193,312 @@ public partial class MainWindow : Window
         menu.IsOpen = true;
     }
 
+    private void AppendValidationEvent(string action, string path, bool succeeded, string details, RichTextBox? outputTextBox = null)
+    {
+        if (outputTextBox is not null)
+        {
+            AppendLog(outputTextBox, $"[Validation] {action} {(succeeded ? "passed" : "failed")}: {path}");
+            if (!string.IsNullOrWhiteSpace(details))
+            {
+                AppendLog(outputTextBox, $"[Validation] {details}");
+            }
+
+            return;
+        }
+
+        var tabContext = CreateOutputTab("JSON Validation");
+        var validationOutput = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+        AppendLog(validationOutput, $"[Validation] {action} {(succeeded ? "passed" : "failed")}: {path}");
+        if (!string.IsNullOrWhiteSpace(details))
+        {
+            AppendLog(validationOutput, $"[Validation] {details}");
+        }
+
+        SetTabStopped(tabContext, succeeded);
+    }
+
+    private TaskConfiguration LoadConfigurationWithValidation(string path, string action, RichTextBox? outputTextBox = null)
+    {
+        try
+        {
+            var config = TaskConfiguration.Load(path);
+            AppendValidationEvent(action, path, true, $"Loaded {config.Tasks.Count} task(s) and {config.Rituals.Count} ritual(s).", outputTextBox);
+            return config;
+        }
+        catch (Exception ex)
+        {
+            AppendValidationEvent(action, path, false, ex.Message, outputTextBox);
+            throw;
+        }
+    }
+
+    private TaskConfiguration SaveAndValidateConfiguration(string path, TaskConfiguration config, string action, RichTextBox? outputTextBox = null)
+    {
+        try
+        {
+            TaskConfiguration.Save(path, config);
+            var validatedConfig = TaskConfiguration.Load(path);
+            AppendValidationEvent(action, path, true, $"Validated {validatedConfig.Tasks.Count} task(s) and {validatedConfig.Rituals.Count} ritual(s).", outputTextBox);
+            return validatedConfig;
+        }
+        catch (Exception ex)
+        {
+            AppendValidationEvent(action, path, false, ex.Message, outputTextBox);
+            throw;
+        }
+    }
+
     private void RibbonShareButton_Click(object sender, RoutedEventArgs e)
     {
-        MessageBox.Show("Share is a placeholder for a future release.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
+        if (sender is Button button)
+        {
+            OpenShareMenu(button);
+            return;
+        }
+
+        ExportCurrentTaskToClipboard();
+    }
+
+    private void OpenShareMenu(Button anchorButton)
+    {
+        var menu = CreateRibbonContextMenu();
+
+        var shareTaskItem = new MenuItem
+        {
+            Header = "Share Task",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = TryGetSelectedVisibleTaskIndex(out _)
+        };
+        shareTaskItem.Click += (_, _) => ExportCurrentTaskToClipboard();
+        menu.Items.Add(shareTaskItem);
+
+        var shareGroupItem = new MenuItem
+        {
+            Header = "Share Group",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName) && _visibleTaskIndexes.Count > 0
+        };
+        shareGroupItem.Click += (_, _) => ExportCurrentGroupToClipboard();
+        menu.Items.Add(shareGroupItem);
+
+        OpenRibbonContextMenu(anchorButton, menu);
+    }
+
+    private void ExportCurrentTaskToClipboard()
+    {
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex) || !TryGetTask(taskIndex, out var task))
+        {
+            MessageBox.Show("No task is selected to share.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var payload = new TaskConfiguration
+        {
+            Tasks = [task],
+            Rituals = []
+        };
+
+        ExportConfigurationToClipboardAndOutput("Share Task", payload, $"task '{task.Name}'");
+    }
+
+    private void ExportCurrentGroupToClipboard()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedGroupName) || _visibleTaskIndexes.Count == 0)
+        {
+            MessageBox.Show("No group is selected to share.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var tasks = _visibleTaskIndexes
+            .Select(index => _currentConfiguration.Tasks[index])
+            .ToList();
+
+        var payload = new TaskConfiguration
+        {
+            Tasks = tasks,
+            Rituals = []
+        };
+
+        ExportConfigurationToClipboardAndOutput("Share Group", payload, $"group '{_selectedGroupName}' ({tasks.Count} task(s))");
+    }
+
+    private void ExportConfigurationToClipboardAndOutput(string tabName, TaskConfiguration payload, string summary)
+    {
+        var tabContext = CreateOutputTab(tabName);
+        var outputTextBox = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+
+        try
+        {
+            var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-share-{Guid.NewGuid():N}.json");
+            SaveAndValidateConfiguration(tempPath, payload, "Write shared tasks.json", outputTextBox);
+            var json = File.ReadAllText(tempPath);
+            File.Delete(tempPath);
+
+            Clipboard.SetText(json);
+
+            AppendLog(outputTextBox, $"[Share] Exported {summary} to clipboard.");
+            AppendLog(outputTextBox, "[Share] Paste the JSON into email, chat, docs, or any note-taking tool.");
+            AppendLog(outputTextBox, "[Share] Exported JSON:");
+            AppendLog(outputTextBox, json);
+            SetTabStopped(tabContext, true);
+        }
+        catch (Exception ex)
+        {
+            AppendLog(outputTextBox, $"[Share] Export failed: {ex.Message}");
+            SetTabStopped(tabContext, false);
+            MessageBox.Show($"Failed to export share payload to clipboard.\n{ex.Message}", "Share", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void RibbonImportButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button button)
+        {
+            OpenImportMenu(button);
+            return;
+        }
+
+        ImportFromFile();
+    }
+
+    private void OpenImportMenu(Button anchorButton)
+    {
+        var menu = CreateRibbonContextMenu();
+
+        var importFromFileItem = new MenuItem
+        {
+            Header = "Import from File",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        importFromFileItem.Click += (_, _) => ImportFromFile();
+        menu.Items.Add(importFromFileItem);
+
+        var importFromClipboardItem = new MenuItem
+        {
+            Header = "Import from Clipboard",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        importFromClipboardItem.Click += (_, _) => ImportFromClipboard();
+        menu.Items.Add(importFromClipboardItem);
+
+        OpenRibbonContextMenu(anchorButton, menu);
+    }
+
+    private void ImportFromFile()
     {
         var tabContext = CreateOutputTab("Import");
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
 
+        var openFileDialog = new OpenFileDialog
+        {
+            Title = "Import Tasks Configuration",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            CheckFileExists = true,
+            CheckPathExists = true,
+            Multiselect = false
+        };
+
+        if (openFileDialog.ShowDialog(this) != true)
+        {
+            AppendLog(outputTextBox, "[Import] Import canceled.");
+            SetTabStopped(tabContext, true);
+            return;
+        }
+
+        var importPath = openFileDialog.FileName;
+        AppendLog(outputTextBox, $"[Import] Selected file: {importPath}");
+
+        try
+        {
+            var importedConfig = LoadConfigurationWithValidation(importPath, "Read import file tasks.json", outputTextBox);
+            AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) and {importedConfig.Rituals.Count} ritual(s) from file.");
+            ImportConfiguration(importedConfig, outputTextBox, tabContext, importPath);
+        }
+        catch (Exception ex)
+        {
+            AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
+            SetTabStopped(tabContext, false);
+        }
+    }
+
+    private void ImportFromClipboard()
+    {
+        var tabContext = CreateOutputTab("Import (Clipboard)");
+        var outputTextBox = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+
+        try
+        {
+            if (!Clipboard.ContainsText())
+            {
+                AppendLog(outputTextBox, "[Import] Clipboard does not contain text.");
+                SetTabStopped(tabContext, false);
+                return;
+            }
+
+            var clipboardText = Clipboard.GetText();
+            if (string.IsNullOrWhiteSpace(clipboardText))
+            {
+                AppendLog(outputTextBox, "[Import] Clipboard text is empty.");
+                SetTabStopped(tabContext, false);
+                return;
+            }
+
+            var tempInputPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-import-clipboard-input-{Guid.NewGuid():N}.json");
+            File.WriteAllText(tempInputPath, clipboardText);
+
+            try
+            {
+                var importedConfig = LoadConfigurationWithValidation(tempInputPath, "Read clipboard tasks.json", outputTextBox);
+                AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) and {importedConfig.Rituals.Count} ritual(s) from clipboard.");
+                ImportConfiguration(importedConfig, outputTextBox, tabContext, "clipboard");
+            }
+            finally
+            {
+                if (File.Exists(tempInputPath))
+                {
+                    File.Delete(tempInputPath);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
+            SetTabStopped(tabContext, false);
+        }
+    }
+
+    private void ImportConfiguration(TaskConfiguration importedConfig, RichTextBox outputTextBox, TaskTabContext tabContext, string importSourceLabel)
+    {
         string? tempPath = null;
 
         try
         {
-            var openFileDialog = new OpenFileDialog
+            var importedAtUtc = DateTime.UtcNow.ToString("O");
+            foreach (var importedTask in importedConfig.Tasks)
             {
-                Title = "Import Tasks Configuration",
-                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
-                CheckFileExists = true,
-                CheckPathExists = true,
-                Multiselect = false
-            };
-
-            if (openFileDialog.ShowDialog(this) != true)
-            {
-                AppendLog(outputTextBox, "[Import] Import canceled.");
-                SetTabStopped(tabContext, true);
-                return;
+                importedTask.ImportedFromFile = importSourceLabel;
+                importedTask.ImportedAtUtc = importedAtUtc;
             }
 
-            var importPath = openFileDialog.FileName;
-            AppendLog(outputTextBox, $"[Import] Selected file: {importPath}");
-
-            // Validate the imported file can be parsed as configuration JSON.
-            var importedConfig = TaskConfiguration.Load(importPath);
-            AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) and {importedConfig.Rituals.Count} ritual(s) from import file.");
-
             // User profile takes precedence over imported tasks for same group+task identity.
-            var mergedConfig = TaskConfiguration.LoadMerged(importPath, _userProfileConfigPath);
+            var userProfileConfig = LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json for merge", outputTextBox);
+            var mergedConfig = TaskConfiguration.MergeWithOverlay(importedConfig, userProfileConfig);
 
             tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-import-{Guid.NewGuid():N}.json");
-            TaskConfiguration.Save(tempPath, mergedConfig);
+            SaveAndValidateConfiguration(tempPath, mergedConfig, "Write merged import tasks.json", outputTextBox);
 
             // Validate merged content before replacing user profile configuration.
-            var validatedMergedConfig = TaskConfiguration.Load(tempPath);
+            var validatedMergedConfig = LoadConfigurationWithValidation(tempPath, "Re-read merged import tasks.json", outputTextBox);
 
             File.Copy(tempPath, _userProfileConfigPath, overwrite: true);
+            var validatedWrittenProfile = LoadConfigurationWithValidation(_userProfileConfigPath, "Validate imported user profile tasks.json", outputTextBox);
 
             AppendLog(outputTextBox, $"[Import] Merged configuration validated and written to user profile: {_userProfileConfigPath}");
-            AppendLog(outputTextBox, $"[Import] Final merged result: {validatedMergedConfig.Tasks.Count} task(s), {validatedMergedConfig.Rituals.Count} ritual(s).");
+            AppendLog(outputTextBox, $"[Import] Final merged result: {validatedWrittenProfile.Tasks.Count} task(s), {validatedWrittenProfile.Rituals.Count} ritual(s).");
 
             LoadTaskButtons();
             AppendLog(outputTextBox, "[Import] UI reloaded.");
@@ -2620,6 +3527,12 @@ public partial class MainWindow : Window
 
     private void TaskCard_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
+        if (IsCurrentGroupDataflowLocked())
+        {
+            _isDraggingTaskCard = false;
+            return;
+        }
+
         if (sender is not Button { Tag: LauncherTask })
         {
             return;
@@ -2636,6 +3549,12 @@ public partial class MainWindow : Window
 
     private void TaskCard_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (IsCurrentGroupDataflowLocked())
+        {
+            _isDraggingTaskCard = false;
+            return;
+        }
+
         if (!_isDraggingTaskCard || e.LeftButton != MouseButtonState.Pressed)
         {
             return;
@@ -2669,6 +3588,14 @@ public partial class MainWindow : Window
 
     private void TaskPanel_DragOver(object sender, DragEventArgs e)
     {
+        if (IsCurrentGroupDataflowLocked())
+        {
+            e.Effects = DragDropEffects.None;
+            ClearDropCue();
+            e.Handled = true;
+            return;
+        }
+
         if (!e.Data.GetDataPresent(typeof(int)))
         {
             e.Effects = DragDropEffects.None;
@@ -2691,6 +3618,12 @@ public partial class MainWindow : Window
 
     private void TaskPanel_Drop(object sender, DragEventArgs e)
     {
+        if (IsCurrentGroupDataflowLocked())
+        {
+            ClearDropCue();
+            return;
+        }
+
         ClearDropCue();
 
         if (!e.Data.GetDataPresent(typeof(int)))
@@ -2749,10 +3682,25 @@ public partial class MainWindow : Window
             var displayIndex = cardVisual.DisplayIndex;
 
             var topLeft = card.TransformToAncestor(TaskPanel).Transform(new Point(0, 0));
-            var cardCenterX = topLeft.X + card.ActualWidth / 2;
-            var cardCenterY = topLeft.Y + card.ActualHeight / 2;
+            var cardRight = topLeft.X + card.ActualWidth;
+            var cardBottom = topLeft.Y + card.ActualHeight;
+            var cardCenterX = topLeft.X + (card.ActualWidth / 2);
 
-            if (dropPoint.Y < cardCenterY || (Math.Abs(dropPoint.Y - cardCenterY) < card.ActualHeight * 0.45 && dropPoint.X < cardCenterX))
+            var isInsideCardBounds = dropPoint.X >= topLeft.X
+                && dropPoint.X <= cardRight
+                && dropPoint.Y >= topLeft.Y
+                && dropPoint.Y <= cardBottom;
+
+            if (isInsideCardBounds)
+            {
+                // In-card hit testing makes two-item swaps reliable: left half inserts before,
+                // right half inserts after the hovered card.
+                return dropPoint.X < cardCenterX
+                    ? displayIndex
+                    : displayIndex + 1;
+            }
+
+            if (dropPoint.Y < topLeft.Y)
             {
                 return displayIndex;
             }
@@ -2886,6 +3834,30 @@ public partial class MainWindow : Window
             var isSelected = _selectedTaskIndex.HasValue && visual.TaskIndex == _selectedTaskIndex.Value;
             visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(2) : new Thickness(0);
         }
+
+        UpdateRibbonTaskActionState();
+    }
+
+    private void UpdateRibbonTaskActionState()
+    {
+        if (RibbonToggleTaskEnabledButton is null || RibbonToggleTaskEnabledLabel is null || RibbonRunChainButton is null)
+        {
+            return;
+        }
+
+        var hasVisibleTasks = _visibleTaskIndexes.Count > 0;
+        var hasEnabledTasksInGroup = _visibleTaskIndexes.Any(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
+
+        RibbonRunChainButton.IsEnabled = hasEnabledTasksInGroup;
+        RibbonToggleTaskEnabledButton.IsEnabled = hasVisibleTasks;
+
+        if (!hasVisibleTasks || !TryGetSelectedVisibleTaskIndex(out var taskIndex) || !TryGetTask(taskIndex, out var task))
+        {
+            RibbonToggleTaskEnabledLabel.Text = "Enable";
+            return;
+        }
+
+        RibbonToggleTaskEnabledLabel.Text = IsTaskEnabled(task) ? "Disable" : "Enable";
     }
 
     private void TaskMenuButton_Click(object sender, RoutedEventArgs e)
@@ -2914,6 +3886,12 @@ public partial class MainWindow : Window
         var editItem = new MenuItem { Header = "Edit" };
         editItem.Click += (_, _) => EditTask(taskIndex);
 
+        var toggleItem = new MenuItem
+        {
+            Header = IsTaskEnabled(_currentConfiguration.Tasks[taskIndex]) ? "Disable" : "Enable"
+        };
+        toggleItem.Click += (_, _) => ToggleTaskEnabled(taskIndex);
+
         var replayEntry = GetLastSnapshotEntry(_currentConfiguration.Tasks[taskIndex]);
         var replayItem = new MenuItem
         {
@@ -2928,12 +3906,19 @@ public partial class MainWindow : Window
             }
 
             var replayTask = ToTask(replayEntry.Snapshot);
+            if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
+            {
+                MessageBox.Show($"Task '{replayTask.Name}' is disabled and cannot be replayed.", "Replay Snapshot", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
             SelectGroup(NormalizeGroupName(replayTask.Group));
 
             await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: replayEntry.Id);
         };
 
         var runChainItem = new MenuItem { Header = "Run Chain (Same Group)" };
+        runChainItem.IsEnabled = _visibleTaskIndexes.Any(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
         runChainItem.Click += async (_, _) =>
         {
             if (!IsValidTaskIndex(taskIndex))
@@ -2949,6 +3934,7 @@ public partial class MainWindow : Window
         deleteItem.Click += (_, _) => DeleteTask(taskIndex);
 
         menu.Items.Add(editItem);
+        menu.Items.Add(toggleItem);
         menu.Items.Add(replayItem);
         menu.Items.Add(runChainItem);
         menu.Items.Add(deleteItem);
@@ -3016,6 +4002,35 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private void ToggleTaskEnabled(int taskIndex)
+    {
+        if (!TryGetTask(taskIndex, out var task))
+        {
+            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        task.IsEnabled = !task.IsEnabled;
+        SaveTasksAndRefresh("Enable/Disable Task");
+    }
+
+    private static bool IsTaskEnabled(LauncherTask task)
+    {
+        return task.IsEnabled;
+    }
+
+    private bool IsTaskDisabledByIdentity(string? groupName, string? taskName)
+    {
+        var normalizedGroup = NormalizeGroupName(groupName);
+        var normalizedName = TaskIdentity.NormalizeTaskName(taskName);
+
+        var match = _currentConfiguration.Tasks.FirstOrDefault(task =>
+            string.Equals(NormalizeGroupName(task.Group), normalizedGroup, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(TaskIdentity.NormalizeTaskName(task.Name), normalizedName, StringComparison.OrdinalIgnoreCase));
+
+        return match is not null && !IsTaskEnabled(match);
+    }
+
     private void SaveTasksAndRefresh(string errorTitle)
     {
         if (!TryPersistConfiguration(errorTitle, "Failed to save tasks.json."))
@@ -3028,7 +4043,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            TaskConfiguration.Save(_userProfileConfigPath, _currentConfiguration);
+            SaveAndValidateConfiguration(_userProfileConfigPath, _currentConfiguration, "Write user profile tasks.json");
             LoadTaskButtons();
             return true;
         }
@@ -3044,6 +4059,25 @@ public partial class MainWindow : Window
         return new SolidColorBrush(Color.FromRgb(0x12, 0x1E, 0x2A));
     }
 
+    private static string BuildImportedTaskTooltip(LauncherTask task)
+    {
+        if (string.IsNullOrWhiteSpace(task.ImportedFromFile))
+        {
+            return "Imported task";
+        }
+
+        var importDateDisplay = task.ImportedAtUtc;
+        if (!string.IsNullOrWhiteSpace(task.ImportedAtUtc)
+            && DateTimeOffset.TryParse(task.ImportedAtUtc, out var importedAt))
+        {
+            importDateDisplay = importedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+        }
+
+        return string.IsNullOrWhiteSpace(importDateDisplay)
+            ? $"Imported from: {task.ImportedFromFile}"
+            : $"Imported from: {task.ImportedFromFile}{Environment.NewLine}Imported at: {importDateDisplay}";
+    }
+
     private async void TaskButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: LauncherTask task } button)
@@ -3055,6 +4089,12 @@ public partial class MainWindow : Window
         {
             _selectedTaskIndex = visual.TaskIndex;
             ApplyTaskCardSelectionVisuals();
+        }
+
+        if (!IsTaskEnabled(task))
+        {
+            MessageBox.Show($"Task '{task.Name}' is disabled.", "Task Disabled", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
         }
 
         await ExecuteTaskAsync(task, button, isReplay: false);
@@ -3089,6 +4129,12 @@ public partial class MainWindow : Window
         {
             var taskInfo = sameGroupTasks[startPosition + offset];
             var chainLabel = $"{offset + 1}/{chainLength}";
+
+            if (!IsTaskEnabled(taskInfo.Task))
+            {
+                continue;
+            }
+
             var result = await ExecuteTaskAsync(taskInfo.Task, null, isReplay: false, dataflowContext: context, chainStepLabel: chainLabel);
 
             if (!result.Succeeded)
@@ -3118,7 +4164,10 @@ public partial class MainWindow : Window
         SetTaskRunState(task, TaskRunState.Running);
         var resolved = DataflowPortResolver.Resolve(task, dataflowContext);
         var effectiveTask = resolved.ResolvedTask;
+        var publishedOutputs = new Dictionary<string, string>(resolved.ResolvedOutputs, StringComparer.OrdinalIgnoreCase);
         var historyEntry = StartHistoryEntry(effectiveTask, isReplay, replayFromEntryId);
+        var capturedStandardOutput = string.Empty;
+        var capturedStandardError = string.Empty;
 
         if (!string.IsNullOrWhiteSpace(chainStepLabel))
         {
@@ -3192,22 +4241,23 @@ public partial class MainWindow : Window
 
             if (!waitForExit)
             {
+                publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, exitCode: null);
                 AppendLog(outputTextBox, $"[{task.Name}] Process started (PID {process.Id}). Not waiting for exit.");
                 SetTabStopped(tabContext, true);
                 SetTaskRunState(task, TaskRunState.Succeeded);
                 CompleteHistoryEntry(historyEntry, true, null);
 
-                if (resolved.ResolvedOutputs.Count > 0)
+                if (publishedOutputs.Count > 0)
                 {
-                    AppendPublishedOutputs(outputTextBox, task.Name, resolved.ResolvedOutputs);
-                    dataflowContext?.RegisterTaskOutputs(task.Name, resolved.ResolvedOutputs);
+                    AppendPublishedOutputs(outputTextBox, task.Name, publishedOutputs);
+                    dataflowContext?.RegisterTaskOutputs(task.Name, publishedOutputs);
                 }
 
                 return new TaskExecutionResult
                 {
                     Succeeded = true,
                     ExitCode = null,
-                    PublishedOutputs = new Dictionary<string, string>(resolved.ResolvedOutputs, StringComparer.OrdinalIgnoreCase)
+                    PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
                 };
             }
 
@@ -3218,10 +4268,10 @@ public partial class MainWindow : Window
 
                 await process.WaitForExitAsync();
 
-                var standardOutput = await standardOutputTask;
-                var standardError = await standardErrorTask;
+                capturedStandardOutput = await standardOutputTask;
+                capturedStandardError = await standardErrorTask;
 
-                AppendProcessOutput(outputTextBox, task.Name, process.ExitCode, standardOutput, standardError);
+                AppendProcessOutput(outputTextBox, task.Name, process.ExitCode, capturedStandardOutput, capturedStandardError);
             }
             else
             {
@@ -3241,17 +4291,19 @@ public partial class MainWindow : Window
             SetTaskRunState(task, process.ExitCode == 0 ? TaskRunState.Succeeded : TaskRunState.Failed);
             CompleteHistoryEntry(historyEntry, process.ExitCode == 0, process.ExitCode);
 
-            if (process.ExitCode == 0 && resolved.ResolvedOutputs.Count > 0)
+            publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, process.ExitCode);
+
+            if (process.ExitCode == 0 && publishedOutputs.Count > 0)
             {
-                AppendPublishedOutputs(outputTextBox, task.Name, resolved.ResolvedOutputs);
-                dataflowContext?.RegisterTaskOutputs(task.Name, resolved.ResolvedOutputs);
+                AppendPublishedOutputs(outputTextBox, task.Name, publishedOutputs);
+                dataflowContext?.RegisterTaskOutputs(task.Name, publishedOutputs);
             }
 
             return new TaskExecutionResult
             {
                 Succeeded = process.ExitCode == 0,
                 ExitCode = process.ExitCode,
-                PublishedOutputs = new Dictionary<string, string>(resolved.ResolvedOutputs, StringComparer.OrdinalIgnoreCase)
+                PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
             };
         }
         catch (Win32Exception ex) when (launchAsAdministrator && ex.NativeErrorCode == 1223)
@@ -3281,6 +4333,35 @@ public partial class MainWindow : Window
                 sourceButton.IsEnabled = true;
             }
         }
+    }
+
+    private static Dictionary<string, string> ResolveRuntimeOutputValues(
+        IReadOnlyDictionary<string, string> outputValues,
+        string standardOutput,
+        string standardError,
+        int? exitCode)
+    {
+        var resolved = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in outputValues)
+        {
+            var value = pair.Value ?? string.Empty;
+            value = Regex.Replace(value, @"\$\{([^{}]+)\}", match =>
+            {
+                var token = match.Groups[1].Value.Trim();
+                return token.ToLowerInvariant() switch
+                {
+                    "stdout" or "command:stdout" or "runtime:stdout" => standardOutput ?? string.Empty,
+                    "stderr" or "command:stderr" or "runtime:stderr" => standardError ?? string.Empty,
+                    "exitcode" or "command:exitcode" or "runtime:exitcode" => exitCode?.ToString() ?? string.Empty,
+                    _ => match.Value
+                };
+            });
+
+            resolved[pair.Key] = value;
+        }
+
+        return resolved;
     }
 
     private TaskRunHistoryEntry StartHistoryEntry(LauncherTask task, bool isReplay, string? replayFromEntryId)
@@ -3390,31 +4471,39 @@ public partial class MainWindow : Window
 
     private TaskTabContext CreateOutputTab(string taskName)
     {
-        var currentOutputTabControl = GetOrCreateSelectedGroupOutputTabControl();
-        var tabHeader = new DockPanel();
+        var currentOutputPanel = GetOrCreateSelectedGroupOutputPanel();
+        var runTitle = $"{taskName} {DateTime.Now:HH:mm:ss}";
+        var accentColor = GetTaskRunAccentColor(taskName);
+        var accentBrush = CreateRunGradientBrush(accentColor, runTitle);
+        var titleBrush = GetReadableTextBrush(accentColor);
 
         var titleText = new TextBlock
         {
-            Text = $"{taskName} {DateTime.Now:HH:mm:ss}",
+            Text = runTitle,
             Margin = new Thickness(0, 0, 8, 0),
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            TextAlignment = TextAlignment.Left,
+            TextTrimming = TextTrimming.CharacterEllipsis
         };
-        titleText.SetResourceReference(TextBlock.ForegroundProperty, "PrimaryTextBrush");
-        DockPanel.SetDock(titleText, Dock.Left);
+        titleText.SetValue(TextElement.ForegroundProperty, titleBrush);
 
         var statusText = new TextBlock
         {
             Margin = new Thickness(0, 0, 8, 0),
             VerticalAlignment = VerticalAlignment.Center,
             FontSize = 13,
-            Text = string.Empty
+            FontWeight = FontWeights.Bold,
+            Text = string.Empty,
+            MinWidth = 18,
+            TextAlignment = TextAlignment.Center
         };
-        statusText.SetResourceReference(TextBlock.ForegroundProperty, "SecondaryTextBrush");
-        DockPanel.SetDock(statusText, Dock.Right);
+        statusText.SetValue(TextElement.ForegroundProperty, titleBrush);
 
         var closeButton = new Button
         {
-            Content = "x",
+            Content = "✕",
             FontWeight = FontWeights.Bold,
             Width = 18,
             Height = 18,
@@ -3423,21 +4512,55 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Background = Brushes.Transparent,
             BorderBrush = Brushes.Transparent,
-            ToolTip = "Close tab"
+            Cursor = Cursors.Hand,
+            ToolTip = "Close output item"
         };
-        closeButton.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
-        DockPanel.SetDock(closeButton, Dock.Right);
+        closeButton.SetValue(TextElement.ForegroundProperty, titleBrush);
 
-        tabHeader.Children.Add(titleText);
-        tabHeader.Children.Add(statusText);
-        tabHeader.Children.Add(closeButton);
+        var runHeader = new Grid
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        runHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        runHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        runHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        runHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var spacer = new Border { Background = Brushes.Transparent };
+
+        Grid.SetColumn(titleText, 0);
+        Grid.SetColumn(spacer, 1);
+        Grid.SetColumn(statusText, 2);
+        Grid.SetColumn(closeButton, 3);
+
+        runHeader.Children.Add(titleText);
+        runHeader.Children.Add(spacer);
+        runHeader.Children.Add(statusText);
+        runHeader.Children.Add(closeButton);
 
         var outputTextBox = CreateLogTextBox();
 
-        var tabItem = new TabItem
+        var runItemExpander = new Expander
         {
-            Header = tabHeader,
-            Content = outputTextBox
+            Header = runHeader,
+            Content = outputTextBox,
+            IsExpanded = false,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0)
+        };
+
+        var runItemContainer = new Border
+        {
+            Background = accentBrush,
+            BorderBrush = new SolidColorBrush(accentColor),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(0),
+            Margin = new Thickness(0, 0, 0, 6),
+            Child = runItemExpander,
+            Opacity = 0.9
         };
 
         var spinnerTimer = new DispatcherTimer
@@ -3447,14 +4570,14 @@ public partial class MainWindow : Window
 
         var tabContext = new TaskTabContext
         {
-            HostTabControl = currentOutputTabControl,
-            TabItem = tabItem,
+            HostOutputPanel = currentOutputPanel,
+            RunItemContainer = runItemContainer,
+            RunItemExpander = runItemExpander,
             OutputTextBox = outputTextBox,
             StatusText = statusText,
+            TitleText = titleText,
             SpinnerTimer = spinnerTimer
         };
-
-        tabItem.Tag = tabContext;
 
         spinnerTimer.Tick += (_, _) =>
         {
@@ -3462,25 +4585,33 @@ public partial class MainWindow : Window
             tabContext.SpinnerFrameIndex++;
         };
 
-        tabHeader.MouseLeftButtonDown += (_, args) =>
+        runItemExpander.Expanded += (_, _) => ExpandOutputRun(tabContext);
+        runItemExpander.Collapsed += (_, _) =>
         {
-            if (args.ClickCount == 2)
+            if (!tabContext.RunItemExpander.IsExpanded)
             {
-                CloseTab(tabItem);
-                args.Handled = true;
+                tabContext.RunItemContainer.BorderThickness = new Thickness(1);
+                tabContext.RunItemContainer.Opacity = 0.86;
             }
         };
 
-        closeButton.Click += (_, _) => CloseTab(tabItem);
+        closeButton.Click += (_, args) =>
+        {
+            args.Handled = true;
+            CloseOutputRun(tabContext);
+        };
 
-        currentOutputTabControl.Items.Add(tabItem);
-        currentOutputTabControl.SelectedItem = tabItem;
+        currentOutputPanel.Runs.Insert(0, tabContext);
+        currentOutputPanel.RunListPanel.Children.Insert(0, runItemContainer);
+        UpdateOutputListPlaceholder(currentOutputPanel);
+
+        tabContext.RunItemExpander.IsExpanded = true;
         outputTextBox.Focus();
 
         return tabContext;
     }
 
-    private TabControl GetOrCreateSelectedGroupOutputTabControl()
+    private OutputGroupPanelContext GetOrCreateSelectedGroupOutputPanel()
     {
         var groupName = _selectedGroupName;
         if (string.IsNullOrWhiteSpace(groupName))
@@ -3489,28 +4620,68 @@ public partial class MainWindow : Window
             _selectedGroupName = groupName;
         }
 
-        if (_groupOutputTabs.TryGetValue(groupName, out var existingTabControl))
+        if (_groupOutputPanels.TryGetValue(groupName, out var existingPanel))
         {
-            return existingTabControl;
+            return existingPanel;
         }
 
-        var tabControl = new TabControl
+        var runListPanel = new StackPanel();
+
+        var emptyListText = new TextBlock
         {
-            Style = (Style)Resources["OutputTabControlStyle"],
-            ItemContainerStyle = (Style)Resources["OutputTabItemStyle"],
+            Text = "No runs yet.",
+            Margin = new Thickness(0, 2, 0, 0),
+            FontSize = 11,
+            Visibility = Visibility.Visible
+        };
+        emptyListText.SetResourceReference(TextBlock.ForegroundProperty, "SecondaryTextBrush");
+
+        var listStack = new StackPanel();
+        listStack.Children.Add(runListPanel);
+        listStack.Children.Add(emptyListText);
+
+        var listScroll = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            Content = listStack
+        };
+
+        var outputRoot = new Grid
+        {
             Visibility = Visibility.Collapsed
         };
 
-        OutputTabHost.Children.Add(tabControl);
-        _groupOutputTabs[groupName] = tabControl;
-        return tabControl;
+        var listPaneBorder = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x17, 0x1D, 0x22)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x30, 0x36, 0x3D)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(8),
+            Child = listScroll
+        };
+
+        outputRoot.Children.Add(listPaneBorder);
+
+        OutputTabHost.Children.Add(outputRoot);
+
+        var panelContext = new OutputGroupPanelContext
+        {
+            RootGrid = outputRoot,
+            RunListPanel = runListPanel,
+            EmptyListText = emptyListText
+        };
+
+        _groupOutputPanels[groupName] = panelContext;
+        return panelContext;
     }
 
     private void ShowSelectedGroupOutputTabControl()
     {
-        foreach (var tabControl in _groupOutputTabs.Values)
+        foreach (var panel in _groupOutputPanels.Values)
         {
-            tabControl.Visibility = Visibility.Collapsed;
+            panel.RootGrid.Visibility = Visibility.Collapsed;
         }
 
         if (string.IsNullOrWhiteSpace(_selectedGroupName))
@@ -3518,8 +4689,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var selectedControl = GetOrCreateSelectedGroupOutputTabControl();
-        selectedControl.Visibility = Visibility.Visible;
+        var selectedPanel = GetOrCreateSelectedGroupOutputPanel();
+        selectedPanel.RootGrid.Visibility = Visibility.Visible;
     }
 
     private static void SetTabRunning(TaskTabContext tabContext)
@@ -3538,18 +4709,128 @@ public partial class MainWindow : Window
             : new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
     }
 
+    private void ExpandOutputRun(TaskTabContext runContext)
+    {
+        var panel = runContext.HostOutputPanel;
+
+        foreach (var run in panel.Runs)
+        {
+            if (!ReferenceEquals(run, runContext))
+            {
+                run.RunItemExpander.IsExpanded = false;
+                run.RunItemContainer.BorderThickness = new Thickness(1);
+                run.RunItemContainer.Opacity = 0.86;
+            }
+        }
+
+        runContext.RunItemContainer.BorderThickness = new Thickness(2);
+        runContext.RunItemContainer.Opacity = 1.0;
+    }
+
+    private void UpdateOutputListPlaceholder(OutputGroupPanelContext panel)
+    {
+        panel.EmptyListText.Visibility = panel.Runs.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void CloseOutputRun(TaskTabContext runContext)
+    {
+        var panel = runContext.HostOutputPanel;
+        runContext.SpinnerTimer.Stop();
+
+        panel.Runs.Remove(runContext);
+        panel.RunListPanel.Children.Remove(runContext.RunItemContainer);
+
+        if (panel.Runs.Count > 0 && !panel.Runs.Any(run => run.RunItemExpander.IsExpanded))
+        {
+            panel.Runs[0].RunItemExpander.IsExpanded = true;
+        }
+
+        UpdateOutputListPlaceholder(panel);
+    }
+
+    private Color GetTaskRunAccentColor(string taskName)
+    {
+        for (var displayIndex = 0; displayIndex < _visibleTaskIndexes.Count; displayIndex++)
+        {
+            var taskIndex = _visibleTaskIndexes[displayIndex];
+            if (taskIndex < 0 || taskIndex >= _currentConfiguration.Tasks.Count)
+            {
+                continue;
+            }
+
+            var task = _currentConfiguration.Tasks[taskIndex];
+            if (string.Equals(task.Name.Trim(), taskName, StringComparison.OrdinalIgnoreCase))
+            {
+                return PastelPalette[displayIndex % PastelPalette.Length];
+            }
+        }
+
+        var hash = StringComparer.OrdinalIgnoreCase.GetHashCode(taskName);
+        var index = Math.Abs(hash % PastelPalette.Length);
+        return PastelPalette[index];
+    }
+
+    private static Brush CreateRunGradientBrush(Color leftColor, string seed)
+    {
+        var rightColor = BuildRandomizedGradientColor(leftColor, seed);
+        var midColor = BlendColors(leftColor, rightColor, 0.45);
+        return new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0.5),
+            EndPoint = new Point(1, 0.5),
+            GradientStops =
+            [
+                new GradientStop(leftColor, 0.0),
+                new GradientStop(midColor, 0.42),
+                new GradientStop(rightColor, 1.0)
+            ]
+        };
+    }
+
+    private static Color BuildRandomizedGradientColor(Color baseColor, string seed)
+    {
+        var hash = StringComparer.OrdinalIgnoreCase.GetHashCode(seed);
+        var gradientTargets = new[]
+        {
+            Color.FromRgb(0x1D, 0x4E, 0x89),
+            Color.FromRgb(0x3D, 0x34, 0x8A),
+            Color.FromRgb(0x7A, 0x30, 0x74),
+            Color.FromRgb(0x7C, 0x2D, 0x12),
+            Color.FromRgb(0x0F, 0x76, 0x6E),
+            Color.FromRgb(0x12, 0x5A, 0x4B),
+            Color.FromRgb(0x5B, 0x21, 0xB6),
+            Color.FromRgb(0x8B, 0x1E, 0x3F)
+        };
+
+        var target = gradientTargets[Math.Abs(hash % gradientTargets.Length)];
+        return BlendColors(baseColor, target, 0.82);
+    }
+
+    private static Color BlendColors(Color left, Color right, double rightWeight)
+    {
+        var clampedRightWeight = Math.Max(0.0, Math.Min(1.0, rightWeight));
+        var leftWeight = 1.0 - clampedRightWeight;
+
+        var red = (byte)Math.Round((left.R * leftWeight) + (right.R * clampedRightWeight));
+        var green = (byte)Math.Round((left.G * leftWeight) + (right.G * clampedRightWeight));
+        var blue = (byte)Math.Round((left.B * leftWeight) + (right.B * clampedRightWeight));
+
+        return Color.FromRgb(red, green, blue);
+    }
+
     private RichTextBox CreateLogTextBox()
     {
         var outputFontFamily = TryFindResource("AppUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
 
         var textBox = new RichTextBox
         {
-            Margin = new Thickness(8),
+            Margin = new Thickness(0, 6, 0, 0),
             FontFamily = outputFontFamily,
             FontSize = 12,
             IsReadOnly = true,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            FlowDirection = FlowDirection.LeftToRight,
             IsDocumentEnabled = false
         };
         textBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
@@ -3558,8 +4839,12 @@ public partial class MainWindow : Window
         textBox.Document = new FlowDocument
         {
             PagePadding = new Thickness(0),
+            FlowDirection = FlowDirection.LeftToRight,
             TextAlignment = TextAlignment.Left
         };
+
+        textBox.Loaded += (_, _) => UpdateOutputDocumentPageWidth(textBox);
+        textBox.SizeChanged += (_, _) => UpdateOutputDocumentPageWidth(textBox);
 
         var contextMenu = new ContextMenu();
         var copyItem = new MenuItem { Header = "Copy" };
@@ -3576,31 +4861,16 @@ public partial class MainWindow : Window
         return textBox;
     }
 
-    private void CloseTab(TabItem tabItem)
+    private static void UpdateOutputDocumentPageWidth(RichTextBox textBox)
     {
-        if (tabItem.Tag is not TaskTabContext tabContext)
+        if (textBox.Document is null)
         {
             return;
         }
 
-        var outputTabControl = tabContext.HostTabControl;
-
-        if (outputTabControl.Items.Contains(tabItem))
-        {
-            // Stop any tab spinner to avoid timers running after tab closure.
-            tabContext.SpinnerTimer.Stop();
-        }
-
-        var selectedIndex = outputTabControl.Items.IndexOf(tabItem);
-        outputTabControl.Items.Remove(tabItem);
-
-        if (outputTabControl.Items.Count == 0)
-        {
-            return;
-        }
-
-        var nextIndex = Math.Min(selectedIndex, outputTabControl.Items.Count - 1);
-        outputTabControl.SelectedIndex = nextIndex;
+        var availableWidth = Math.Max(120, textBox.ActualWidth - 24);
+        textBox.Document.PageWidth = availableWidth;
+        textBox.Document.ColumnGap = 0;
     }
 
     private void AppendProcessOutput(RichTextBox outputTextBox, string taskName, int exitCode, string standardOutput, string standardError)

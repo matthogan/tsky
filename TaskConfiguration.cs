@@ -45,6 +45,11 @@ public sealed class TaskConfiguration
         return MergeConfigurations(currentDirectoryConfig, userProfileConfig);
     }
 
+    public static TaskConfiguration MergeWithOverlay(TaskConfiguration baseConfig, TaskConfiguration overlayConfig)
+    {
+        return MergeConfigurations(baseConfig, overlayConfig);
+    }
+
     public static void EnsureValidFileOrReset(string path)
     {
         if (!File.Exists(path))
@@ -241,6 +246,27 @@ public sealed class TaskConfiguration
 
     private static List<LauncherTask> MergeTasks(IReadOnlyList<LauncherTask> baseTasks, IReadOnlyList<LauncherTask> overlayTasks)
     {
+        if (baseTasks.Count > 0 && overlayTasks.Count > 0)
+        {
+            var baseKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var baseTask in baseTasks)
+            {
+                baseKeys.Add(BuildTaskIdentityKey(baseTask.Group, baseTask.Name));
+            }
+
+            var overlayKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var overlayTask in overlayTasks)
+            {
+                overlayKeys.Add(BuildTaskIdentityKey(overlayTask.Group, overlayTask.Name));
+            }
+
+            // If overlay covers all base task identities, preserve overlay ordering as the source of truth.
+            if (baseKeys.All(overlayKeys.Contains))
+            {
+                return BuildUniqueTasksByOrder(overlayTasks);
+            }
+        }
+
         var merged = new List<LauncherTask>();
         var indexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
@@ -266,6 +292,29 @@ public sealed class TaskConfiguration
                 merged.Add(task);
             }
         }
+    }
+
+    private static List<LauncherTask> BuildUniqueTasksByOrder(IReadOnlyList<LauncherTask> source)
+    {
+        var ordered = new List<LauncherTask>();
+        var indexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < source.Count; i++)
+        {
+            var task = source[i];
+            var key = BuildTaskIdentityKey(task.Group, task.Name);
+
+            if (indexByKey.TryGetValue(key, out var existingIndex))
+            {
+                ordered[existingIndex] = task;
+                continue;
+            }
+
+            indexByKey[key] = ordered.Count;
+            ordered.Add(task);
+        }
+
+        return ordered;
     }
 
     private static List<RitualDefinition> MergeRituals(IReadOnlyList<RitualDefinition> baseRituals, IReadOnlyList<RitualDefinition> overlayRituals)
@@ -405,6 +454,12 @@ public sealed class LauncherTask
     public bool WaitForExit { get; set; } = true;
 
     public bool RequiresElevation { get; set; }
+
+    public bool IsEnabled { get; set; } = true;
+
+    public string? ImportedFromFile { get; set; }
+
+    public string? ImportedAtUtc { get; set; }
 
     public Dictionary<string, string> Inputs { get; set; } = [];
 

@@ -218,6 +218,13 @@ internal static class DataflowPortResolver
                 return tokenValue;
             }
 
+            if (IsDeferredRuntimeToken(token))
+            {
+                didReplace = true;
+                trace.Add($"Deferred ${token} in {location} for runtime command output substitution.");
+                return match.Value;
+            }
+
             trace.Add($"Unresolved ${token} in {location}; replaced with empty string.");
             didReplace = true;
             return string.Empty;
@@ -229,6 +236,19 @@ internal static class DataflowPortResolver
         }
 
         return replaced;
+    }
+
+    private static bool IsDeferredRuntimeToken(string token)
+    {
+        return token.Equals("stdout", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("stderr", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("exitcode", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("command:stdout", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("command:stderr", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("command:exitcode", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("runtime:stdout", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("runtime:stderr", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("runtime:exitcode", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryResolveToken(

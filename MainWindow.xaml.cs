@@ -32,6 +32,9 @@ public partial class MainWindow : Window
     private const double DefaultSidebarWidth = 220;
     private const double MinSidebarWidth = 180;
     private const double MaxSidebarWidth = 520;
+    private const double DefaultHistoryListPaneRatio = 0.4;
+    private const double MinHistoryListPaneRatio = 0.2;
+    private const double MaxHistoryListPaneRatio = 0.8;
     private const string TaskEditorTitle = "Task Editor";
     private const string TaskUnavailableMessage = "The selected task is no longer available.";
     private const int MaxRunHistoryEntries = 300;
@@ -54,6 +57,9 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _groupOutputVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupSidebarVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, double> _groupOutputHeights = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _favoriteGroups = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<string> _favoriteGroupOrder = [];
+    private readonly List<string> _nonFavoriteGroupsOrder = [];
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
     private readonly Dictionary<string, TaskRunningOverlayVisual> _taskRunningOverlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ConnectorVisual> _connectorVisuals = [];
@@ -63,8 +69,13 @@ public partial class MainWindow : Window
     private bool _isReplayingHistoryBatch;
     private bool _isRunningRitual;
     private bool _isHistoryDetailsVisible = true;
+    private double _historyListPaneRatio = DefaultHistoryListPaneRatio;
+    private int? _portEditorTaskIndex;
+    private readonly HashSet<int> _invalidPortBindingTaskIndexes = [];
     private readonly DispatcherTimer _sidebarStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private int _sidebarSpinnerFrameIndex;
+    private bool _isHandlingBottomPanePortTabSelection;
+    private bool _isSyncingBottomPaneToSelection;
     private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] SidebarRunningFrames = ["◐", "◓", "◑", "◒"];
@@ -139,6 +150,7 @@ public partial class MainWindow : Window
 
         public required Border DropCueBorder { get; init; }
         public required Border SelectionBorder { get; init; }
+        public required Border InvalidBindingBorder { get; init; }
         public required Button TaskButton { get; init; }
     }
 
@@ -193,6 +205,15 @@ public partial class MainWindow : Window
         public required string Name { get; init; }
 
         public required TaskRunState State { get; init; }
+    }
+
+    private sealed class PortEditorRow
+    {
+        public required TextBox NameTextBox { get; init; }
+
+        public TextBox? DefaultValueTextBox { get; init; }
+
+        public required TextBox ValueTextBox { get; init; }
     }
 
     private sealed class HistoryListItem
@@ -263,6 +284,7 @@ public partial class MainWindow : Window
         PreviewKeyDown += MainWindow_PreviewKeyDown;
 
         _uiState = UiStateStore.Load();
+        LoadGroupOrderingFromUiState();
         ApplyPersistedUiState();
         ApplyHistoryDetailsVisibility();
 
@@ -432,6 +454,8 @@ public partial class MainWindow : Window
         persistedSidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, persistedSidebarWidth));
         SidebarColumnDefinition.Width = new GridLength(persistedSidebarWidth);
 
+        _historyListPaneRatio = ClampHistoryListPaneRatio(_uiState.HistoryListPaneRatio);
+
         if (_uiState.IsMaximized)
         {
             WindowState = WindowState.Maximized;
@@ -456,7 +480,69 @@ public partial class MainWindow : Window
 
         _uiState.OutputHeight = Math.Max(MinOutputHeight, height);
         _uiState.SidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, SidebarColumnDefinition.ActualWidth));
+
+        if (_isHistoryDetailsVisible)
+        {
+            var listHeight = HistoryListRow?.ActualHeight ?? 0;
+            var detailsHeight = HistoryDetailsRow?.ActualHeight ?? 0;
+            var total = listHeight + detailsHeight;
+
+            if (total > 0)
+            {
+                _historyListPaneRatio = ClampHistoryListPaneRatio(listHeight / total);
+            }
+        }
+
+        _uiState.FavoriteGroups = _favoriteGroupOrder
+            .Where(groupName => _favoriteGroups.Contains(groupName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _uiState.NonFavoriteGroupsOrder = _nonFavoriteGroupsOrder
+            .Where(groupName => !_favoriteGroups.Contains(groupName))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _uiState.HistoryListPaneRatio = _historyListPaneRatio;
         UiStateStore.Save(_uiState);
+    }
+
+    private void LoadGroupOrderingFromUiState()
+    {
+        _favoriteGroups.Clear();
+        _favoriteGroupOrder.Clear();
+        _nonFavoriteGroupsOrder.Clear();
+
+        foreach (var rawGroupName in _uiState.FavoriteGroups ?? [])
+        {
+            var normalized = NormalizeGroupName(rawGroupName);
+            if (_favoriteGroups.Add(normalized))
+            {
+                _favoriteGroupOrder.Add(normalized);
+            }
+        }
+
+        foreach (var rawGroupName in _uiState.NonFavoriteGroupsOrder ?? [])
+        {
+            var normalized = NormalizeGroupName(rawGroupName);
+            if (_favoriteGroups.Contains(normalized)
+                || _nonFavoriteGroupsOrder.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            _nonFavoriteGroupsOrder.Add(normalized);
+        }
+    }
+
+    private static double ClampHistoryListPaneRatio(double ratio)
+    {
+        if (double.IsNaN(ratio) || double.IsInfinity(ratio))
+        {
+            return DefaultHistoryListPaneRatio;
+        }
+
+        return Math.Min(MaxHistoryListPaneRatio, Math.Max(MinHistoryListPaneRatio, ratio));
     }
 
     private static bool IsPointOnAnyScreen(double x, double y)
@@ -525,6 +611,7 @@ public partial class MainWindow : Window
         foreach (var group in groups)
         {
             var groupName = group.Name;
+            var isFavorited = _favoriteGroups.Contains(groupName);
 
             var headerButton = new Button
             {
@@ -577,6 +664,27 @@ public partial class MainWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center
             };
 
+            var favoriteButton = new Button
+            {
+                Tag = groupName,
+                Content = "❤",
+                Background = Brushes.Transparent,
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(2, 0, 2, 0),
+                Margin = new Thickness(6, 0, 0, 0),
+                Cursor = Cursors.Hand,
+                ToolTip = isFavorited ? "Unfavorite group" : "Favorite group",
+                Foreground = isFavorited
+                    ? new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35))
+                    : new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            DockPanel.SetDock(favoriteButton, Dock.Right);
+            favoriteButton.Click += FavoriteGroupButton_Click;
+
             var groupNameText = new TextBlock
             {
                 Text = groupName,
@@ -590,6 +698,7 @@ public partial class MainWindow : Window
 
             headerLayout.Children.Add(chevronText);
             headerLayout.Children.Add(folderIcon);
+            headerLayout.Children.Add(favoriteButton);
             headerLayout.Children.Add(badge);
             headerLayout.Children.Add(groupNameText);
             headerButton.Content = headerLayout;
@@ -701,6 +810,22 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SidebarRitualsExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (RitualsSectionChevronText is not null)
+        {
+            RitualsSectionChevronText.Text = "▼";
+        }
+    }
+
+    private void SidebarRitualsExpander_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (RitualsSectionChevronText is not null)
+        {
+            RitualsSectionChevronText.Text = "▶";
+        }
+    }
+
     private void SidebarTaskRowButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: SidebarTaskSelectionTarget target })
@@ -708,7 +833,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        SelectGroup(target.GroupName);
+        if (!string.Equals(NormalizeGroupName(_selectedGroupName), NormalizeGroupName(target.GroupName), StringComparison.OrdinalIgnoreCase))
+        {
+            SelectGroup(target.GroupName);
+        }
 
         var selectedIndex = _currentConfiguration.Tasks.FindIndex(task =>
             string.Equals(NormalizeGroupName(task.Group), target.GroupName, StringComparison.OrdinalIgnoreCase)
@@ -1396,7 +1524,14 @@ public partial class MainWindow : Window
         if (isVisible)
         {
             SidebarPaneBorder.Visibility = Visibility.Visible;
-            AnimateColumnWidth(SidebarColumnDefinition, 220);
+            var targetWidth = _uiState.SidebarWidth;
+            if (double.IsNaN(targetWidth) || targetWidth < MinSidebarWidth)
+            {
+                targetWidth = DefaultSidebarWidth;
+            }
+
+            targetWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, targetWidth));
+            AnimateColumnWidth(SidebarColumnDefinition, targetWidth);
             AnimateColumnWidth(SidebarSpacerColumnDefinition, 12, RecalibrateTaskScrollViewport);
             return;
         }
@@ -1494,7 +1629,7 @@ public partial class MainWindow : Window
 
         var restoredHeight = _groupOutputHeights.TryGetValue(groupKey, out var storedHeight) && storedHeight >= MinOutputHeight
             ? storedHeight
-            : DefaultOutputHeight;
+            : (_uiState.OutputHeight >= MinOutputHeight ? _uiState.OutputHeight : DefaultOutputHeight);
 
         OutputRowDefinition.MinHeight = 0;
         OutputGridSplitter.Visibility = Visibility.Visible;
@@ -1615,6 +1750,34 @@ public partial class MainWindow : Window
         _groupHistoryVisibility[groupKey] = isHistorySelected;
         ViewHistoryMenuItem.IsChecked = isHistorySelected;
         UpdateRibbonHistoryButtonState(isHistorySelected);
+
+        if (_isHandlingBottomPanePortTabSelection)
+        {
+            return;
+        }
+
+        if (!_selectedTaskIndex.HasValue || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+        {
+            return;
+        }
+
+        try
+        {
+            _isHandlingBottomPanePortTabSelection = true;
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, InputPortsPaneTabItem))
+            {
+                OpenInputPortsEditor(_selectedTaskIndex.Value);
+            }
+            else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPortsPaneTabItem))
+            {
+                OpenOutputPortsEditor(_selectedTaskIndex.Value);
+            }
+        }
+        finally
+        {
+            _isHandlingBottomPanePortTabSelection = false;
+        }
     }
 
     private void UpdateRibbonRitualsButtonState()
@@ -1678,9 +1841,10 @@ public partial class MainWindow : Window
         if (_isHistoryDetailsVisible)
         {
             HistoryDetailsBorder.Visibility = Visibility.Visible;
-            HistoryListRow.Height = new GridLength(2, GridUnitType.Star);
+            var detailsRatio = 1 - _historyListPaneRatio;
+            HistoryListRow.Height = new GridLength(_historyListPaneRatio, GridUnitType.Star);
             HistoryDetailsGapRow.Height = new GridLength(6, GridUnitType.Pixel);
-            HistoryDetailsRow.Height = new GridLength(3, GridUnitType.Star);
+            HistoryDetailsRow.Height = new GridLength(detailsRatio, GridUnitType.Star);
             ToggleHistoryDetailsButton.Content = "Hide Details";
             return;
         }
@@ -1866,6 +2030,8 @@ public partial class MainWindow : Window
             _selectedTaskIndex = _visibleTaskIndexes[0];
         }
 
+        RecomputeInvalidPortBindingIndicators();
+
         TaskPanel.AllowDrop = !IsCurrentGroupDataflowLocked();
 
         for (var displayIndex = 0; displayIndex < _visibleTaskIndexes.Count; displayIndex++)
@@ -1895,6 +2061,14 @@ public partial class MainWindow : Window
                 IsHitTestVisible = false
             };
             selectionBorder.SetResourceReference(Border.BorderBrushProperty, "ConnectorFocusedBrush");
+
+            var invalidBindingBorder = new Border
+            {
+                BorderThickness = _invalidPortBindingTaskIndexes.Contains(index) ? new Thickness(2) : new Thickness(0),
+                CornerRadius = new CornerRadius(0),
+                IsHitTestVisible = false,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x2D, 0x55))
+            };
 
             var foregroundBrush = GetReadableTextBrush(cardColor);
             var cardFontFamily = TryFindResource("CardUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
@@ -2059,6 +2233,7 @@ public partial class MainWindow : Window
                 TaskIndex = index,
                 DropCueBorder = dropCueBorder,
                 SelectionBorder = selectionBorder,
+                InvalidBindingBorder = invalidBindingBorder,
                 TaskButton = button
             };
 
@@ -2071,6 +2246,9 @@ public partial class MainWindow : Window
                 BorderBrush = new SolidColorBrush(cardColor),
                 Foreground = foregroundBrush
             };
+
+            var openInputPortsButton = CreatePortEditorGlyphButton(isInput: true, taskIndex: index);
+            var openOutputPortsButton = CreatePortEditorGlyphButton(isInput: false, taskIndex: index);
 
             button.Click += TaskButton_Click;
             button.PreviewMouseLeftButtonDown += TaskCard_PreviewMouseLeftButtonDown;
@@ -2108,8 +2286,11 @@ public partial class MainWindow : Window
                 card.Children.Add(rightPorts);
             }
 
+            card.Children.Add(invalidBindingBorder);
             card.Children.Add(selectionBorder);
             card.Children.Add(dropCueBorder);
+            card.Children.Add(openInputPortsButton);
+            card.Children.Add(openOutputPortsButton);
             card.Children.Add(menuButton);
             TaskPanel.Children.Add(card);
             _taskCardsByIndex[index] = card;
@@ -2119,6 +2300,46 @@ public partial class MainWindow : Window
         ApplyTaskCardSelectionVisuals();
     }
 
+    private Button CreatePortEditorGlyphButton(bool isInput, int taskIndex)
+    {
+        var button = new Button
+        {
+            Content = "+",
+            Width = 22,
+            Height = 22,
+            FontSize = 16,
+            FontWeight = FontWeights.Bold,
+            Cursor = Cursors.Hand,
+            Background = new SolidColorBrush(Color.FromArgb(205, 12, 24, 36)),
+            Foreground = isInput
+                ? new SolidColorBrush(Color.FromRgb(0x7C, 0xFF, 0x00))
+                : new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xFF)),
+            BorderBrush = isInput
+                ? new SolidColorBrush(Color.FromRgb(0x7C, 0xFF, 0x00))
+                : new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xFF)),
+            BorderThickness = new Thickness(1.3),
+            Padding = new Thickness(0),
+            HorizontalAlignment = isInput ? HorizontalAlignment.Left : HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = isInput ? new Thickness(8, 0, 0, 8) : new Thickness(0, 0, 8, 8),
+            ToolTip = isInput ? "Add/Edit Input Ports" : "Add/Edit Output Ports"
+        };
+
+        button.Click += (_, _) =>
+        {
+            if (isInput)
+            {
+                OpenInputPortsEditor(taskIndex);
+            }
+            else
+            {
+                OpenOutputPortsEditor(taskIndex);
+            }
+        };
+
+        return button;
+    }
+
     private bool IsCurrentGroupDataflowLocked()
     {
         return _visibleTaskIndexes.Any(index =>
@@ -2126,6 +2347,438 @@ public partial class MainWindow : Window
             var task = _currentConfiguration.Tasks[index];
             return task.InputBindings.Count > 0 || task.Outputs.Count > 0;
         });
+    }
+
+    private void OpenInputPortsEditor(int taskIndex, bool selectTab = true)
+    {
+        if (!TryGetTask(taskIndex, out var task))
+        {
+            return;
+        }
+
+        _portEditorTaskIndex = taskIndex;
+        InputPortsEditorTitleText.Text = $"Input Ports - {task.Name}";
+        InputPortsRowsPanel.Children.Clear();
+
+        var portNames = new HashSet<string>(task.Inputs.Keys.Where(key => !string.IsNullOrWhiteSpace(key)).Select(key => key.Trim()), StringComparer.OrdinalIgnoreCase);
+        foreach (var key in task.InputBindings.Keys.Where(key => !string.IsNullOrWhiteSpace(key)).Select(key => key.Trim()))
+        {
+            portNames.Add(key);
+        }
+
+        foreach (var portName in portNames.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            var defaultValue = task.Inputs.TryGetValue(portName, out var value) ? value : string.Empty;
+            var bindingValue = task.InputBindings.TryGetValue(portName, out var binding) ? binding : string.Empty;
+            InputPortsRowsPanel.Children.Add(CreateInputPortRowControl(portName, defaultValue, bindingValue));
+        }
+
+        if (InputPortsRowsPanel.Children.Count == 0)
+        {
+            InputPortsRowsPanel.Children.Add(CreateInputPortRowControl(string.Empty, string.Empty, string.Empty));
+        }
+
+        if (selectTab)
+        {
+            BottomPaneTabControl.SelectedItem = InputPortsPaneTabItem;
+        }
+    }
+
+    private void OpenOutputPortsEditor(int taskIndex, bool selectTab = true)
+    {
+        if (!TryGetTask(taskIndex, out var task))
+        {
+            return;
+        }
+
+        _portEditorTaskIndex = taskIndex;
+        OutputPortsEditorTitleText.Text = $"Output Ports - {task.Name}";
+        OutputPortsRowsPanel.Children.Clear();
+
+        foreach (var pair in task.Outputs.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            OutputPortsRowsPanel.Children.Add(CreateOutputPortRowControl(pair.Key, pair.Value));
+        }
+
+        if (OutputPortsRowsPanel.Children.Count == 0)
+        {
+            OutputPortsRowsPanel.Children.Add(CreateOutputPortRowControl(string.Empty, string.Empty));
+        }
+
+        if (selectTab)
+        {
+            BottomPaneTabControl.SelectedItem = OutputPortsPaneTabItem;
+        }
+    }
+
+    private Grid CreateInputPortRowControl(string name, string defaultValue, string bindingValue)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6), Tag = new PortEditorRowMarker { IsInput = true } };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.4, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var nameBox = CreatePortEditorTextBox(name, "Input name");
+        var defaultBox = CreatePortEditorTextBox(defaultValue, "Default value");
+        var bindingBox = CreatePortEditorTextBox(bindingValue, "Binding (optional)");
+
+        var removeButton = CreateRemovePortRowButton(() => InputPortsRowsPanel.Children.Remove(row));
+
+        Grid.SetColumn(nameBox, 0);
+        Grid.SetColumn(defaultBox, 1);
+        Grid.SetColumn(bindingBox, 2);
+        Grid.SetColumn(removeButton, 3);
+
+        row.Children.Add(nameBox);
+        row.Children.Add(defaultBox);
+        row.Children.Add(bindingBox);
+        row.Children.Add(removeButton);
+        return row;
+    }
+
+    private Grid CreateOutputPortRowControl(string name, string value)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6), Tag = new PortEditorRowMarker { IsInput = false } };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.2, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var nameBox = CreatePortEditorTextBox(name, "Output name");
+        var valueBox = CreatePortEditorTextBox(value, "Output value template");
+        var removeButton = CreateRemovePortRowButton(() => OutputPortsRowsPanel.Children.Remove(row));
+
+        Grid.SetColumn(nameBox, 0);
+        Grid.SetColumn(valueBox, 1);
+        Grid.SetColumn(removeButton, 2);
+
+        row.Children.Add(nameBox);
+        row.Children.Add(valueBox);
+        row.Children.Add(removeButton);
+        return row;
+    }
+
+    private sealed class PortEditorRowMarker
+    {
+        public bool IsInput { get; init; }
+    }
+
+    private static TextBox CreatePortEditorTextBox(string text, string toolTip)
+    {
+        var textBox = new TextBox
+        {
+            Text = text,
+            Margin = new Thickness(0, 0, 6, 0),
+            Height = 34,
+            Padding = new Thickness(8, 0, 8, 0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            ToolTip = toolTip,
+            FontFamily = new FontFamily("Cascadia Mono")
+        };
+
+        textBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
+        textBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
+        textBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
+        return textBox;
+    }
+
+    private static Button CreateRemovePortRowButton(Action onClick)
+    {
+        var button = new Button
+        {
+            Content = "-",
+            Width = 28,
+            Height = 30,
+            Margin = new Thickness(0),
+            Cursor = Cursors.Hand
+        };
+
+        button.SetResourceReference(FrameworkElement.StyleProperty, "HistoryActionButtonStyle");
+
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    private void AddInputPortRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        InputPortsRowsPanel.Children.Add(CreateInputPortRowControl(string.Empty, string.Empty, string.Empty));
+    }
+
+    private void AddOutputPortRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        OutputPortsRowsPanel.Children.Add(CreateOutputPortRowControl(string.Empty, string.Empty));
+    }
+
+    private void SaveInputPortsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_portEditorTaskIndex.HasValue || !TryGetTask(_portEditorTaskIndex.Value, out var task))
+        {
+            return;
+        }
+
+        if (!TryCollectInputPortRows(out var inputs, out var bindings, out var error))
+        {
+            LogPortEditorError(error);
+            return;
+        }
+
+        if (!ValidateInputBindingsAgainstPreviousTasks(_portEditorTaskIndex.Value, bindings, out error))
+        {
+            LogPortEditorError(error);
+            return;
+        }
+
+        task.Inputs = inputs;
+        task.InputBindings = bindings;
+        SaveTasksAndRefresh("Save Input Ports");
+        OpenInputPortsEditor(_portEditorTaskIndex.Value);
+    }
+
+    private void SaveOutputPortsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_portEditorTaskIndex.HasValue || !TryGetTask(_portEditorTaskIndex.Value, out var task))
+        {
+            return;
+        }
+
+        if (!TryCollectOutputPortRows(out var outputs, out var error))
+        {
+            LogPortEditorError(error);
+            return;
+        }
+
+        task.Outputs = outputs;
+        SaveTasksAndRefresh("Save Output Ports");
+        OpenOutputPortsEditor(_portEditorTaskIndex.Value);
+    }
+
+    private void LogPortEditorError(string message)
+    {
+        var tabContext = CreateOutputTab("Port Validation");
+        var output = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+        AppendLog(output, $"[Ports] Validation error: {message}");
+        SetTabStopped(tabContext, false);
+        BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
+    }
+
+    private bool TryCollectInputPortRows(out Dictionary<string, string> inputs, out Dictionary<string, string> bindings, out string error)
+    {
+        inputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        bindings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        error = string.Empty;
+
+        foreach (var child in InputPortsRowsPanel.Children)
+        {
+            if (child is not Grid row || row.Children.Count < 3)
+            {
+                continue;
+            }
+
+            var name = (row.Children[0] as TextBox)?.Text?.Trim() ?? string.Empty;
+            var defaultValue = (row.Children[1] as TextBox)?.Text ?? string.Empty;
+            var bindingValue = (row.Children[2] as TextBox)?.Text?.Trim() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                if (string.IsNullOrWhiteSpace(defaultValue) && string.IsNullOrWhiteSpace(bindingValue))
+                {
+                    continue;
+                }
+
+                error = "Input row has value/binding but no input name.";
+                return false;
+            }
+
+            if (inputs.ContainsKey(name))
+            {
+                error = $"Duplicate input name '{name}'.";
+                return false;
+            }
+
+            inputs[name] = defaultValue;
+
+            if (!string.IsNullOrWhiteSpace(bindingValue))
+            {
+                bindings[name] = bindingValue;
+            }
+        }
+
+        return true;
+    }
+
+    private bool TryCollectOutputPortRows(out Dictionary<string, string> outputs, out string error)
+    {
+        outputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        error = string.Empty;
+
+        foreach (var child in OutputPortsRowsPanel.Children)
+        {
+            if (child is not Grid row || row.Children.Count < 2)
+            {
+                continue;
+            }
+
+            var name = (row.Children[0] as TextBox)?.Text?.Trim() ?? string.Empty;
+            var value = (row.Children[1] as TextBox)?.Text ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                error = "Output row has value but no output name.";
+                return false;
+            }
+
+            if (outputs.ContainsKey(name))
+            {
+                error = $"Duplicate output name '{name}'.";
+                return false;
+            }
+
+            outputs[name] = value;
+        }
+
+        return true;
+    }
+
+    private bool ValidateInputBindingsAgainstPreviousTasks(int taskIndex, IReadOnlyDictionary<string, string> bindings, out string error)
+    {
+        error = string.Empty;
+        var sameGroupTaskIndexes = _visibleTaskIndexes;
+        var position = sameGroupTaskIndexes.IndexOf(taskIndex);
+        if (position < 0)
+        {
+            return true;
+        }
+
+        var previousTasks = sameGroupTaskIndexes.Take(position).Select(index => _currentConfiguration.Tasks[index]).ToList();
+
+        foreach (var pair in bindings)
+        {
+            var binding = pair.Value;
+            if (string.IsNullOrWhiteSpace(binding))
+            {
+                continue;
+            }
+
+            if (binding.StartsWith("port:", StringComparison.OrdinalIgnoreCase))
+            {
+                var portName = binding[5..].Trim();
+                var found = previousTasks.Any(task => task.Outputs.ContainsKey(portName));
+                if (!found)
+                {
+                    error = $"Input '{pair.Key}' binding '{binding}' does not match any previous output port.";
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (TryParseBindingTaskOutputReference(binding, out var sourceTaskName, out var sourceOutputName))
+            {
+                var matchingTasks = previousTasks
+                    .Where(task => string.Equals(task.Name.Trim(), sourceTaskName, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (matchingTasks.Count > 1)
+                {
+                    error = $"Input '{pair.Key}' binding '{binding}' is ambiguous because multiple previous tasks are named '{sourceTaskName}'. Rename tasks or use unique task names.";
+                    return false;
+                }
+
+                var found = matchingTasks.Any(task => task.Outputs.ContainsKey(sourceOutputName));
+
+                if (!found)
+                {
+                    error = $"Input '{pair.Key}' binding '{binding}' does not match any previous task output.";
+                    return false;
+                }
+
+                continue;
+            }
+
+            error = $"Input '{pair.Key}' binding '{binding}' uses an unsupported format. Use 'port:OutputName' or 'TaskName.OutputName'.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private void RecomputeInvalidPortBindingIndicators()
+    {
+        _invalidPortBindingTaskIndexes.Clear();
+
+        var seenPorts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenTaskOutputs = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var taskIndex in _visibleTaskIndexes)
+        {
+            var task = _currentConfiguration.Tasks[taskIndex];
+            var taskName = task.Name.Trim();
+            var outputNames = new HashSet<string>(task.Outputs.Keys.Where(key => !string.IsNullOrWhiteSpace(key)).Select(key => key.Trim()), StringComparer.OrdinalIgnoreCase);
+
+            var isInvalid = false;
+            foreach (var binding in task.InputBindings.Where(pair => !string.IsNullOrWhiteSpace(pair.Key)))
+            {
+                var reference = binding.Value?.Trim() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(reference))
+                {
+                    continue;
+                }
+
+                if (reference.StartsWith("port:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var portName = reference[5..].Trim();
+                    if (!seenPorts.Contains(portName))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (TryParseBindingTaskOutputReference(reference, out var sourceTaskName, out var sourceOutputName))
+                {
+                    var matchingNames = seenTaskOutputs.Keys
+                        .Where(name => string.Equals(name, sourceTaskName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    if (matchingNames.Count != 1)
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
+                    if (!seenTaskOutputs.TryGetValue(matchingNames[0], out var sourceOutputs) || !sourceOutputs.Contains(sourceOutputName))
+                    {
+                        isInvalid = true;
+                        break;
+                    }
+
+                    continue;
+                }
+
+                isInvalid = true;
+                break;
+            }
+
+            if (isInvalid)
+            {
+                _invalidPortBindingTaskIndexes.Add(taskIndex);
+            }
+
+            foreach (var outputName in outputNames)
+            {
+                seenPorts.Add(outputName);
+            }
+
+            seenTaskOutputs[taskName] = outputNames;
+        }
     }
 
     private static List<string> GetInputPortNames(LauncherTask task)
@@ -2737,8 +3390,9 @@ public partial class MainWindow : Window
     private IReadOnlyList<GroupSidebarItem> GetGroupSidebarItems(IReadOnlyList<string> groupNames)
     {
         var items = new List<GroupSidebarItem>();
+        var orderedGroupNames = GetOrderedGroupNamesForSidebar(groupNames);
 
-        foreach (var groupName in groupNames)
+        foreach (var groupName in orderedGroupNames)
         {
             var taskPreviews = _currentConfiguration.Tasks
                 .Where(task => string.Equals(NormalizeGroupName(task.Group), groupName, StringComparison.OrdinalIgnoreCase))
@@ -2763,6 +3417,85 @@ public partial class MainWindow : Window
 
         return items;
 
+    }
+
+    private IReadOnlyList<string> GetOrderedGroupNamesForSidebar(IReadOnlyList<string> groupNames)
+    {
+        var normalizedGroups = groupNames.Select(NormalizeGroupName).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var available = new HashSet<string>(normalizedGroups, StringComparer.OrdinalIgnoreCase);
+
+        _favoriteGroupOrder.RemoveAll(groupName => !available.Contains(groupName));
+        _nonFavoriteGroupsOrder.RemoveAll(groupName => !available.Contains(groupName));
+        _favoriteGroups.RemoveWhere(groupName => !available.Contains(groupName));
+
+        foreach (var groupName in normalizedGroups)
+        {
+            if (_favoriteGroups.Contains(groupName) && !_favoriteGroupOrder.Contains(groupName, StringComparer.OrdinalIgnoreCase))
+            {
+                _favoriteGroupOrder.Add(groupName);
+            }
+        }
+
+        var ordered = new List<string>();
+
+        foreach (var groupName in _favoriteGroupOrder)
+        {
+            if (_favoriteGroups.Contains(groupName) && available.Contains(groupName))
+            {
+                ordered.Add(groupName);
+            }
+        }
+
+        foreach (var groupName in _nonFavoriteGroupsOrder)
+        {
+            if (!_favoriteGroups.Contains(groupName) && available.Contains(groupName) && !ordered.Contains(groupName, StringComparer.OrdinalIgnoreCase))
+            {
+                ordered.Add(groupName);
+            }
+        }
+
+        foreach (var groupName in normalizedGroups)
+        {
+            if (!_favoriteGroups.Contains(groupName) && !ordered.Contains(groupName, StringComparer.OrdinalIgnoreCase))
+            {
+                ordered.Add(groupName);
+            }
+        }
+
+        return ordered;
+    }
+
+    private void FavoriteGroupButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string groupName })
+        {
+            return;
+        }
+
+        ToggleFavoriteGroup(groupName);
+        e.Handled = true;
+    }
+
+    private void ToggleFavoriteGroup(string groupName)
+    {
+        var normalizedGroup = NormalizeGroupName(groupName);
+
+        if (_favoriteGroups.Contains(normalizedGroup))
+        {
+            _favoriteGroups.Remove(normalizedGroup);
+            _favoriteGroupOrder.RemoveAll(name => string.Equals(name, normalizedGroup, StringComparison.OrdinalIgnoreCase));
+            _nonFavoriteGroupsOrder.RemoveAll(name => string.Equals(name, normalizedGroup, StringComparison.OrdinalIgnoreCase));
+            _nonFavoriteGroupsOrder.Insert(0, normalizedGroup);
+        }
+        else
+        {
+            _favoriteGroups.Add(normalizedGroup);
+            _favoriteGroupOrder.RemoveAll(name => string.Equals(name, normalizedGroup, StringComparison.OrdinalIgnoreCase));
+            _favoriteGroupOrder.Add(normalizedGroup);
+            _nonFavoriteGroupsOrder.RemoveAll(name => string.Equals(name, normalizedGroup, StringComparison.OrdinalIgnoreCase));
+        }
+
+        RebuildGroupNavigator(GetGroupSidebarItems(GetGroupNames()));
     }
 
     private static string NormalizeGroupName(string? groupName)
@@ -3758,6 +4491,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (BottomPaneTabControl?.IsKeyboardFocusWithin == true)
+        {
+            return;
+        }
+
         if (_visibleTaskIndexes.Count == 0)
         {
             return;
@@ -3836,6 +4574,92 @@ public partial class MainWindow : Window
         }
 
         UpdateRibbonTaskActionState();
+        SyncBottomPaneForSelectedTask();
+    }
+
+    private void SyncBottomPaneForSelectedTask()
+    {
+        if (_isSyncingBottomPaneToSelection || BottomPaneTabControl is null)
+        {
+            return;
+        }
+
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex) || !TryGetTask(taskIndex, out var task))
+        {
+            return;
+        }
+
+        try
+        {
+            _isSyncingBottomPaneToSelection = true;
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, InputPortsPaneTabItem))
+            {
+                OpenInputPortsEditor(taskIndex, selectTab: false);
+                return;
+            }
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPortsPaneTabItem))
+            {
+                OpenOutputPortsEditor(taskIndex, selectTab: false);
+                return;
+            }
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
+            {
+                SyncHistoryTabForSelectedTask(task);
+                return;
+            }
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPaneTabItem))
+            {
+                SyncOutputTabForSelectedTask(task);
+            }
+        }
+        finally
+        {
+            _isSyncingBottomPaneToSelection = false;
+        }
+    }
+
+    private void SyncHistoryTabForSelectedTask(LauncherTask task)
+    {
+        var normalizedTaskName = task.Name.Trim();
+        var targetItem = HistoryListBox.Items
+            .OfType<HistoryListItem>()
+            .FirstOrDefault(item =>
+                string.Equals(item.Entry.Snapshot.Name, normalizedTaskName, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(item.Entry.Snapshot.Group, NormalizeGroupName(task.Group), StringComparison.OrdinalIgnoreCase));
+
+        HistoryListBox.SelectedItems.Clear();
+        if (targetItem is null)
+        {
+            UpdateHistoryPreview();
+            UpdateHistoryActionState();
+            return;
+        }
+
+        HistoryListBox.SelectedItem = targetItem;
+        HistoryListBox.ScrollIntoView(targetItem);
+    }
+
+    private void SyncOutputTabForSelectedTask(LauncherTask task)
+    {
+        var groupName = _selectedGroupName;
+        if (string.IsNullOrWhiteSpace(groupName) || !_groupOutputPanels.TryGetValue(groupName, out var panel))
+        {
+            return;
+        }
+
+        var selectedRun = panel.Runs.FirstOrDefault(run =>
+            run.TitleText.Text.StartsWith(task.Name.Trim() + " ", StringComparison.OrdinalIgnoreCase));
+
+        if (selectedRun is null)
+        {
+            return;
+        }
+
+        selectedRun.RunItemExpander.IsExpanded = true;
     }
 
     private void UpdateRibbonTaskActionState()
@@ -4241,6 +5065,7 @@ public partial class MainWindow : Window
 
             if (!waitForExit)
             {
+                AppendRuntimeOutputCaptureWarningIfNeeded(outputTextBox, task.Name, publishedOutputs, reason: "task is configured to not wait for process exit");
                 publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, exitCode: null);
                 AppendLog(outputTextBox, $"[{task.Name}] Process started (PID {process.Id}). Not waiting for exit.");
                 SetTabStopped(tabContext, true);
@@ -4290,6 +5115,14 @@ public partial class MainWindow : Window
             SetTabStopped(tabContext, process.ExitCode == 0);
             SetTaskRunState(task, process.ExitCode == 0 ? TaskRunState.Succeeded : TaskRunState.Failed);
             CompleteHistoryEntry(historyEntry, process.ExitCode == 0, process.ExitCode);
+
+            if (!canCaptureOutput)
+            {
+                var reason = launchAsAdministrator
+                    ? "process ran elevated (stream redirection unavailable)"
+                    : "process output capture was disabled";
+                AppendRuntimeOutputCaptureWarningIfNeeded(outputTextBox, task.Name, publishedOutputs, reason);
+            }
 
             publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, process.ExitCode);
 
@@ -4362,6 +5195,60 @@ public partial class MainWindow : Window
         }
 
         return resolved;
+    }
+
+    private static readonly Regex RuntimeOutputTokenRegex = new(@"\$\{([^{}]+)\}", RegexOptions.Compiled);
+
+    private void AppendRuntimeOutputCaptureWarningIfNeeded(
+        RichTextBox outputTextBox,
+        string taskName,
+        IReadOnlyDictionary<string, string> outputValues,
+        string reason)
+    {
+        var affectedOutputs = outputValues
+            .Where(pair => ContainsRuntimeOutputToken(pair.Value))
+            .Select(pair => pair.Key)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (affectedOutputs.Count == 0)
+        {
+            return;
+        }
+
+        AppendLog(
+            outputTextBox,
+            $"[{taskName}] Warning: runtime output tokens were evaluated while output streams were not capturable because {reason}. Affected outputs: {string.Join(", ", affectedOutputs)}.");
+    }
+
+    private static bool ContainsRuntimeOutputToken(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var matches = RuntimeOutputTokenRegex.Matches(value);
+        foreach (Match match in matches)
+        {
+            var token = match.Groups[1].Value.Trim();
+            if (token.Equals("stdout", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("stderr", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("exitcode", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("command:stdout", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("command:stderr", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("command:exitcode", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("runtime:stdout", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("runtime:stderr", StringComparison.OrdinalIgnoreCase)
+                || token.Equals("runtime:exitcode", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private TaskRunHistoryEntry StartHistoryEntry(LauncherTask task, bool isReplay, string? replayFromEntryId)

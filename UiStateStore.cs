@@ -18,6 +18,12 @@ public sealed class UiState
     public double OutputHeight { get; set; } = 220;
 
     public double SidebarWidth { get; set; } = 220;
+
+    public double HistoryListPaneRatio { get; set; } = 0.4;
+
+    public List<string> FavoriteGroups { get; set; } = [];
+
+    public List<string> NonFavoriteGroupsOrder { get; set; } = [];
 }
 
 public static class UiStateStore

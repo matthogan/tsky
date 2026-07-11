@@ -30,7 +30,7 @@ public partial class TaskEditorWindow : Window
     {
         TaskDefinitionTextBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
         TaskDefinitionTextBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
-        TaskDefinitionTextBox.SetResourceReference(Control.BorderBrushProperty, "PanelBorderBrush");
+        TaskDefinitionTextBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)

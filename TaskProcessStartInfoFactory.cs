@@ -48,8 +48,11 @@ internal static class TaskProcessStartInfoFactory
                 break;
 
             case "powershell":
-                processStartInfo.FileName = "powershell.exe";
-                processStartInfo.Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{task.CommandLine.Replace("\"", "`\"")}\"";
+                processStartInfo.FileName = ResolvePowerShellExecutable();
+                processStartInfo.ArgumentList.Add("-ExecutionPolicy");
+                processStartInfo.ArgumentList.Add("Bypass");
+                processStartInfo.ArgumentList.Add("-Command");
+                processStartInfo.ArgumentList.Add(task.CommandLine);
                 break;
 
             default:
@@ -73,6 +76,49 @@ internal static class TaskProcessStartInfoFactory
     public static string NormalizeRunner(string? runner)
     {
         return string.IsNullOrWhiteSpace(runner) ? "exe" : runner.Trim().ToLowerInvariant();
+    }
+
+    private static string ResolvePowerShellExecutable()
+    {
+        // Prefer pwsh to match modern PowerShell CLI behavior, fall back to Windows PowerShell.
+        if (IsExecutableOnPath("pwsh.exe"))
+        {
+            return "pwsh.exe";
+        }
+
+        return "powershell.exe";
+    }
+
+    private static bool IsExecutableOnPath(string executableName)
+    {
+        var pathValue = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathValue))
+        {
+            return false;
+        }
+
+        foreach (var pathEntry in pathValue.Split(Path.PathSeparator))
+        {
+            if (string.IsNullOrWhiteSpace(pathEntry))
+            {
+                continue;
+            }
+
+            try
+            {
+                var candidate = Path.Combine(pathEntry.Trim(), executableName);
+                if (File.Exists(candidate))
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // Ignore malformed path entries and continue checking other PATH segments.
+            }
+        }
+
+        return false;
     }
 
     private static bool ApplyTaskEnvironmentVariables(LauncherTask task, ProcessStartInfo processStartInfo, out string error)

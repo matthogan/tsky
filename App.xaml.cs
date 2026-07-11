@@ -42,6 +42,7 @@ public partial class App : System.Windows.Application
 		SetBrush("SecondaryTextBrush", useDarkTheme ? "#FFC9D1D9" : "#FF57606A");
 		SetBrush("PanelBackgroundBrush", useDarkTheme ? "#FF252526" : "#FFFFFFFF");
 		SetBrush("PanelBorderBrush", useDarkTheme ? "#55FFFFFF" : "#22000000");
+		SetBrush("InputBorderBrush", useDarkTheme ? "#33FFFFFF" : "#16000000");
 		SetBrush("TabHeaderBackgroundBrush", useDarkTheme ? "#FF2D2D30" : "#FFF3F4F6");
 		SetBrush("TabHeaderHoverBackgroundBrush", useDarkTheme ? "#FF37373B" : "#FFE9EBEF");
 		SetBrush("TabHeaderSelectedBackgroundBrush", useDarkTheme ? "#FF3F3F46" : "#FFDDE2E8");

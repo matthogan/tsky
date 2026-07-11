@@ -2,17 +2,21 @@
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using Brush = System.Windows.Media.Brush;
 using Color = System.Windows.Media.Color;
-using TextBox = System.Windows.Controls.TextBox;
+using RichTextBox = System.Windows.Controls.RichTextBox;
 
 namespace tsky;
 
@@ -30,13 +34,15 @@ public partial class MainWindow : Window
     private const int MaxRunHistoryEntries = 300;
     private const bool EnableLayoutDebugLogging = true;
 
-    private readonly string _configPath;
+    private readonly string _currentDirectoryConfigPath;
+    private readonly string _userProfileConfigPath;
     private TaskConfiguration _currentConfiguration = new();
     private UiState _uiState = new();
     private Point _dragStartPoint;
     private bool _isDraggingTaskCard;
     private Border? _activeDropCueBorder;
     private string? _selectedGroupName;
+    private int? _selectedTaskIndex;
     private readonly List<int> _visibleTaskIndexes = [];
     private readonly Dictionary<string, TabControl> _groupOutputTabs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupExpandedStates = new(StringComparer.OrdinalIgnoreCase);
@@ -55,6 +61,7 @@ public partial class MainWindow : Window
     private bool _isRunningRitual;
     private readonly DispatcherTimer _sidebarStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private int _sidebarSpinnerFrameIndex;
+    private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] SidebarRunningFrames = ["◐", "◓", "◑", "◒"];
 
@@ -96,7 +103,7 @@ public partial class MainWindow : Window
 
         public required TabItem TabItem { get; init; }
 
-        public required TextBox OutputTextBox { get; init; }
+        public required RichTextBox OutputTextBox { get; init; }
 
         public required TextBlock StatusText { get; init; }
 
@@ -112,6 +119,8 @@ public partial class MainWindow : Window
         public required int TaskIndex { get; init; }
 
         public required Border DropCueBorder { get; init; }
+        public required Border SelectionBorder { get; init; }
+        public required Button TaskButton { get; init; }
     }
 
     private sealed class TaskExecutionResult
@@ -193,21 +202,22 @@ public partial class MainWindow : Window
 
     private static readonly Color[] PastelPalette =
     [
-        Color.FromRgb(0xF8, 0xD7, 0xDA),
-        Color.FromRgb(0xD1, 0xEC, 0xF1),
-        Color.FromRgb(0xD4, 0xED, 0xDA),
-        Color.FromRgb(0xFF, 0xEE, 0xCC),
-        Color.FromRgb(0xE8, 0xD8, 0xF7),
-        Color.FromRgb(0xFF, 0xD9, 0xC8),
-        Color.FromRgb(0xD8, 0xEC, 0xFF),
-        Color.FromRgb(0xE1, 0xF5, 0xD0)
+        Color.FromRgb(0x56, 0xCC, 0xF2),
+        Color.FromRgb(0x6F, 0xB8, 0xFF),
+        Color.FromRgb(0x7C, 0xF9, 0xE3),
+        Color.FromRgb(0x8A, 0xD8, 0xFF),
+        Color.FromRgb(0xA6, 0xE8, 0xFF),
+        Color.FromRgb(0xB6, 0xD6, 0xFF),
+        Color.FromRgb(0x97, 0xF0, 0xFF),
+        Color.FromRgb(0xB8, 0xE6, 0xFF)
     ];
 
     public MainWindow()
     {
         InitializeComponent();
 
-        _configPath = ResolveConfigPath();
+        _currentDirectoryConfigPath = TaskConfiguration.GetCurrentDirectoryConfigPath();
+        _userProfileConfigPath = TaskConfiguration.GetUserProfileConfigPath();
         _sidebarStatusTimer.Tick += SidebarStatusTimer_Tick;
         CommandBindings.Add(new CommandBinding(ToggleHistoryCommand, ToggleHistoryCommand_Executed, ToggleViewCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(ToggleOutputCommand, ToggleOutputCommand_Executed, ToggleViewCommand_CanExecute));
@@ -231,11 +241,12 @@ public partial class MainWindow : Window
         TaskWorkspaceSurface.SizeChanged += (_, _) => ScheduleConnectorRefresh();
         TaskPanel.SizeChanged += (_, _) => ScheduleConnectorRefresh();
         SizeChanged += (_, _) => ScheduleConnectorRefresh();
+        PreviewKeyDown += MainWindow_PreviewKeyDown;
 
         _uiState = UiStateStore.Load();
         ApplyPersistedUiState();
 
-        TaskConfiguration.EnsureValidFileOrReset(_configPath);
+        TaskConfiguration.EnsureValidFileOrReset(_userProfileConfigPath);
 
         LoadTaskButtons();
         SyncTaskSurfaceToViewport();
@@ -427,26 +438,9 @@ public partial class MainWindow : Window
         return x >= screenLeft && x <= screenRight && y >= screenTop && y <= screenBottom;
     }
 
-    private static string ResolveConfigPath()
-    {
-        var currentDirectoryPath = System.IO.Path.Combine(Environment.CurrentDirectory, "tasks.json");
-        if (File.Exists(currentDirectoryPath))
-        {
-            return currentDirectoryPath;
-        }
-
-        var appDirectoryPath = System.IO.Path.Combine(AppContext.BaseDirectory, "tasks.json");
-        if (File.Exists(appDirectoryPath))
-        {
-            return appDirectoryPath;
-        }
-
-        return currentDirectoryPath;
-    }
-
     private void LoadTaskButtons()
     {
-        _currentConfiguration = TaskConfiguration.Load(_configPath);
+        _currentConfiguration = TaskConfiguration.LoadMerged(_currentDirectoryConfigPath, _userProfileConfigPath);
 
         TaskPanel.AllowDrop = true;
         TaskPanel.DragOver -= TaskPanel_DragOver;
@@ -794,18 +788,13 @@ public partial class MainWindow : Window
             _currentConfiguration.Rituals.Add(ritual);
         }
 
-        try
+        if (!TryPersistConfiguration("Ritual Chains", "Failed to save ritual."))
         {
-            TaskConfiguration.Save(_configPath, _currentConfiguration);
-            LoadTaskButtons();
+            return;
+        }
 
-            var actionText = wasUpdate ? "updated" : "created";
-            MessageBox.Show($"Ritual '{ritualName}' {actionText} from group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save ritual.\n{ex.Message}", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        var actionText = wasUpdate ? "updated" : "created";
+        MessageBox.Show($"Ritual '{ritualName}' {actionText} from group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void RitualMenuEntry_Click(object sender, RoutedEventArgs e)
@@ -850,14 +839,9 @@ public partial class MainWindow : Window
 
         _currentConfiguration.Rituals[index] = updated;
 
-        try
+        if (!TryPersistConfiguration("Ritual Chains", "Failed to save ritual edits."))
         {
-            TaskConfiguration.Save(_configPath, _currentConfiguration);
-            LoadTaskButtons();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"Failed to save ritual edits.\n{ex.Message}", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
         }
     }
 
@@ -970,7 +954,8 @@ public partial class MainWindow : Window
             Inputs = new Dictionary<string, string>(sourceTask.Inputs, StringComparer.OrdinalIgnoreCase),
             InputBindings = new Dictionary<string, string>(sourceTask.InputBindings, StringComparer.OrdinalIgnoreCase),
             Outputs = new Dictionary<string, string>(sourceTask.Outputs, StringComparer.OrdinalIgnoreCase),
-            WaitForExit = step.WaitForExit ?? false
+            WaitForExit = step.WaitForExit ?? true,
+            RequiresElevation = sourceTask.RequiresElevation
         };
     }
 
@@ -1048,6 +1033,17 @@ public partial class MainWindow : Window
         ApplyGroupViewState();
     }
 
+    private void RibbonHistoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ViewHistoryMenuItem.IsEnabled)
+        {
+            return;
+        }
+
+        ViewHistoryMenuItem.IsChecked = !ViewHistoryMenuItem.IsChecked;
+        ViewHistoryMenuItem_Click(ViewHistoryMenuItem, new RoutedEventArgs());
+    }
+
     private void ToggleHistoryCommand_Executed(object sender, ExecutedRoutedEventArgs e)
     {
         if (!ViewHistoryMenuItem.IsEnabled)
@@ -1087,8 +1083,8 @@ public partial class MainWindow : Window
 
         if (!_groupHistoryVisibility.TryGetValue(groupKey, out var historyVisible))
         {
-            historyVisible = true;
-            _groupHistoryVisibility[groupKey] = true;
+            historyVisible = false;
+            _groupHistoryVisibility[groupKey] = false;
         }
 
         if (!_groupOutputVisibility.TryGetValue(groupKey, out var outputVisible))
@@ -1285,6 +1281,45 @@ public partial class MainWindow : Window
         ViewGroupsMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
         ViewHistoryMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
         ViewOutputMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
+        UpdateRibbonHistoryButtonState(historyVisible);
+        UpdateRibbonRitualsButtonState();
+    }
+
+    private void UpdateRibbonHistoryButtonState(bool historyVisible)
+    {
+        if (RibbonHistoryButton is null)
+        {
+            return;
+        }
+
+        RibbonHistoryButton.IsEnabled = ViewHistoryMenuItem.IsEnabled;
+        if (historyVisible)
+        {
+            RibbonHistoryButton.Foreground = RibbonHistoryActiveBrush;
+            return;
+        }
+
+        // Let the button style control foreground so it matches peer commands (for example, Edit).
+        RibbonHistoryButton.ClearValue(Control.ForegroundProperty);
+    }
+
+    private void UpdateRibbonRitualsButtonState()
+    {
+        if (RibbonRitualsButton is null)
+        {
+            return;
+        }
+
+        var hasCurrentGroupRitual = TryGetCurrentGroupRitual(out _);
+
+        if (hasCurrentGroupRitual)
+        {
+            RibbonRitualsButton.Foreground = RibbonHistoryActiveBrush;
+            return;
+        }
+
+        // Let style control off-state foreground so it matches peer commands.
+        RibbonRitualsButton.ClearValue(Control.ForegroundProperty);
     }
 
     private void RefreshHistoryView()
@@ -1395,6 +1430,15 @@ public partial class MainWindow : Window
         EmptyStateText.Text = $"No tasks in '{_selectedGroupName}'. Use Add Task to populate this group.";
         EmptyStateText.Visibility = _visibleTaskIndexes.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
+        if (_visibleTaskIndexes.Count == 0)
+        {
+            _selectedTaskIndex = null;
+        }
+        else if (_selectedTaskIndex is null || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+        {
+            _selectedTaskIndex = _visibleTaskIndexes[0];
+        }
+
         for (var displayIndex = 0; displayIndex < _visibleTaskIndexes.Count; displayIndex++)
         {
             var index = _visibleTaskIndexes[displayIndex];
@@ -1402,58 +1446,107 @@ public partial class MainWindow : Window
             var cardColor = PastelPalette[displayIndex % PastelPalette.Length];
             var card = new Grid
             {
-                Width = 130,
-                Height = 130,
-                Margin = new Thickness(0, 0, 14, 14)
+                Width = 195,
+                Height = 195,
+                Margin = new Thickness(0, 0, 21, 21)
             };
             var dropCueBorder = new Border
             {
                 BorderThickness = new Thickness(0),
-                CornerRadius = new CornerRadius(16),
+                CornerRadius = new CornerRadius(0),
                 Opacity = 0.45,
                 IsHitTestVisible = false
             };
             dropCueBorder.SetResourceReference(Border.BorderBrushProperty, "PrimaryTextBrush");
 
-            card.Tag = new TaskCardVisual
+            var selectionBorder = new Border
             {
-                DisplayIndex = displayIndex,
-                TaskIndex = index,
-                DropCueBorder = dropCueBorder
+                BorderThickness = new Thickness(0),
+                CornerRadius = new CornerRadius(0),
+                IsHitTestVisible = false
             };
+            selectionBorder.SetResourceReference(Border.BorderBrushProperty, "ConnectorFocusedBrush");
 
+            var foregroundBrush = GetReadableTextBrush(cardColor);
+            var cardFontFamily = TryFindResource("CardUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
             var cardTextContainer = new Grid();
             cardTextContainer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             cardTextContainer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            cardTextContainer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var overlayColor = foregroundBrush is SolidColorBrush solidForeground
+                ? Color.FromArgb(28, solidForeground.Color.R, solidForeground.Color.G, solidForeground.Color.B)
+                : Color.FromArgb(28, 0, 0, 0);
 
             var nameText = new TextBlock
             {
                 Text = task.Name,
                 FontWeight = FontWeights.Bold,
-                FontSize = 14,
-                Foreground = GetReadableTextBrush(cardColor),
+                FontFamily = cardFontFamily,
+                FontSize = 16,
+                Foreground = foregroundBrush,
                 TextAlignment = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
                 TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 2, 0, 8),
-                MaxHeight = 42
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxHeight = 44
             };
-            Grid.SetRow(nameText, 0);
+
+            var titleBar = new Border
+            {
+                Background = new SolidColorBrush(overlayColor),
+                Padding = new Thickness(10, 8, 10, 8),
+                Child = nameText
+            };
+            Grid.SetRow(titleBar, 0);
+
+            var adminGlyph = new TextBlock
+            {
+                Text = "\uE72E",
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                FontSize = 14,
+                Foreground = foregroundBrush,
+                Opacity = 0.92,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                ToolTip = "Requires administrator privileges",
+                Visibility = task.RequiresElevation ? Visibility.Visible : Visibility.Collapsed,
+                Margin = new Thickness(0)
+            };
+
+            var adminBar = new Border
+            {
+                Background = Brushes.Transparent,
+                Padding = new Thickness(8, 6, 8, 6),
+                Child = adminGlyph
+            };
+            Grid.SetRow(adminBar, 2);
 
             var descriptionText = new TextBlock
             {
                 Text = task.Description ?? string.Empty,
-                FontSize = 11,
-                Foreground = GetReadableTextBrush(cardColor),
-                TextAlignment = TextAlignment.Center,
+                FontFamily = cardFontFamily,
+                FontSize = 12.5,
+                Foreground = foregroundBrush,
+                TextAlignment = TextAlignment.Left,
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.9,
                 Visibility = string.IsNullOrWhiteSpace(task.Description) ? Visibility.Collapsed : Visibility.Visible,
-                MaxHeight = 58
+                VerticalAlignment = VerticalAlignment.Top,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                MaxHeight = 78
             };
-            Grid.SetRow(descriptionText, 1);
 
-            cardTextContainer.Children.Add(nameText);
-            cardTextContainer.Children.Add(descriptionText);
+            var descriptionContainer = new Border
+            {
+                Padding = new Thickness(12, 10, 12, 10),
+                Child = descriptionText
+            };
+            Grid.SetRow(descriptionContainer, 1);
+
+            cardTextContainer.Children.Add(titleBar);
+            cardTextContainer.Children.Add(descriptionContainer);
+            cardTextContainer.Children.Add(adminBar);
 
             var button = new Button
             {
@@ -1461,9 +1554,18 @@ public partial class MainWindow : Window
                 Tag = task,
                 Style = (Style)Resources["TaskCardButtonStyle"],
                 Background = new SolidColorBrush(cardColor),
-                Foreground = GetReadableTextBrush(cardColor),
+                Foreground = foregroundBrush,
                 HorizontalContentAlignment = HorizontalAlignment.Stretch,
                 VerticalContentAlignment = VerticalAlignment.Stretch
+            };
+
+            card.Tag = new TaskCardVisual
+            {
+                DisplayIndex = displayIndex,
+                TaskIndex = index,
+                DropCueBorder = dropCueBorder,
+                SelectionBorder = selectionBorder,
+                TaskButton = button
             };
 
             var menuButton = new Button
@@ -1473,7 +1575,7 @@ public partial class MainWindow : Window
                 Style = (Style)Resources["TaskMenuButtonStyle"],
                 Background = new SolidColorBrush(cardColor),
                 BorderBrush = new SolidColorBrush(cardColor),
-                Foreground = GetReadableTextBrush(cardColor)
+                Foreground = foregroundBrush
             };
 
             button.Click += TaskButton_Click;
@@ -1502,6 +1604,7 @@ public partial class MainWindow : Window
             }
 
             card.Children.Add(button);
+            card.Children.Add(selectionBorder);
             card.Children.Add(dropCueBorder);
             card.Children.Add(menuButton);
             TaskPanel.Children.Add(card);
@@ -1509,6 +1612,7 @@ public partial class MainWindow : Window
         }
 
         ScheduleConnectorRefresh();
+        ApplyTaskCardSelectionVisuals();
     }
 
     private static List<string> GetInputPortNames(LauncherTask task)
@@ -2027,7 +2131,7 @@ public partial class MainWindow : Window
 
     private static string NormalizeGroupName(string? groupName)
     {
-        return string.IsNullOrWhiteSpace(groupName) ? "General" : groupName.Trim();
+        return TaskIdentity.NormalizeGroupName(groupName);
     }
 
     private TaskRunState GetTaskRunState(LauncherTask task)
@@ -2071,7 +2175,7 @@ public partial class MainWindow : Window
         {
             Visibility = Visibility.Collapsed,
             IsHitTestVisible = false,
-            CornerRadius = new CornerRadius(16),
+            CornerRadius = new CornerRadius(0),
             BorderThickness = new Thickness(4),
             BorderBrush = new SolidColorBrush(Color.FromArgb(245, 40, 140, 255)),
             Background = new SolidColorBrush(Color.FromArgb(78, 40, 140, 255)),
@@ -2121,7 +2225,17 @@ public partial class MainWindow : Window
 
     private static string GetTaskStateKey(LauncherTask task)
     {
-        return string.IsNullOrWhiteSpace(task.Name) ? "Unnamed Task" : task.Name.Trim();
+        return TaskIdentity.BuildKey(task);
+    }
+
+    private static string GetTaskIdentityKey(LauncherTask task)
+    {
+        return TaskIdentity.BuildKey(task);
+    }
+
+    private static string GetTaskIdentityKey(string? groupName, string? taskName)
+    {
+        return TaskIdentity.BuildKey(groupName, taskName);
     }
 
     private Brush GetStateBrush(TaskRunState state)
@@ -2156,13 +2270,14 @@ public partial class MainWindow : Window
         }
 
         var newTask = window.Task;
+        var newTaskIdentityKey = GetTaskIdentityKey(newTask);
         var existingIndex = _currentConfiguration.Tasks.FindIndex(task =>
-            string.Equals(task.Name.Trim(), newTask.Name.Trim(), StringComparison.OrdinalIgnoreCase));
+            string.Equals(GetTaskIdentityKey(task), newTaskIdentityKey, StringComparison.OrdinalIgnoreCase));
 
         if (existingIndex >= 0)
         {
             var overwriteResult = MessageBox.Show(
-                $"A task named '{newTask.Name}' already exists. Overwrite it?",
+                $"A task named '{newTask.Name}' already exists in group '{NormalizeGroupName(newTask.Group)}'. Overwrite it?",
                 "Duplicate Task Name",
                 MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning);
@@ -2183,6 +2298,324 @@ public partial class MainWindow : Window
 
         SaveTasksAndRefresh(TaskEditorTitle);
         RefreshHistoryView();
+    }
+
+    private void RibbonAddTaskButton_Click(object sender, RoutedEventArgs e)
+    {
+        AddTaskButton_Click(sender, e);
+    }
+
+    private void RibbonDeleteTaskButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
+        {
+            MessageBox.Show("No tasks are available in the current group.", "Delete Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryGetTask(taskIndex, out var taskToDelete))
+        {
+            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = MessageBox.Show(
+            $"Delete task '{taskToDelete.Name}' from this group?",
+            "Delete Task",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        DeleteTask(taskIndex);
+    }
+
+    private void RibbonEditTaskButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
+        {
+            MessageBox.Show("No tasks are available in the current group.", "Edit Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryGetTask(taskIndex, out _))
+        {
+            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        EditTask(taskIndex);
+    }
+
+    private async void RibbonRunChainButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_visibleTaskIndexes.Count == 0)
+        {
+            MessageBox.Show("No tasks are available in the current group.", "Run Chain", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        await RunTaskChainFromTaskAsync(_visibleTaskIndexes[0]);
+    }
+
+    private void RibbonPreviousGroupButton_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateGroup(step: -1);
+    }
+
+    private void RibbonNextGroupButton_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateGroup(step: 1);
+    }
+
+    private void RibbonCreateRitualButton_Click(object sender, RoutedEventArgs e)
+    {
+        DefineRitualFromCurrentGroupMenuItem_Click(sender, e);
+    }
+
+    private void RibbonManageRitualsButton_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show("Ritual management is currently available from the rituals menu entries. A dedicated manager panel can be added next.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void RibbonGroupsDropDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button)
+        {
+            return;
+        }
+
+        var menu = CreateRibbonContextMenu();
+
+        var prevItem = new MenuItem
+        {
+            Header = "Previous Group",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            InputGestureText = "Ctrl+PgUp",
+            IsEnabled = GetSortedGroupNames().Count > 0
+        };
+        prevItem.Click += (_, _) => NavigateGroup(step: -1);
+
+        var nextItem = new MenuItem
+        {
+            Header = "Next Group",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            InputGestureText = "Ctrl+PgDn",
+            IsEnabled = GetSortedGroupNames().Count > 0
+        };
+        nextItem.Click += (_, _) => NavigateGroup(step: 1);
+
+        menu.Items.Add(prevItem);
+        menu.Items.Add(nextItem);
+        menu.Items.Add(new Separator());
+
+        var sortedGroups = GetSortedGroupNames();
+        if (sortedGroups.Count == 0)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = "(No groups)",
+                IsEnabled = false,
+                Style = (Style)Resources["AppMenuItemStyle"]
+            });
+        }
+        else
+        {
+            foreach (var groupName in sortedGroups)
+            {
+                var item = new MenuItem
+                {
+                    Header = groupName,
+                    IsCheckable = true,
+                    IsChecked = string.Equals(groupName, _selectedGroupName, StringComparison.OrdinalIgnoreCase),
+                    Style = (Style)Resources["AppMenuItemStyle"]
+                };
+
+                item.Click += (_, _) => SelectGroup(groupName);
+                menu.Items.Add(item);
+            }
+        }
+
+        OpenRibbonContextMenu(button, menu);
+    }
+
+    private void RibbonRitualsDropDownButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button)
+        {
+            return;
+        }
+
+        var menu = CreateRibbonContextMenu();
+        var hasCurrentGroupRitual = TryGetCurrentGroupRitual(out _);
+
+        var defineItem = new MenuItem
+        {
+            Header = "Define From Current Group",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = HasSelectedGroupTasks()
+        };
+        defineItem.Click += DefineRitualFromCurrentGroupMenuItem_Click;
+        menu.Items.Add(defineItem);
+
+        var runItem = new MenuItem
+        {
+            Header = "Run Current Group Ritual",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = hasCurrentGroupRitual
+        };
+        runItem.Click += RibbonRunCurrentGroupRitualMenuItem_Click;
+        menu.Items.Add(runItem);
+
+        var editItem = new MenuItem
+        {
+            Header = "Edit Current Group Ritual",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = hasCurrentGroupRitual
+        };
+        editItem.Click += RibbonEditCurrentGroupRitualMenuItem_Click;
+        menu.Items.Add(editItem);
+
+        OpenRibbonContextMenu(button, menu);
+    }
+
+    private async void RibbonRunCurrentGroupRitualMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetCurrentGroupRitual(out var ritual))
+        {
+            MessageBox.Show("No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        await ExecuteRitualAsync(ritual);
+    }
+
+    private void RibbonEditCurrentGroupRitualMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetCurrentGroupRitual(out var ritual))
+        {
+            MessageBox.Show("No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        EditRitualMenuEntry_Click(new MenuItem { Tag = ritual }, new RoutedEventArgs());
+    }
+
+    private bool TryGetCurrentGroupRitual(out RitualDefinition ritual)
+    {
+        ritual = new RitualDefinition();
+
+        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            return false;
+        }
+
+        var groupName = NormalizeGroupName(_selectedGroupName);
+        var defaultName = $"{groupName} Ritual";
+
+        ritual = _currentConfiguration.Rituals.FirstOrDefault(r =>
+                     string.Equals(r.Name, defaultName, StringComparison.OrdinalIgnoreCase))
+                 ?? _currentConfiguration.Rituals.FirstOrDefault(r =>
+                     r.Steps.Any(step => string.Equals(NormalizeGroupName(step.Group), groupName, StringComparison.OrdinalIgnoreCase)))
+                 ?? new RitualDefinition();
+
+        return !string.IsNullOrWhiteSpace(ritual.Name);
+    }
+
+    private ContextMenu CreateRibbonContextMenu()
+    {
+        return new ContextMenu
+        {
+            Style = (Style)Resources["RibbonContextMenuStyle"],
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom
+        };
+    }
+
+    private static void OpenRibbonContextMenu(Button button, ContextMenu menu)
+    {
+        button.ContextMenu = menu;
+        menu.PlacementTarget = button;
+        menu.IsOpen = true;
+    }
+
+    private void RibbonShareButton_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show("Share is a placeholder for a future release.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void RibbonImportButton_Click(object sender, RoutedEventArgs e)
+    {
+        var tabContext = CreateOutputTab("Import");
+        var outputTextBox = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+
+        string? tempPath = null;
+
+        try
+        {
+            var openFileDialog = new OpenFileDialog
+            {
+                Title = "Import Tasks Configuration",
+                Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+                CheckFileExists = true,
+                CheckPathExists = true,
+                Multiselect = false
+            };
+
+            if (openFileDialog.ShowDialog(this) != true)
+            {
+                AppendLog(outputTextBox, "[Import] Import canceled.");
+                SetTabStopped(tabContext, true);
+                return;
+            }
+
+            var importPath = openFileDialog.FileName;
+            AppendLog(outputTextBox, $"[Import] Selected file: {importPath}");
+
+            // Validate the imported file can be parsed as configuration JSON.
+            var importedConfig = TaskConfiguration.Load(importPath);
+            AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) and {importedConfig.Rituals.Count} ritual(s) from import file.");
+
+            // User profile takes precedence over imported tasks for same group+task identity.
+            var mergedConfig = TaskConfiguration.LoadMerged(importPath, _userProfileConfigPath);
+
+            tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-import-{Guid.NewGuid():N}.json");
+            TaskConfiguration.Save(tempPath, mergedConfig);
+
+            // Validate merged content before replacing user profile configuration.
+            var validatedMergedConfig = TaskConfiguration.Load(tempPath);
+
+            File.Copy(tempPath, _userProfileConfigPath, overwrite: true);
+
+            AppendLog(outputTextBox, $"[Import] Merged configuration validated and written to user profile: {_userProfileConfigPath}");
+            AppendLog(outputTextBox, $"[Import] Final merged result: {validatedMergedConfig.Tasks.Count} task(s), {validatedMergedConfig.Rituals.Count} ritual(s).");
+
+            LoadTaskButtons();
+            AppendLog(outputTextBox, "[Import] UI reloaded.");
+            SetTabStopped(tabContext, true);
+        }
+        catch (Exception ex)
+        {
+            AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
+            SetTabStopped(tabContext, false);
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                    // Best-effort cleanup; non-fatal.
+                }
+            }
+        }
     }
 
     private void TaskCard_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -2370,12 +2803,100 @@ public partial class MainWindow : Window
         _activeDropCueBorder = null;
     }
 
+    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Tab || (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0)
+        {
+            return;
+        }
+
+        if (_visibleTaskIndexes.Count == 0)
+        {
+            return;
+        }
+
+        SelectNextVisibleTask(step: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1);
+        e.Handled = true;
+    }
+
+    private void SelectNextVisibleTask(int step)
+    {
+        if (_visibleTaskIndexes.Count == 0)
+        {
+            _selectedTaskIndex = null;
+            return;
+        }
+
+        if (_selectedTaskIndex is null || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+        {
+            _selectedTaskIndex = _visibleTaskIndexes[0];
+        }
+        else
+        {
+            var currentPosition = _visibleTaskIndexes.IndexOf(_selectedTaskIndex.Value);
+            var nextPosition = (currentPosition + step + _visibleTaskIndexes.Count) % _visibleTaskIndexes.Count;
+            _selectedTaskIndex = _visibleTaskIndexes[nextPosition];
+        }
+
+        ApplyTaskCardSelectionVisuals();
+        FocusSelectedTaskCard();
+    }
+
+    private void FocusSelectedTaskCard()
+    {
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
+        {
+            return;
+        }
+
+        if (_taskCardsByIndex.TryGetValue(taskIndex, out var card) && card.Tag is TaskCardVisual visual)
+        {
+            visual.TaskButton.Focus();
+        }
+    }
+
+    private bool TryGetSelectedVisibleTaskIndex(out int taskIndex)
+    {
+        taskIndex = -1;
+
+        if (_visibleTaskIndexes.Count == 0)
+        {
+            _selectedTaskIndex = null;
+            return false;
+        }
+
+        if (_selectedTaskIndex is null || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+        {
+            _selectedTaskIndex = _visibleTaskIndexes[0];
+        }
+
+        taskIndex = _selectedTaskIndex.Value;
+        return true;
+    }
+
+    private void ApplyTaskCardSelectionVisuals()
+    {
+        foreach (var card in _taskCardsByIndex.Values)
+        {
+            if (card.Tag is not TaskCardVisual visual)
+            {
+                continue;
+            }
+
+            var isSelected = _selectedTaskIndex.HasValue && visual.TaskIndex == _selectedTaskIndex.Value;
+            visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(2) : new Thickness(0);
+        }
+    }
+
     private void TaskMenuButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: int taskIndex })
         {
             return;
         }
+
+        _selectedTaskIndex = taskIndex;
+        ApplyTaskCardSelectionVisuals();
 
         if (!IsValidTaskIndex(taskIndex))
         {
@@ -2497,37 +3018,46 @@ public partial class MainWindow : Window
 
     private void SaveTasksAndRefresh(string errorTitle)
     {
+        if (!TryPersistConfiguration(errorTitle, "Failed to save tasks.json."))
+        {
+            return;
+        }
+    }
+
+    private bool TryPersistConfiguration(string errorTitle, string errorPrefix)
+    {
         try
         {
-            TaskConfiguration.Save(_configPath, _currentConfiguration);
+            TaskConfiguration.Save(_userProfileConfigPath, _currentConfiguration);
             LoadTaskButtons();
+            return true;
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Failed to save tasks.json.\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show($"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
     }
 
     private static Brush GetReadableTextBrush(Color backgroundColor)
     {
-        var luminance = (0.2126 * backgroundColor.R + 0.7152 * backgroundColor.G + 0.0722 * backgroundColor.B) / 255.0;
-
-        if (luminance >= 0.62)
-        {
-            return new SolidColorBrush(Color.FromRgb(0x1E, 0x2A, 0x35));
-        }
-
-        return Brushes.White;
+        return new SolidColorBrush(Color.FromRgb(0x12, 0x1E, 0x2A));
     }
 
     private async void TaskButton_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: LauncherTask task })
+        if (sender is not Button { Tag: LauncherTask task } button)
         {
             return;
         }
 
-        await ExecuteTaskAsync(task, (Button)sender, isReplay: false);
+        if (button.Parent is Grid card && card.Tag is TaskCardVisual visual)
+        {
+            _selectedTaskIndex = visual.TaskIndex;
+            ApplyTaskCardSelectionVisuals();
+        }
+
+        await ExecuteTaskAsync(task, button, isReplay: false);
     }
 
     private async Task RunTaskChainFromTaskAsync(int startTaskIndex)
@@ -2608,6 +3138,8 @@ public partial class MainWindow : Window
 
         var runner = TaskProcessStartInfoFactory.NormalizeRunner(effectiveTask.Runner);
         var waitForExit = effectiveTask.WaitForExit;
+        var launchAsAdministrator = ShouldLaunchAsAdministrator(effectiveTask);
+        var canCaptureOutput = waitForExit && !launchAsAdministrator;
 
         if (sourceButton is not null)
         {
@@ -2617,6 +3149,18 @@ public partial class MainWindow : Window
         var modePrefix = isReplay ? "[replay] " : string.Empty;
         var executionMode = waitForExit ? "wait" : "fire-and-forget";
         AppendLog(outputTextBox, $"[{task.Name}] {modePrefix}Running ({runner}, {executionMode}): {effectiveTask.CommandLine}");
+
+        if (effectiveTask.RequiresElevation)
+        {
+            if (launchAsAdministrator)
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Elevation required. Prompting for administrator consent (UAC).");
+            }
+            else
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Elevation required. Launcher is already running elevated.");
+            }
+        }
 
         try
         {
@@ -2629,11 +3173,18 @@ public partial class MainWindow : Window
                 return new TaskExecutionResult { Succeeded = false, ExitCode = null };
             }
 
-            if (!waitForExit)
+            if (!canCaptureOutput)
             {
-                // Detached launches should not keep stdout/stderr pipes open.
+                // Shell elevation cannot redirect streams. Detached launches also do not need redirected streams.
                 processStartInfo.RedirectStandardOutput = false;
                 processStartInfo.RedirectStandardError = false;
+            }
+
+            if (launchAsAdministrator)
+            {
+                processStartInfo.UseShellExecute = true;
+                processStartInfo.Verb = "runas";
+                processStartInfo.CreateNoWindow = false;
             }
 
             using var process = new Process { StartInfo = processStartInfo };
@@ -2660,15 +3211,32 @@ public partial class MainWindow : Window
                 };
             }
 
-            var standardOutputTask = process.StandardOutput.ReadToEndAsync();
-            var standardErrorTask = process.StandardError.ReadToEndAsync();
+            if (canCaptureOutput)
+            {
+                var standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                var standardErrorTask = process.StandardError.ReadToEndAsync();
 
-            await process.WaitForExitAsync();
+                await process.WaitForExitAsync();
 
-            var standardOutput = await standardOutputTask;
-            var standardError = await standardErrorTask;
+                var standardOutput = await standardOutputTask;
+                var standardError = await standardErrorTask;
 
-            AppendProcessOutput(outputTextBox, task.Name, process.ExitCode, standardOutput, standardError);
+                AppendProcessOutput(outputTextBox, task.Name, process.ExitCode, standardOutput, standardError);
+            }
+            else
+            {
+                await process.WaitForExitAsync();
+
+                if (launchAsAdministrator)
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Elevated process completed with exit code {process.ExitCode}. Output capture is disabled for elevated launches.");
+                }
+                else
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Process completed with exit code {process.ExitCode}.");
+                }
+            }
+
             SetTabStopped(tabContext, process.ExitCode == 0);
             SetTaskRunState(task, process.ExitCode == 0 ? TaskRunState.Succeeded : TaskRunState.Failed);
             CompleteHistoryEntry(historyEntry, process.ExitCode == 0, process.ExitCode);
@@ -2685,6 +3253,14 @@ public partial class MainWindow : Window
                 ExitCode = process.ExitCode,
                 PublishedOutputs = new Dictionary<string, string>(resolved.ResolvedOutputs, StringComparer.OrdinalIgnoreCase)
             };
+        }
+        catch (Win32Exception ex) when (launchAsAdministrator && ex.NativeErrorCode == 1223)
+        {
+            AppendLog(outputTextBox, $"[{task.Name}] Elevation was canceled by the user.");
+            SetTabStopped(tabContext, false);
+            SetTaskRunState(task, TaskRunState.Failed);
+            CompleteHistoryEntry(historyEntry, false, null);
+            return new TaskExecutionResult { Succeeded = false, ExitCode = null };
         }
         catch (Exception ex)
         {
@@ -2719,7 +3295,6 @@ public partial class MainWindow : Window
         };
 
         _runHistory.Add(entry);
-        TrimRunHistory();
         TaskRunHistoryStore.Save(_runHistory);
         RefreshHistoryView();
         return entry;
@@ -2762,6 +3337,7 @@ public partial class MainWindow : Window
             Runner = task.Runner,
             WorkingDirectory = task.WorkingDirectory,
             WaitForExit = task.WaitForExit,
+            RequiresElevation = task.RequiresElevation,
             Env = new Dictionary<string, string>(task.Env, StringComparer.OrdinalIgnoreCase)
         };
     }
@@ -2777,8 +3353,26 @@ public partial class MainWindow : Window
             Runner = snapshot.Runner,
             WorkingDirectory = snapshot.WorkingDirectory,
             WaitForExit = snapshot.WaitForExit,
+            RequiresElevation = snapshot.RequiresElevation,
             Env = new Dictionary<string, string>(snapshot.Env, StringComparer.OrdinalIgnoreCase)
         };
+    }
+
+    private static bool ShouldLaunchAsAdministrator(LauncherTask task)
+    {
+        return task.RequiresElevation && !IsCurrentProcessElevated();
+    }
+
+    private static bool IsCurrentProcessElevated()
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        if (identity is null)
+        {
+            return false;
+        }
+
+        var principal = new WindowsPrincipal(identity);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
     private TaskRunHistoryEntry? GetLastSnapshotEntry(LauncherTask task)
@@ -2944,23 +3538,28 @@ public partial class MainWindow : Window
             : new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
     }
 
-    private TextBox CreateLogTextBox()
+    private RichTextBox CreateLogTextBox()
     {
-        var textBox = new TextBox
+        var outputFontFamily = TryFindResource("AppUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
+
+        var textBox = new RichTextBox
         {
             Margin = new Thickness(8),
-            FontFamily = new FontFamily("Consolas"),
+            FontFamily = outputFontFamily,
             FontSize = 12,
             IsReadOnly = true,
-            TextWrapping = TextWrapping.Wrap,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            AcceptsReturn = true,
-            AcceptsTab = true
+            IsDocumentEnabled = false
         };
         textBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
         textBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
         textBox.SetResourceReference(Control.BorderBrushProperty, "PanelBorderBrush");
+        textBox.Document = new FlowDocument
+        {
+            PagePadding = new Thickness(0),
+            TextAlignment = TextAlignment.Left
+        };
 
         var contextMenu = new ContextMenu();
         var copyItem = new MenuItem { Header = "Copy" };
@@ -3004,32 +3603,31 @@ public partial class MainWindow : Window
         outputTabControl.SelectedIndex = nextIndex;
     }
 
-    private void AppendProcessOutput(TextBox outputTextBox, string taskName, int exitCode, string standardOutput, string standardError)
+    private void AppendProcessOutput(RichTextBox outputTextBox, string taskName, int exitCode, string standardOutput, string standardError)
     {
-        var builder = new StringBuilder();
-        builder.AppendLine($"[{taskName}] Exit code: {exitCode}");
+        AppendLog(outputTextBox, $"[{taskName}] Exit code: {exitCode}");
 
         if (!string.IsNullOrWhiteSpace(standardOutput))
         {
-            builder.AppendLine("[stdout]");
-            builder.AppendLine(standardOutput.TrimEnd());
+            AppendLog(outputTextBox, "[stdout]");
+            AppendAnsiText(outputTextBox, standardOutput.TrimEnd());
+            AppendPlainText(outputTextBox, Environment.NewLine + Environment.NewLine);
         }
 
         if (!string.IsNullOrWhiteSpace(standardError))
         {
-            builder.AppendLine("[stderr]");
-            builder.AppendLine(standardError.TrimEnd());
+            AppendLog(outputTextBox, "[stderr]");
+            AppendAnsiText(outputTextBox, standardError.TrimEnd());
+            AppendPlainText(outputTextBox, Environment.NewLine + Environment.NewLine);
         }
 
         if (string.IsNullOrWhiteSpace(standardOutput) && string.IsNullOrWhiteSpace(standardError))
         {
-            builder.AppendLine("No output was produced.");
+            AppendLog(outputTextBox, "No output was produced.");
         }
-
-        AppendLog(outputTextBox, builder.ToString().TrimEnd());
     }
 
-    private void AppendDataflowTrace(TextBox outputTextBox, string taskName, DataflowResolutionResult resolved)
+    private void AppendDataflowTrace(RichTextBox outputTextBox, string taskName, DataflowResolutionResult resolved)
     {
         if (resolved.TraceLines.Count == 0)
         {
@@ -3048,7 +3646,7 @@ public partial class MainWindow : Window
         AppendLog(outputTextBox, builder.ToString().TrimEnd());
     }
 
-    private void AppendPublishedOutputs(TextBox outputTextBox, string taskName, IReadOnlyDictionary<string, string> outputs)
+    private void AppendPublishedOutputs(RichTextBox outputTextBox, string taskName, IReadOnlyDictionary<string, string> outputs)
     {
         if (outputs.Count == 0)
         {
@@ -3066,10 +3664,165 @@ public partial class MainWindow : Window
         AppendLog(outputTextBox, builder.ToString().TrimEnd());
     }
 
-    private void AppendLog(TextBox outputTextBox, string message)
+    private void AppendLog(RichTextBox outputTextBox, string message)
     {
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        outputTextBox.AppendText($"[{timestamp}] {message}{Environment.NewLine}{Environment.NewLine}");
+        AppendPlainText(outputTextBox, $"[{timestamp}] {message}{Environment.NewLine}{Environment.NewLine}");
         outputTextBox.ScrollToEnd();
+    }
+
+    private static void AppendAnsiText(RichTextBox outputTextBox, string text)
+    {
+        var paragraph = EnsureOutputParagraph(outputTextBox);
+        var style = new AnsiStyleState();
+        var spanStart = 0;
+
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (text[index] != '\u001b' || index + 1 >= text.Length || text[index + 1] != '[')
+            {
+                continue;
+            }
+
+            var commandEnd = index + 2;
+            while (commandEnd < text.Length && text[commandEnd] != 'm')
+            {
+                commandEnd++;
+            }
+
+            if (commandEnd >= text.Length)
+            {
+                break;
+            }
+
+            var segmentLength = index - spanStart;
+            if (segmentLength > 0)
+            {
+                AppendStyledRun(paragraph, text.Substring(spanStart, segmentLength), style);
+            }
+
+            var ansiPayload = text.Substring(index + 2, commandEnd - (index + 2));
+            ApplyAnsiCodes(style, ansiPayload);
+
+            index = commandEnd;
+            spanStart = index + 1;
+        }
+
+        if (spanStart < text.Length)
+        {
+            AppendStyledRun(paragraph, text[spanStart..], style);
+        }
+
+        outputTextBox.ScrollToEnd();
+    }
+
+    private static void AppendPlainText(RichTextBox outputTextBox, string text)
+    {
+        var paragraph = EnsureOutputParagraph(outputTextBox);
+        paragraph.Inlines.Add(new Run(text));
+    }
+
+    private static Paragraph EnsureOutputParagraph(RichTextBox outputTextBox)
+    {
+        outputTextBox.Document ??= new FlowDocument();
+        if (outputTextBox.Document.Blocks.LastBlock is Paragraph paragraph)
+        {
+            return paragraph;
+        }
+
+        var newParagraph = new Paragraph
+        {
+            Margin = new Thickness(0)
+        };
+        outputTextBox.Document.Blocks.Add(newParagraph);
+        return newParagraph;
+    }
+
+    private static void AppendStyledRun(Paragraph paragraph, string text, AnsiStyleState style)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        var run = new Run(text)
+        {
+            FontWeight = style.Bold ? FontWeights.Bold : FontWeights.Normal
+        };
+
+        if (style.Foreground is not null)
+        {
+            run.Foreground = style.Foreground;
+        }
+
+        paragraph.Inlines.Add(run);
+    }
+
+    private static void ApplyAnsiCodes(AnsiStyleState style, string ansiPayload)
+    {
+        var codes = string.IsNullOrWhiteSpace(ansiPayload)
+            ? [0]
+            : ansiPayload.Split(';').Select(code => int.TryParse(code, out var parsed) ? parsed : -1);
+
+        foreach (var code in codes)
+        {
+            switch (code)
+            {
+                case 0:
+                    style.Foreground = null;
+                    style.Bold = false;
+                    break;
+                case 1:
+                    style.Bold = true;
+                    break;
+                case 22:
+                    style.Bold = false;
+                    break;
+                case 39:
+                    style.Foreground = null;
+                    break;
+                default:
+                    if (TryMapAnsiForeground(code, out var brush))
+                    {
+                        style.Foreground = brush;
+                    }
+                    break;
+            }
+        }
+    }
+
+    private static bool TryMapAnsiForeground(int code, out Brush brush)
+    {
+        brush = Brushes.Transparent;
+
+        brush = code switch
+        {
+            30 => Brushes.Black,
+            31 => Brushes.IndianRed,
+            32 => Brushes.ForestGreen,
+            33 => Brushes.Goldenrod,
+            34 => Brushes.SteelBlue,
+            35 => Brushes.MediumVioletRed,
+            36 => Brushes.Teal,
+            37 => Brushes.LightGray,
+            90 => Brushes.DimGray,
+            91 => Brushes.OrangeRed,
+            92 => Brushes.LimeGreen,
+            93 => Brushes.Khaki,
+            94 => Brushes.DeepSkyBlue,
+            95 => Brushes.Orchid,
+            96 => Brushes.DarkTurquoise,
+            97 => Brushes.White,
+            _ => Brushes.Transparent
+        };
+
+        return code is >= 30 and <= 37 or >= 90 and <= 97;
+    }
+
+    private sealed class AnsiStyleState
+    {
+        public Brush? Foreground { get; set; }
+
+        public bool Bold { get; set; }
     }
 }

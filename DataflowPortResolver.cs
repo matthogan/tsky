@@ -80,6 +80,7 @@ internal static class DataflowPortResolver
             Group = task.Group,
             Runner = task.Runner,
             WaitForExit = task.WaitForExit,
+            RequiresElevation = task.RequiresElevation,
             CommandLine = ResolveValue(task.CommandLine, resolvedInputs, context, trace, "commandLine"),
             WorkingDirectory = ResolveValue(task.WorkingDirectory, resolvedInputs, context, trace, "workingDirectory"),
             Env = ResolveEnvironment(task.Env, resolvedInputs, context, trace),

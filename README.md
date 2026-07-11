@@ -33,6 +33,7 @@ Each task supports:
 - `commandLine`: Command to run
 - `runner`: Execution mode (`exe`, `cmd`, `powershell`)
 - `waitForExit`: Optional; default `true`. Set `false` for fire-and-forget tasks (continue immediately after process start)
+- `requiresElevation`: Optional; default `false`. When `true`, prompts for UAC consent if the launcher is not already running as administrator
 - `env`: Optional environment variable overrides for the launched process
 - `workingDirectory`: Optional working folder for the launched process
 - `inputs`: Optional input port defaults for this task
@@ -42,6 +43,8 @@ Each task supports:
 If `runner` is omitted, the default is `exe`.
 
 If `waitForExit` is omitted, the default is `true`.
+
+If `requiresElevation` is omitted, the default is `false`.
 
 Tasks can be stored either as a legacy flat `tasks` array or the grouped `groups` format.
 
@@ -208,6 +211,9 @@ Use this for:
 - Commands available on PATH
 
 For GUI launchers (browser, editor, etc.) that should not block downstream tasks, set `waitForExit` to `false`.
+
+If `requiresElevation` is `true` and the launcher is not already elevated, Windows shows the UAC consent dialog before process start.
+Note: elevated launches use shell execution and do not capture stdout/stderr in the output tab.
 
 Tips:
 

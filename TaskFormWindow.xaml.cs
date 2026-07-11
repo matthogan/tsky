@@ -30,12 +30,12 @@ public partial class TaskFormWindow : Window
         {
             textBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
             textBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
-            textBox.SetResourceReference(Control.BorderBrushProperty, "PanelBorderBrush");
+            textBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
         }
 
         RunnerComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
         RunnerComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
-        RunnerComboBox.SetResourceReference(Control.BorderBrushProperty, "PanelBorderBrush");
+        RunnerComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -71,6 +71,7 @@ public partial class TaskFormWindow : Window
             Runner = runner,
             CommandLine = CommandLineTextBox.Text.Trim(),
             WorkingDirectory = WorkingDirectoryTextBox.Text.Trim(),
+            RequiresElevation = RequiresElevationCheckBox.IsChecked == true,
             Env = envVars
         };
 

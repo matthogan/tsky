@@ -1,0 +1,23 @@
+{
+  "groups": [
+    {
+      "name": "Network",
+      "tasks": [
+        {
+          "name": "Ping the outside world...",
+          "description": "Pings the outside world to check network connectivity.",
+          "group": "Network",
+          "commandLine": "Test-Connection \"www.google.com\" -Count 4",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {},
+          "inputBindings": {},
+          "outputs": {}
+        }
+      ]
+    }
+  ],
+  "rituals": []
+}

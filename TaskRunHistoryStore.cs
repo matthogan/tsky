@@ -28,6 +28,8 @@ public sealed class TaskRunSnapshot
     public string WorkingDirectory { get; set; } = string.Empty;
 
     public bool WaitForExit { get; set; } = true;
+
+    public bool RequiresElevation { get; set; }
 }
 
 public sealed class TaskRunHistoryEntry

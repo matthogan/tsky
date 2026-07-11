@@ -10,6 +10,7 @@
         ResizeMode="CanResize"
         ShowInTaskbar="False"
         Background="{DynamicResource AppBackgroundBrush}"
+        FontFamily="{DynamicResource AppUiFontFamily}"
         Foreground="{DynamicResource PrimaryTextBrush}">
     <Window.Resources>
         <Style x:Key="DialogButtonStyle" TargetType="Button">
@@ -50,7 +51,7 @@
         </Style>
     </Window.Resources>
 
-    <Grid Margin="16">
+    <Grid Margin="18">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -58,14 +59,14 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0"
-                   Margin="0,0,0,10"
+               Margin="0,0,0,10"
                    FontSize="15"
                    FontWeight="SemiBold"
                    Text="Task JSON Definition" />
 
         <TextBox x:Name="TaskDefinitionTextBox"
                  Grid.Row="1"
-                 FontFamily="Consolas"
+                 FontFamily="{DynamicResource AppMonoFontFamily}"
                  FontSize="12"
                  AcceptsReturn="True"
                  AcceptsTab="True"
@@ -77,19 +78,19 @@
                  BorderBrush="{DynamicResource PanelBorderBrush}" />
 
         <StackPanel Grid.Row="2"
-                    Margin="0,12,0,0"
+                Margin="0,12,0,0"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right">
             <Button x:Name="CancelButton"
-                    Width="90"
-                    Height="30"
+                Width="100"
+                Height="34"
                     Margin="0,0,8,0"
                     Content="Cancel"
                     Style="{StaticResource DialogButtonStyle}"
                     Click="CancelButton_Click" />
             <Button x:Name="SaveButton"
-                    Width="90"
-                    Height="30"
+                Width="100"
+                Height="34"
                     Content="Save"
                     Style="{StaticResource PrimaryDialogButtonStyle}"
                     Click="SaveButton_Click" />

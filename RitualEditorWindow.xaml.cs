@@ -27,6 +27,7 @@ public partial class RitualEditorWindow : Window
                 TaskName = step.TaskName,
                 Group = step.Group,
                 DelayMsText = step.DelayMs.ToString(),
+                WaitForExit = step.WaitForExit ?? true,
                 ContinueOnError = step.ContinueOnError
             });
         }
@@ -65,6 +66,7 @@ public partial class RitualEditorWindow : Window
                 TaskName = row.TaskName,
                 Group = row.Group,
                 DelayMs = delayMs,
+                WaitForExit = row.WaitForExit,
                 ContinueOnError = row.ContinueOnError
             });
         }
@@ -87,6 +89,7 @@ public partial class RitualEditorWindow : Window
     private sealed class RitualStepEditRow : INotifyPropertyChanged
     {
         private string _delayMsText = "0";
+        private bool _waitForExit = true;
         private bool _continueOnError;
 
         public required string TaskName { get; init; }
@@ -110,6 +113,16 @@ public partial class RitualEditorWindow : Window
             {
                 _continueOnError = value;
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ContinueOnError)));
+            }
+        }
+
+        public bool WaitForExit
+        {
+            get => _waitForExit;
+            set
+            {
+                _waitForExit = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WaitForExit)));
             }
         }
 

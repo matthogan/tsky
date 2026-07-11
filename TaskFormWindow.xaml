@@ -10,6 +10,7 @@
         ResizeMode="CanResize"
         ShowInTaskbar="False"
         Background="{DynamicResource AppBackgroundBrush}"
+        FontFamily="{DynamicResource AppUiFontFamily}"
         Foreground="{DynamicResource PrimaryTextBrush}">
     <Window.Resources>
         <Style x:Key="FormEllipsisButtonStyle" TargetType="Button">
@@ -91,7 +92,7 @@
 
         <Border
             Grid.Row="0"
-            Padding="16,24,16,16"
+            Padding="16"
             CornerRadius="12"
             Background="{DynamicResource PanelBackgroundBrush}"
             BorderBrush="{DynamicResource PanelBorderBrush}"
@@ -99,6 +100,7 @@
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
@@ -155,18 +157,26 @@
                     <TextBox x:Name="WorkingDirectoryTextBox" Grid.Row="5" Grid.Column="1" Margin="0,0,8,10" Height="32" />
                     <Button Grid.Row="5" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseDirectoryButton_Click" />
 
-                    <TextBlock Grid.Row="6" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
-                    <TextBlock Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
+                    <CheckBox x:Name="RequiresElevationCheckBox"
+                              Grid.Row="6"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="2"
+                              Margin="0,8,0,12"
+                              VerticalAlignment="Center"
+                              Content="Requires administrator privileges (UAC)" />
+
+                    <TextBlock Grid.Row="7" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                    <TextBlock Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
 
                     <TextBox x:Name="EnvVarsTextBox"
-                             Grid.Row="7"
+                             Grid.Row="8"
                              Grid.Column="0"
                              Grid.ColumnSpan="3"
                              AcceptsReturn="True"
                              VerticalScrollBarVisibility="Auto"
                              HorizontalScrollBarVisibility="Auto"
                              TextWrapping="NoWrap"
-                             FontFamily="Consolas"
+                             FontFamily="{DynamicResource AppMonoFontFamily}"
                              MinHeight="200" />
                 </Grid>
             </ScrollViewer>

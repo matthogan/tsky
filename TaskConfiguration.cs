@@ -22,10 +22,27 @@ public sealed class TaskConfiguration
 
     public List<RitualDefinition> Rituals { get; set; } = [];
 
+    public static string GetCurrentDirectoryConfigPath()
+    {
+        return Path.Combine(Environment.CurrentDirectory, "tasks.json");
+    }
+
+    public static string GetUserProfileConfigPath()
+    {
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "tasks.json");
+    }
+
     public static TaskConfiguration Load(string path)
     {
         var fileModel = JsonFileStorage.LoadOrDefault<TaskConfigurationFileModel>(path, JsonOptions);
         return FromFileModel(fileModel);
+    }
+
+    public static TaskConfiguration LoadMerged(string currentDirectoryPath, string userProfilePath)
+    {
+        var currentDirectoryConfig = LoadIfExists(currentDirectoryPath);
+        var userProfileConfig = LoadIfExists(userProfilePath);
+        return MergeConfigurations(currentDirectoryConfig, userProfileConfig);
     }
 
     public static void EnsureValidFileOrReset(string path)
@@ -131,6 +148,8 @@ public sealed class TaskConfiguration
             }
         }
 
+        tasks = MergeTasks([], tasks);
+
         var rituals = NormalizeRituals(fileModel.Rituals);
 
         var normalizedGroups = BuildGroups(tasks);
@@ -182,11 +201,109 @@ public sealed class TaskConfiguration
 
     private static void NormalizeTask(LauncherTask task, string fallbackGroupName)
     {
-        task.Group = string.IsNullOrWhiteSpace(task.Group) ? fallbackGroupName : task.Group.Trim();
+        task.Name = TaskIdentity.NormalizeTaskName(task.Name);
+        task.Group = string.IsNullOrWhiteSpace(task.Group) ? fallbackGroupName : TaskIdentity.NormalizeGroupName(task.Group);
         task.Env ??= [];
         task.Inputs ??= [];
         task.InputBindings ??= [];
         task.Outputs ??= [];
+    }
+
+    private static TaskConfiguration LoadIfExists(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return new TaskConfiguration();
+        }
+
+        try
+        {
+            return Load(path);
+        }
+        catch
+        {
+            return new TaskConfiguration();
+        }
+    }
+
+    private static TaskConfiguration MergeConfigurations(TaskConfiguration baseConfig, TaskConfiguration overlayConfig)
+    {
+        var mergedTasks = MergeTasks(baseConfig.Tasks, overlayConfig.Tasks);
+        var mergedRituals = MergeRituals(baseConfig.Rituals, overlayConfig.Rituals);
+
+        return new TaskConfiguration
+        {
+            Tasks = mergedTasks,
+            Groups = BuildGroups(mergedTasks),
+            Rituals = mergedRituals
+        };
+    }
+
+    private static List<LauncherTask> MergeTasks(IReadOnlyList<LauncherTask> baseTasks, IReadOnlyList<LauncherTask> overlayTasks)
+    {
+        var merged = new List<LauncherTask>();
+        var indexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        AddTasks(baseTasks);
+        AddTasks(overlayTasks);
+
+        return merged;
+
+        void AddTasks(IReadOnlyList<LauncherTask> source)
+        {
+            for (var index = 0; index < source.Count; index++)
+            {
+                var task = source[index];
+                var identityKey = BuildTaskIdentityKey(task.Group, task.Name);
+
+                if (indexByKey.TryGetValue(identityKey, out var existingIndex))
+                {
+                    merged[existingIndex] = task;
+                    continue;
+                }
+
+                indexByKey[identityKey] = merged.Count;
+                merged.Add(task);
+            }
+        }
+    }
+
+    private static List<RitualDefinition> MergeRituals(IReadOnlyList<RitualDefinition> baseRituals, IReadOnlyList<RitualDefinition> overlayRituals)
+    {
+        var merged = new List<RitualDefinition>();
+        var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        AddRituals(baseRituals);
+        AddRituals(overlayRituals);
+
+        return merged;
+
+        void AddRituals(IReadOnlyList<RitualDefinition> source)
+        {
+            for (var index = 0; index < source.Count; index++)
+            {
+                var ritual = source[index];
+                if (string.IsNullOrWhiteSpace(ritual.Name))
+                {
+                    continue;
+                }
+
+                var ritualName = ritual.Name.Trim();
+                if (indexByName.TryGetValue(ritualName, out var existingIndex))
+                {
+                    merged[existingIndex] = ritual;
+                    continue;
+                }
+
+                indexByName[ritualName] = merged.Count;
+                merged.Add(ritual);
+            }
+        }
+    }
+
+    private static string BuildTaskIdentityKey(string? groupName, string? taskName)
+    {
+        return TaskIdentity.BuildKey(groupName, taskName);
     }
 
     private static List<RitualDefinition> NormalizeRituals(List<RitualDefinition>? rituals)
@@ -286,6 +403,8 @@ public sealed class LauncherTask
     public string WorkingDirectory { get; set; } = string.Empty;
 
     public bool WaitForExit { get; set; } = true;
+
+    public bool RequiresElevation { get; set; }
 
     public Dictionary<string, string> Inputs { get; set; } = [];
 

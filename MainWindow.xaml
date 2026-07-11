@@ -7,13 +7,16 @@
         mc:Ignorable="d"
         Background="{DynamicResource AppBackgroundBrush}"
         Foreground="{DynamicResource PrimaryTextBrush}"
+        FontFamily="{DynamicResource AppUiFontFamily}"
         Icon="app.ico"
         Title="Task Launcher" Height="420" Width="700" MinWidth="500" MinHeight="300">
     <Window.Resources>
+        <FontFamily x:Key="CardUiFontFamily">{DynamicResource AppUiFontFamily}</FontFamily>
+
         <Style x:Key="TaskCardButtonStyle" TargetType="Button">
             <Setter Property="Padding" Value="16" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontSize" Value="15" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -23,10 +26,10 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="CardBorder"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="16"
+                            CornerRadius="0"
                                 SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                               RecognizesAccessKey="True" />
                         </Border>
                         <ControlTemplate.Triggers>
@@ -381,6 +384,89 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="RibbonCommandButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="70" />
+            <Setter Property="Height" Value="58" />
+            <Setter Property="Padding" Value="6,4" />
+            <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource TabHeaderHoverBackgroundBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RibbonSecondaryActionStyle" TargetType="Button" BasedOn="{StaticResource RibbonCommandButtonStyle}">
+            <Setter Property="Width" Value="86" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Background" Value="{DynamicResource TabHeaderBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="RibbonCommandHoverAccentStyle" TargetType="Button" BasedOn="{StaticResource RibbonCommandButtonStyle}">
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="#27F6C0" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="RibbonAddCommandButtonStyle" TargetType="Button" BasedOn="{StaticResource RibbonCommandButtonStyle}">
+            <Setter Property="Foreground" Value="#FF7CFF" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="#FF7CFF" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="RibbonImportActionStyle" TargetType="Button" BasedOn="{StaticResource RibbonSecondaryActionStyle}">
+            <Setter Property="Background" Value="#27F6C0" />
+            <Setter Property="BorderBrush" Value="#22D6A8" />
+            <Setter Property="Foreground" Value="#FF12202B" />
+        </Style>
+
+        <Style x:Key="RibbonContextMenuStyle" TargetType="ContextMenu">
+            <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="6" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+        </Style>
+
+        <Style x:Key="RibbonPrimaryActionStyle" TargetType="Button" BasedOn="{StaticResource RibbonSecondaryActionStyle}">
+            <Setter Property="Background" Value="#FF22B8CF" />
+            <Setter Property="BorderBrush" Value="#FF18A8BE" />
+            <Setter Property="Foreground" Value="#FF12202B" />
+        </Style>
     </Window.Resources>
 
     <Grid Margin="16,10,16,16">
@@ -389,32 +475,132 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Menu Grid.Row="0"
-              Margin="0,0,0,8"
-                            Style="{StaticResource AppMenuStyle}">
-                        <MenuItem Header="View" Style="{StaticResource AppMenuItemStyle}">
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+                <Border Height="84"
+                    Background="{DynamicResource PanelBackgroundBrush}"
+                    BorderBrush="{DynamicResource PanelBorderBrush}"
+                    BorderThickness="0"
+                    CornerRadius="10"
+                    Padding="24,8,16,8">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.16" Color="#FF2A3440" />
+                </Border.Effect>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,18,0">
+                        <Image Source="app.ico"
+                               Width="30"
+                               Height="30"
+                               Stretch="Uniform"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                        <TextBlock Text="Tsky"
+                                   Margin="10,0,0,0"
+                                   FontSize="15"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Style="{StaticResource RibbonAddCommandButtonStyle}" Click="RibbonAddTaskButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Add" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="16,0,0,0">
+                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonEditTaskButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Edit" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonDeleteTaskButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Delete" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="12,0,0,0">
+                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonRunChainButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Run Chain" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Width="80" Margin="8,0,0,0" Click="RibbonGroupsDropDownButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE8FA;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Groups ▼" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="8,0,0,0">
+                            <Button x:Name="RibbonRitualsButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Width="82" Click="RibbonRitualsDropDownButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Rituals ▼" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="14,0,0,0">
+                            <Button x:Name="RibbonHistoryButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonHistoryButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock Text="History" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right">
+                        <Button Style="{StaticResource RibbonSecondaryActionStyle}" Content="Share" Click="RibbonShareButton_Click" />
+                        <Button Style="{StaticResource RibbonImportActionStyle}" Content="Import" Margin="12,0,0,0" Click="RibbonImportButton_Click" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Menu Grid.Row="0"
+                  Visibility="Collapsed"
+                  Style="{StaticResource AppMenuStyle}">
+                <MenuItem Header="View" Style="{StaticResource AppMenuItemStyle}">
                     <MenuItem x:Name="ViewGroupsMenuItem"
-                          Header="Groups Pane"
-                          IsCheckable="True"
-                          Style="{StaticResource AppMenuItemStyle}"
-                          Click="ViewGroupsMenuItem_Click" />
+                              Header="Groups Pane"
+                              IsCheckable="True"
+                              Style="{StaticResource AppMenuItemStyle}"
+                              Click="ViewGroupsMenuItem_Click" />
                     <Separator />
-                <MenuItem x:Name="ViewHistoryMenuItem"
-                          Header="History"
-                          IsCheckable="True"
-                          InputGestureText="Ctrl+H"
-                                                    Style="{StaticResource AppMenuItemStyle}"
-                          Click="ViewHistoryMenuItem_Click" />
-                <MenuItem x:Name="ViewOutputMenuItem"
-                          Header="Task Output"
-                          IsCheckable="True"
-                          InputGestureText="Ctrl+O"
-                                                    Style="{StaticResource AppMenuItemStyle}"
-                          Click="ViewOutputMenuItem_Click" />
-            </MenuItem>
-                                        <MenuItem x:Name="GroupsMenuItem" Header="Groups" Style="{StaticResource AppMenuItemStyle}" />
-                                        <MenuItem x:Name="RitualsMenuItem" Header="Rituals" Style="{StaticResource AppMenuItemStyle}" />
-        </Menu>
+                    <MenuItem x:Name="ViewHistoryMenuItem"
+                              Header="History"
+                              IsCheckable="True"
+                              InputGestureText="Ctrl+H"
+                              Style="{StaticResource AppMenuItemStyle}"
+                              Click="ViewHistoryMenuItem_Click" />
+                    <MenuItem x:Name="ViewOutputMenuItem"
+                              Header="Task Output"
+                              IsCheckable="True"
+                              InputGestureText="Ctrl+O"
+                              Style="{StaticResource AppMenuItemStyle}"
+                              Click="ViewOutputMenuItem_Click" />
+                </MenuItem>
+                <MenuItem x:Name="GroupsMenuItem" Header="Groups" Style="{StaticResource AppMenuItemStyle}" />
+                <MenuItem x:Name="RitualsMenuItem" Header="Rituals" Style="{StaticResource AppMenuItemStyle}" />
+            </Menu>
+        </Grid>
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
@@ -428,26 +614,11 @@
                 CornerRadius="12"
                 Background="{DynamicResource PanelBackgroundBrush}"
                 BorderBrush="{DynamicResource PanelBorderBrush}"
-                BorderThickness="1"
+            BorderThickness="0"
                 Padding="12">
             <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="*" />
-                </Grid.RowDefinitions>
-
-                <Button x:Name="AddTaskSidebarButton"
-                        Grid.Row="0"
-                        Style="{StaticResource SidebarAddTaskButtonStyle}"
-                        Click="AddTaskButton_Click">
-                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <TextBlock Text="+" FontSize="34" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,0,0,4" />
-                        <TextBlock Text="Add Task" FontSize="12" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                    </StackPanel>
-                </Button>
-
-                <ScrollViewer Grid.Row="1"
-                              Margin="0,6,0,0"
+                <ScrollViewer Grid.Row="0"
+                              Margin="0"
                               VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="GroupListPanel" />
@@ -515,7 +686,7 @@
                         CornerRadius="10"
                         Background="{DynamicResource PanelBackgroundBrush}"
                         BorderBrush="{DynamicResource PanelBorderBrush}"
-                        BorderThickness="1">
+                        BorderThickness="0">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />

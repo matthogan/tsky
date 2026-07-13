@@ -3202,6 +3202,31 @@ public partial class MainWindow : Window
         return null;
     }
 
+    private static T? FindVisualDescendant<T>(DependencyObject? start) where T : DependencyObject
+    {
+        if (start is null)
+        {
+            return null;
+        }
+
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(start); i++)
+        {
+            var child = VisualTreeHelper.GetChild(start, i);
+            if (child is T match)
+            {
+                return match;
+            }
+
+            var nested = FindVisualDescendant<T>(child);
+            if (nested is not null)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
     private void ApplyGraphNodeStateVisual(int taskIndex)
     {
         if (!_graphNodesByIndex.TryGetValue(taskIndex, out var visual) || !TryGetTask(taskIndex, out var task))
@@ -6237,10 +6262,10 @@ public partial class MainWindow : Window
                 effectiveTask,
                 onOutputLine: (line, isError) =>
                 {
-                    Dispatcher.BeginInvoke(() =>
+                    Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
                     {
                         AppendStreamOutputLine(outputTextBox, isError ? "stderr" : "stdout", line);
-                    });
+                    }));
                 },
                 cancellationToken: taskCancellationSource.Token);
 
@@ -6966,17 +6991,22 @@ public partial class MainWindow : Window
 
     private void AppendLog(RichTextBox outputTextBox, string message)
     {
+        var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
         paragraph.Inlines.Add(new Run(" "));
         AppendTaggedMessageRuns(paragraph, message);
         paragraph.Inlines.Add(new Run(Environment.NewLine + Environment.NewLine));
-        outputTextBox.ScrollToEnd();
+        if (shouldAutoScroll)
+        {
+            outputTextBox.ScrollToEnd();
+        }
     }
 
     private void AppendStreamOutputLine(RichTextBox outputTextBox, string streamName, string line)
     {
+        var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
@@ -6995,7 +7025,32 @@ public partial class MainWindow : Window
 
         AppendAnsiText(outputTextBox, line);
         AppendPlainText(outputTextBox, Environment.NewLine + Environment.NewLine);
-        outputTextBox.ScrollToEnd();
+        if (shouldAutoScroll)
+        {
+            outputTextBox.ScrollToEnd();
+        }
+    }
+
+    private static bool ShouldAutoScrollOutput(RichTextBox outputTextBox)
+    {
+        if (outputTextBox.IsKeyboardFocusWithin && !outputTextBox.Selection.IsEmpty)
+        {
+            return false;
+        }
+
+        var scrollViewer = FindVisualDescendant<ScrollViewer>(outputTextBox);
+        if (scrollViewer is null)
+        {
+            return true;
+        }
+
+        if (scrollViewer.ScrollableHeight <= 0)
+        {
+            return true;
+        }
+
+        const double autoScrollThreshold = 6;
+        return scrollViewer.VerticalOffset >= scrollViewer.ScrollableHeight - autoScrollThreshold;
     }
 
     private static void AppendTimestampRun(Paragraph paragraph, string timestamp)
@@ -7159,7 +7214,6 @@ public partial class MainWindow : Window
             AppendStyledRun(paragraph, text[spanStart..], style);
         }
 
-        outputTextBox.ScrollToEnd();
     }
 
     private static void AppendPlainText(RichTextBox outputTextBox, string text)

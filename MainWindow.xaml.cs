@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -399,6 +400,41 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
+        var runningTaskNames = _currentConfiguration.Tasks
+            .Where(task => GetTaskRunState(task) == TaskRunState.Running)
+            .Select(task => task.Name?.Trim())
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (runningTaskNames.Count > 0)
+        {
+            var previewNames = runningTaskNames.Take(5).ToList();
+            var remainingCount = runningTaskNames.Count - previewNames.Count;
+            var nameList = string.Join(Environment.NewLine, previewNames.Select(name => $"- {name}"));
+            if (remainingCount > 0)
+            {
+                nameList += Environment.NewLine + $"- ...and {remainingCount} more";
+            }
+
+            var message = $"{runningTaskNames.Count} task(s) are still running:" + Environment.NewLine + Environment.NewLine
+                + nameList + Environment.NewLine + Environment.NewLine
+                + "Close the app anyway? Running tasks will not be terminated by tsky.";
+
+            var result = AppMessageBox.Show(this, 
+                message,
+                "Tasks Still Running",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (result != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+        }
+
         App.ThemeChanged -= OnThemeChanged;
         _sidebarStatusTimer.Stop();
         PersistUiState();
@@ -1129,7 +1165,7 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(_selectedGroupName))
         {
-            MessageBox.Show("Select a group first.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "Select a group first.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1143,7 +1179,7 @@ public partial class MainWindow : Window
 
         if (orderedGroupTasks.Count == 0)
         {
-            MessageBox.Show($"No tasks are available in group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, $"No tasks are available in group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1166,7 +1202,7 @@ public partial class MainWindow : Window
 
         if (ritual.Steps.Count == 0)
         {
-            MessageBox.Show($"Group '{groupName}' has no named tasks to include in a ritual.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, $"Group '{groupName}' has no named tasks to include in a ritual.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -1189,7 +1225,7 @@ public partial class MainWindow : Window
         }
 
         var actionText = wasUpdate ? "updated" : "created";
-        MessageBox.Show($"Ritual '{ritualName}' {actionText} from group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
+        AppMessageBox.Show(this, $"Ritual '{ritualName}' {actionText} from group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private async void RitualMenuEntry_Click(object sender, RoutedEventArgs e)
@@ -1221,14 +1257,14 @@ public partial class MainWindow : Window
 
         if (index < 0)
         {
-            MessageBox.Show("Ritual no longer exists. Reload and try again.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, "Ritual no longer exists. Reload and try again.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         if (!string.Equals(updated.Name, ritual.Name, StringComparison.OrdinalIgnoreCase) &&
             _currentConfiguration.Rituals.Any(existing => string.Equals(existing.Name, updated.Name, StringComparison.OrdinalIgnoreCase)))
         {
-            MessageBox.Show($"A ritual named '{updated.Name}' already exists.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, $"A ritual named '{updated.Name}' already exists.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -1244,13 +1280,13 @@ public partial class MainWindow : Window
     {
         if (_isRunningRitual)
         {
-            MessageBox.Show("A ritual is already running.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "A ritual is already running.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         if (ritual.Steps.Count == 0)
         {
-            MessageBox.Show($"Ritual '{ritual.Name}' has no steps.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, $"Ritual '{ritual.Name}' has no steps.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -1356,7 +1392,8 @@ public partial class MainWindow : Window
             InputBindings = new Dictionary<string, string>(sourceTask.InputBindings, StringComparer.OrdinalIgnoreCase),
             Outputs = new Dictionary<string, string>(sourceTask.Outputs, StringComparer.OrdinalIgnoreCase),
             WaitForExit = step.WaitForExit ?? true,
-            RequiresElevation = sourceTask.RequiresElevation
+            RequiresElevation = sourceTask.RequiresElevation,
+            IgnoreExitCode = sourceTask.IgnoreExitCode
         };
     }
 
@@ -1910,6 +1947,7 @@ public partial class MainWindow : Window
         builder.AppendLine($"Working directory: {firstEntry.Snapshot.WorkingDirectory}");
         builder.AppendLine($"Wait for exit: {firstEntry.Snapshot.WaitForExit}");
         builder.AppendLine($"Requires elevation: {firstEntry.Snapshot.RequiresElevation}");
+        builder.AppendLine($"Ignore exit code: {firstEntry.Snapshot.IgnoreExitCode}");
 
         if (firstEntry.Snapshot.Env.Count > 0)
         {
@@ -1975,7 +2013,7 @@ public partial class MainWindow : Window
 
             if (skippedDisabledCount > 0)
             {
-                MessageBox.Show($"Skipped {skippedDisabledCount} disabled task replay(s).", "Replay Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+                AppMessageBox.Show(this, $"Skipped {skippedDisabledCount} disabled task replay(s).", "Replay Selected", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
         finally
@@ -2088,9 +2126,12 @@ public partial class MainWindow : Window
                 FontFamily = cardFontFamily,
                 FontSize = 16,
                 Foreground = foregroundBrush,
-                TextAlignment = TextAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center,
+                TextAlignment = TextAlignment.Left,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
                 TextWrapping = TextWrapping.Wrap,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+                LineHeight = 22,
                 VerticalAlignment = VerticalAlignment.Center,
                 MaxHeight = 44
             };
@@ -2098,7 +2139,7 @@ public partial class MainWindow : Window
             var titleBar = new Border
             {
                 Background = new SolidColorBrush(overlayColor),
-                Padding = new Thickness(10, 8, 10, 8),
+                Padding = new Thickness(10, 8, 42, 8),
                 Child = nameText
             };
             Grid.SetRow(titleBar, 0);
@@ -3645,7 +3686,7 @@ public partial class MainWindow : Window
 
         if (existingIndex >= 0)
         {
-            var overwriteResult = MessageBox.Show(
+            var overwriteResult = AppMessageBox.Show(this, 
                 $"A task named '{newTask.Name}' already exists in group '{NormalizeGroupName(newTask.Group)}'. Overwrite it?",
                 "Duplicate Task Name",
                 MessageBoxButton.OKCancel,
@@ -3678,17 +3719,17 @@ public partial class MainWindow : Window
     {
         if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
         {
-            MessageBox.Show("No tasks are available in the current group.", "Delete Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No tasks are available in the current group.", "Delete Task", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         if (!TryGetTask(taskIndex, out var taskToDelete))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var result = MessageBox.Show(
+        var result = AppMessageBox.Show(this, 
             $"Delete task '{taskToDelete.Name}' from this group?",
             "Delete Task",
             MessageBoxButton.OKCancel,
@@ -3706,13 +3747,13 @@ public partial class MainWindow : Window
     {
         if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
         {
-            MessageBox.Show("No tasks are available in the current group.", "Edit Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No tasks are available in the current group.", "Edit Task", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         if (!TryGetTask(taskIndex, out _))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -3723,7 +3764,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
         {
-            MessageBox.Show("No tasks are available in the current group.", "Enable/Disable Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No tasks are available in the current group.", "Enable/Disable Task", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -3763,7 +3804,7 @@ public partial class MainWindow : Window
 
     private void RibbonManageRitualsButton_Click(object sender, RoutedEventArgs e)
     {
-        MessageBox.Show("Ritual management is currently available from the rituals menu entries. A dedicated manager panel can be added next.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
+        AppMessageBox.Show(this, "Ritual management is currently available from the rituals menu entries. A dedicated manager panel can be added next.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private void RibbonGroupsDropDownButton_Click(object sender, RoutedEventArgs e)
@@ -3871,7 +3912,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetCurrentGroupRitual(out var ritual))
         {
-            MessageBox.Show("No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -3882,7 +3923,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetCurrentGroupRitual(out var ritual))
         {
-            MessageBox.Show("No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -3957,6 +3998,7 @@ public partial class MainWindow : Window
         {
             var config = TaskConfiguration.Load(path);
             AppendValidationEvent(action, path, true, $"Loaded {config.Tasks.Count} task(s) and {config.Rituals.Count} ritual(s).", outputTextBox);
+            AppendBusinessRuleValidationWarnings(path, config, outputTextBox);
             return config;
         }
         catch (Exception ex)
@@ -3973,6 +4015,7 @@ public partial class MainWindow : Window
             TaskConfiguration.Save(path, config);
             var validatedConfig = TaskConfiguration.Load(path);
             AppendValidationEvent(action, path, true, $"Validated {validatedConfig.Tasks.Count} task(s) and {validatedConfig.Rituals.Count} ritual(s).", outputTextBox);
+            AppendBusinessRuleValidationWarnings(path, validatedConfig, outputTextBox);
             return validatedConfig;
         }
         catch (Exception ex)
@@ -3980,6 +4023,95 @@ public partial class MainWindow : Window
             AppendValidationEvent(action, path, false, ex.Message, outputTextBox);
             throw;
         }
+    }
+
+    private void AppendBusinessRuleValidationWarnings(string path, TaskConfiguration config, RichTextBox? outputTextBox = null)
+    {
+        var warnings = GetBusinessRuleValidationWarnings(config);
+        if (warnings.Count == 0)
+        {
+            return;
+        }
+
+        if (outputTextBox is not null)
+        {
+            AppendLog(outputTextBox, $"[Validation] Business-rules warnings: {warnings.Count} issue(s) in {path}");
+            foreach (var warning in warnings)
+            {
+                AppendLog(outputTextBox, $"[Validation] {warning}");
+            }
+
+            return;
+        }
+
+        var tabContext = CreateOutputTab("JSON Validation");
+        var validationOutput = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+        AppendLog(validationOutput, $"[Validation] Business-rules warnings: {warnings.Count} issue(s) in {path}");
+        foreach (var warning in warnings)
+        {
+            AppendLog(validationOutput, $"[Validation] {warning}");
+        }
+
+        SetTabStopped(tabContext, true);
+    }
+
+    private static List<string> GetBusinessRuleValidationWarnings(TaskConfiguration config)
+    {
+        var warnings = new List<string>();
+
+        foreach (var task in config.Tasks)
+        {
+            var runner = TaskProcessStartInfoFactory.NormalizeRunner(task.Runner);
+            if (!string.Equals(runner, "exe", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!TryExtractCommandToken(task.CommandLine, out var commandToken))
+            {
+                continue;
+            }
+
+            var extension = System.IO.Path.GetExtension(commandToken)?.ToLowerInvariant();
+            if (extension is not ".cmd" and not ".bat")
+            {
+                continue;
+            }
+
+            var taskName = string.IsNullOrWhiteSpace(task.Name) ? "(unnamed)" : task.Name.Trim();
+            var groupName = NormalizeGroupName(task.Group);
+            warnings.Add(
+                $"Task '{taskName}' (group '{groupName}') uses runner 'exe' with script '{commandToken}'. Potential issue: .cmd/.bat scripts usually require runner 'cmd'. Suggested fix: set runner to 'cmd' or run via 'cmd /c \"{task.CommandLine}\"'.");
+        }
+
+        return warnings;
+    }
+
+    private static bool TryExtractCommandToken(string? commandLine, out string token)
+    {
+        token = string.Empty;
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return false;
+        }
+
+        var trimmed = commandLine.Trim();
+        if (trimmed.StartsWith('"'))
+        {
+            var endQuote = trimmed.IndexOf('"', 1);
+            if (endQuote <= 1)
+            {
+                return false;
+            }
+
+            token = trimmed[1..endQuote].Trim();
+            return !string.IsNullOrWhiteSpace(token);
+        }
+
+        var firstSpace = trimmed.IndexOf(' ');
+        token = firstSpace < 0 ? trimmed : trimmed[..firstSpace].Trim();
+        return !string.IsNullOrWhiteSpace(token);
     }
 
     private void RibbonShareButton_Click(object sender, RoutedEventArgs e)
@@ -4022,7 +4154,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetSelectedVisibleTaskIndex(out var taskIndex) || !TryGetTask(taskIndex, out var task))
         {
-            MessageBox.Show("No task is selected to share.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No task is selected to share.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -4039,7 +4171,7 @@ public partial class MainWindow : Window
     {
         if (string.IsNullOrWhiteSpace(_selectedGroupName) || _visibleTaskIndexes.Count == 0)
         {
-            MessageBox.Show("No group is selected to share.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "No group is selected to share.", "Share", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -4081,7 +4213,7 @@ public partial class MainWindow : Window
         {
             AppendLog(outputTextBox, $"[Share] Export failed: {ex.Message}");
             SetTabStopped(tabContext, false);
-            MessageBox.Show($"Failed to export share payload to clipboard.\n{ex.Message}", "Share", MessageBoxButton.OK, MessageBoxImage.Error);
+            AppMessageBox.Show(this, $"Failed to export share payload to clipboard.\n{ex.Message}", "Share", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -4484,8 +4616,58 @@ public partial class MainWindow : Window
         _activeDropCueBorder = null;
     }
 
-    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.R && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            if (TaskScrollViewer?.IsKeyboardFocusWithin != true)
+            {
+                return;
+            }
+
+            if (BottomPaneTabControl?.IsKeyboardFocusWithin == true)
+            {
+                return;
+            }
+
+            if (!TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex) || !TryGetTask(selectedTaskIndex, out var selectedTask))
+            {
+                return;
+            }
+
+            if (!IsTaskEnabled(selectedTask))
+            {
+                AppMessageBox.Show(this, $"Task '{selectedTask.Name}' is disabled.", "Task Disabled", MessageBoxButton.OK, MessageBoxImage.Information);
+                e.Handled = true;
+                return;
+            }
+
+            await ExecuteTaskAsync(selectedTask, null, isReplay: false);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.E && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
+            {
+                EditTask(selectedTaskIndex);
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         if (e.Key != Key.Tab || (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0)
         {
             return;
@@ -4696,7 +4878,7 @@ public partial class MainWindow : Window
 
         if (!IsValidTaskIndex(taskIndex))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -4732,7 +4914,7 @@ public partial class MainWindow : Window
             var replayTask = ToTask(replayEntry.Snapshot);
             if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
             {
-                MessageBox.Show($"Task '{replayTask.Name}' is disabled and cannot be replayed.", "Replay Snapshot", MessageBoxButton.OK, MessageBoxImage.Information);
+                AppMessageBox.Show(this, $"Task '{replayTask.Name}' is disabled and cannot be replayed.", "Replay Snapshot", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
@@ -4747,7 +4929,7 @@ public partial class MainWindow : Window
         {
             if (!IsValidTaskIndex(taskIndex))
             {
-                MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+                AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -4772,7 +4954,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetTask(taskIndex, out var selectedTask))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -4786,7 +4968,7 @@ public partial class MainWindow : Window
 
         if (!TaskConfiguration.TryDeserializeTask(editorWindow.TaskJsonText, out var updatedTask, out var parseError))
         {
-            MessageBox.Show($"Could not save task because the JSON is invalid.\n\n{parseError}", "Task Editor", MessageBoxButton.OK, MessageBoxImage.Error);
+            AppMessageBox.Show(this, $"Could not save task because the JSON is invalid.\n\n{parseError}", "Task Editor", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
@@ -4799,7 +4981,7 @@ public partial class MainWindow : Window
     {
         if (!IsValidTaskIndex(taskIndex))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -4830,7 +5012,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetTask(taskIndex, out var task))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -4873,7 +5055,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            AppMessageBox.Show(this, $"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
     }
@@ -4917,7 +5099,7 @@ public partial class MainWindow : Window
 
         if (!IsTaskEnabled(task))
         {
-            MessageBox.Show($"Task '{task.Name}' is disabled.", "Task Disabled", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, $"Task '{task.Name}' is disabled.", "Task Disabled", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -4928,7 +5110,7 @@ public partial class MainWindow : Window
     {
         if (!TryGetTask(startTaskIndex, out var startTask))
         {
-            MessageBox.Show(TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -4963,7 +5145,7 @@ public partial class MainWindow : Window
 
             if (!result.Succeeded)
             {
-                MessageBox.Show(
+                AppMessageBox.Show(this, 
                     $"Chain stopped at '{taskInfo.Task.Name}' (step {chainLabel}) due to failure.",
                     "Chain Execution",
                     MessageBoxButton.OK,
@@ -5112,9 +5294,15 @@ public partial class MainWindow : Window
                 }
             }
 
-            SetTabStopped(tabContext, process.ExitCode == 0);
-            SetTaskRunState(task, process.ExitCode == 0 ? TaskRunState.Succeeded : TaskRunState.Failed);
-            CompleteHistoryEntry(historyEntry, process.ExitCode == 0, process.ExitCode);
+            var isSuccessfulExit = process.ExitCode == 0 || effectiveTask.IgnoreExitCode;
+            if (process.ExitCode != 0 && effectiveTask.IgnoreExitCode)
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Exit code {process.ExitCode} ignored because ignoreExitCode=true.");
+            }
+
+            SetTabStopped(tabContext, isSuccessfulExit);
+            SetTaskRunState(task, isSuccessfulExit ? TaskRunState.Succeeded : TaskRunState.Failed);
+            CompleteHistoryEntry(historyEntry, isSuccessfulExit, process.ExitCode);
 
             if (!canCaptureOutput)
             {
@@ -5126,7 +5314,7 @@ public partial class MainWindow : Window
 
             publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, process.ExitCode);
 
-            if (process.ExitCode == 0 && publishedOutputs.Count > 0)
+            if (isSuccessfulExit && publishedOutputs.Count > 0)
             {
                 AppendPublishedOutputs(outputTextBox, task.Name, publishedOutputs);
                 dataflowContext?.RegisterTaskOutputs(task.Name, publishedOutputs);
@@ -5134,7 +5322,7 @@ public partial class MainWindow : Window
 
             return new TaskExecutionResult
             {
-                Succeeded = process.ExitCode == 0,
+                Succeeded = isSuccessfulExit,
                 ExitCode = process.ExitCode,
                 PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
             };
@@ -5153,7 +5341,7 @@ public partial class MainWindow : Window
             SetTabStopped(tabContext, false);
             SetTaskRunState(task, TaskRunState.Failed);
             CompleteHistoryEntry(historyEntry, false, null);
-            MessageBox.Show($"Failed to run task '{task.Name}'.\n{ex.Message}",
+            AppMessageBox.Show(this, $"Failed to run task '{task.Name}'.\n{ex.Message}",
                 "Task Execution Error",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
@@ -5306,6 +5494,7 @@ public partial class MainWindow : Window
             WorkingDirectory = task.WorkingDirectory,
             WaitForExit = task.WaitForExit,
             RequiresElevation = task.RequiresElevation,
+            IgnoreExitCode = task.IgnoreExitCode,
             Env = new Dictionary<string, string>(task.Env, StringComparer.OrdinalIgnoreCase)
         };
     }
@@ -5322,6 +5511,7 @@ public partial class MainWindow : Window
             WorkingDirectory = snapshot.WorkingDirectory,
             WaitForExit = snapshot.WaitForExit,
             RequiresElevation = snapshot.RequiresElevation,
+            IgnoreExitCode = snapshot.IgnoreExitCode,
             Env = new Dictionary<string, string>(snapshot.Env, StringComparer.OrdinalIgnoreCase)
         };
     }

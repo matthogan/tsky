@@ -30,6 +30,8 @@ public sealed class TaskRunSnapshot
     public bool WaitForExit { get; set; } = true;
 
     public bool RequiresElevation { get; set; }
+
+    public bool IgnoreExitCode { get; set; }
 }
 
 public sealed class TaskRunHistoryEntry

@@ -455,6 +455,8 @@ public sealed class LauncherTask
 
     public bool RequiresElevation { get; set; }
 
+    public bool IgnoreExitCode { get; set; }
+
     public bool IsEnabled { get; set; } = true;
 
     public string? ImportedFromFile { get; set; }

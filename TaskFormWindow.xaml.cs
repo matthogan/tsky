@@ -42,21 +42,21 @@ public partial class TaskFormWindow : Window
     {
         if (string.IsNullOrWhiteSpace(NameTextBox.Text))
         {
-            MessageBox.Show("Name is required.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, "Name is required.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             NameTextBox.Focus();
             return;
         }
 
         if (string.IsNullOrWhiteSpace(CommandLineTextBox.Text))
         {
-            MessageBox.Show("Command line is required.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, "Command line is required.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             CommandLineTextBox.Focus();
             return;
         }
 
         if (!TryParseEnvLines(EnvVarsTextBox.Text, out var envVars, out var envError))
         {
-            MessageBox.Show(envError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, envError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             EnvVarsTextBox.Focus();
             return;
         }
@@ -72,6 +72,7 @@ public partial class TaskFormWindow : Window
             CommandLine = CommandLineTextBox.Text.Trim(),
             WorkingDirectory = WorkingDirectoryTextBox.Text.Trim(),
             RequiresElevation = RequiresElevationCheckBox.IsChecked == true,
+            IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked == true,
             Env = envVars
         };
 

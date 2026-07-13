@@ -46,7 +46,7 @@ public partial class RitualEditorWindow : Window
     {
         if (string.IsNullOrWhiteSpace(NameTextBox.Text))
         {
-            MessageBox.Show("Ritual name cannot be empty.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
+            AppMessageBox.Show(this, "Ritual name cannot be empty.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -57,7 +57,7 @@ public partial class RitualEditorWindow : Window
             var row = _rows[index];
             if (!int.TryParse(row.DelayMsText, out var delayMs) || delayMs < 0)
             {
-                MessageBox.Show($"Step {index + 1} has invalid Delay (ms). Enter a non-negative integer.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
+                AppMessageBox.Show(this, $"Step {index + 1} has invalid Delay (ms). Enter a non-negative integer.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 

@@ -108,6 +108,7 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
@@ -165,11 +166,19 @@
                               VerticalAlignment="Center"
                               Content="Requires administrator privileges (UAC)" />
 
-                    <TextBlock Grid.Row="7" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
-                    <TextBlock Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
+                    <CheckBox x:Name="IgnoreExitCodeCheckBox"
+                              Grid.Row="7"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="2"
+                              Margin="0,0,0,12"
+                              VerticalAlignment="Center"
+                              Content="Ignore non-zero exit code (treat as success)" />
+
+                    <TextBlock Grid.Row="8" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                    <TextBlock Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
 
                     <TextBox x:Name="EnvVarsTextBox"
-                             Grid.Row="8"
+                             Grid.Row="9"
                              Grid.Column="0"
                              Grid.ColumnSpan="3"
                              AcceptsReturn="True"

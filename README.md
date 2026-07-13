@@ -35,6 +35,7 @@ Each task supports:
 - `commandLine`
 - `runner` (`exe`, `cmd`, `powershell`)
 - `waitForExit` (default `true`)
+- `ignoreExitCode` (default `false`)
 - `requiresElevation` (default `false`)
 - `env`
 - `workingDirectory`
@@ -59,6 +60,7 @@ Legacy flat `tasks` format is also accepted and normalized into grouped form.
 Notes:
 
 - `waitForExit=false` runs fire-and-forget.
+- `ignoreExitCode=true` treats non-zero process exit codes as success.
 - Elevated launches (`requiresElevation=true`) do not capture stdout/stderr.
 
 ## Dataflow

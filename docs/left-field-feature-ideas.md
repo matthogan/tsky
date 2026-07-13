@@ -2,6 +2,10 @@
 
 This document lists unconventional feature ideas that still align with tsky's core purpose: launching and managing desktop tasks quickly.
 
+Status markers:
+- `[Implemented]` available in the current app.
+- `[Partial]` partially implemented or implemented with a narrower scope.
+
 ## 1. Task Weather Routing
 Use local weather/time signals to pick task variants automatically.
 
@@ -17,7 +21,7 @@ Before running a task, simulate command impact and classify risk levels (safe, c
 
 Show reasons like "deletes files," "admin command," or "wide wildcard usage." 
 
-## 4. Ritual Chains
+## 4. Ritual Chains [Implemented]
 Let users create themed launch rituals instead of plain task lists.
 
 Example ritual: "Start Coding" opens IDE, starts local services, restores browser tabs, and posts a timestamped kickoff note.
@@ -27,7 +31,7 @@ Change task card palettes, spacing, and typography based on user-selected work m
 
 Visual context can reinforce intent and reduce task misclicks.
 
-## 6. Command Replay Time Machine
+## 6. Command Replay Time Machine [Implemented]
 Track task executions with exact command snapshots, environment, and output summaries.
 
 Users can replay any historical run in one click or diff two runs to debug behavior drift.
@@ -37,7 +41,7 @@ If a task fails repeatedly, automatically suggest alternatives: previous success
 
 The app becomes an assistant for recovery, not just execution.
 
-## 8. Task Marketplace Packs
+## 8. Task Marketplace Packs [Partial]
 Support importable task packs for roles (frontend, ops, data science, release manager).
 
 Users can install curated sets of tasks and adapt them locally.
@@ -47,7 +51,7 @@ Queue tasks to run when system conditions are met: CPU idle, VPN connected, spec
 
 Useful for heavy or noisy automation jobs.
 
-## 10. Narrative Output Tabs
+## 10. Narrative Output Tabs [Partial]
 Turn raw logs into structured stories: what happened, what changed, what failed, and what to do next.
 
 This can summarize complex command output into human-readable run reports.
@@ -57,7 +61,7 @@ Run one logical task across multiple machines (desktop, build server, home lab n
 
 Great for parallel lint/test/build phases.
 
-## 12. Visual DAG Pipeline Composer
+## 12. Visual DAG Pipeline Composer [Partial]
 Let users draw tasks as a directed acyclic graph instead of a flat list.
 
 Each node is a task, edges define dependencies, and branch joins can gate downstream steps.
@@ -82,7 +86,7 @@ Enable peer tsky clients to discover each other and offer shared execution capab
 
 Example: route GPU workloads to a desktop with a stronger card.
 
-## 17. Dataflow Ports Between Tasks
+## 17. Dataflow Ports Between Tasks [Implemented]
 Introduce explicit input/output ports so one task can pipe artifacts, JSON, or streams directly into another.
 
 This turns task chains into composable data pipelines.
@@ -117,7 +121,7 @@ Before running distributed pipelines, estimate compute/network cost and suggest 
 
 Users can choose "fastest," "cheapest," or "balanced" strategies.
 
-## 24. Time-Travel Debug Pipelines
+## 24. Time-Travel Debug Pipelines [Partial]
 Capture deterministic snapshots of task inputs and environment so any failed stage can be replayed exactly.
 
 Ideal for debugging flaky automation.

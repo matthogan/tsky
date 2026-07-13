@@ -39,6 +39,11 @@ public partial class MainWindow : Window
     private const string TaskUnavailableMessage = "The selected task is no longer available.";
     private const int MaxRunHistoryEntries = 300;
     private const bool EnableLayoutDebugLogging = true;
+    private const double GraphNodeWidth = 190;
+    private const double GraphNodeHeight = 96;
+    private const double GraphLayerSpacing = 68;
+    private const double GraphRowSpacing = 32;
+    private const double GraphSurfacePadding = 24;
 
     private readonly string _currentDirectoryConfigPath;
     private readonly string _userProfileConfigPath;
@@ -63,6 +68,7 @@ public partial class MainWindow : Window
     private readonly List<string> _favoriteGroupOrder = [];
     private readonly List<string> _nonFavoriteGroupsOrder = [];
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
+    private readonly Dictionary<int, GraphNodeVisual> _graphNodesByIndex = [];
     private readonly Dictionary<string, TaskRunningOverlayVisual> _taskRunningOverlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ConnectorVisual> _connectorVisuals = [];
     private readonly Dictionary<System.Windows.Shapes.Path, ConnectorVisual> _connectorByPath = [];
@@ -79,12 +85,23 @@ public partial class MainWindow : Window
     private int? _portEditorTaskIndex;
     private readonly HashSet<int> _invalidPortBindingTaskIndexes = [];
     private readonly DispatcherTimer _sidebarStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
+    private readonly DispatcherTimer _graphRenderDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(45) };
+    private TaskSurfaceViewMode _taskSurfaceViewMode = TaskSurfaceViewMode.Task;
     private int _sidebarSpinnerFrameIndex;
     private bool _isHandlingBottomPanePortTabSelection;
     private bool _isSyncingBottomPaneToSelection;
+    private bool _isGraphPanning;
+    private Point _graphPanStartPoint;
+    private double _graphPanStartHorizontalOffset;
+    private double _graphPanStartVerticalOffset;
+    private int? _graphPointerDownTaskIndex;
+    private Point _graphPointerDownPoint;
+    private bool _graphPointerWasDrag;
+    private bool _graphPointerActive;
     private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] SidebarRunningFrames = ["◐", "◓", "◑", "◒"];
+    private const double GraphDragThreshold = 6;
 
     public static readonly RoutedUICommand ToggleHistoryCommand = new(
         "Toggle History",
@@ -116,6 +133,12 @@ public partial class MainWindow : Window
         Running,
         Succeeded,
         Failed
+    }
+
+    private enum TaskSurfaceViewMode
+    {
+        Task,
+        Graph
     }
 
     private sealed class TaskTabContext
@@ -158,6 +181,23 @@ public partial class MainWindow : Window
         public required Border SelectionBorder { get; init; }
         public required Border InvalidBindingBorder { get; init; }
         public required Button TaskButton { get; init; }
+    }
+
+    private sealed class GraphNodeVisual
+    {
+        public required int TaskIndex { get; init; }
+
+        public required Border SelectionBorder { get; init; }
+
+        public required Border NodeBorder { get; init; }
+
+        public required SolidColorBrush RunningBorderBrush { get; init; }
+
+        public required TextBlock StateText { get; init; }
+
+        public required Button NodeButton { get; init; }
+
+        public bool IsRunningBorderPulseActive { get; set; }
     }
 
     private sealed class TaskCardTitleTooltipContext
@@ -285,6 +325,7 @@ public partial class MainWindow : Window
         _currentDirectoryConfigPath = TaskConfiguration.GetCurrentDirectoryConfigPath();
         _userProfileConfigPath = TaskConfiguration.GetUserProfileConfigPath();
         _sidebarStatusTimer.Tick += SidebarStatusTimer_Tick;
+        _graphRenderDebounceTimer.Tick += GraphRenderDebounceTimer_Tick;
         CommandBindings.Add(new CommandBinding(ToggleHistoryCommand, ToggleHistoryCommand_Executed, ToggleViewCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(ToggleOutputCommand, ToggleOutputCommand_Executed, ToggleViewCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(NextGroupCommand, NextGroupCommand_Executed, NavigateGroupCommand_CanExecute));
@@ -303,10 +344,22 @@ public partial class MainWindow : Window
         {
             SyncTaskSurfaceToViewport();
             UpdateMainScrollBarVisibility("sizeChanged");
-            ScheduleConnectorRefresh();
+            if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+            {
+                RequestGraphRender("sizeChanged");
+            }
+            else
+            {
+                ScheduleConnectorRefresh();
+            }
         };
         TaskWorkspaceSurface.SizeChanged += (_, _) => ScheduleConnectorRefresh();
         TaskPanel.SizeChanged += (_, _) => ScheduleConnectorRefresh();
+        TaskGraphCanvas.PreviewMouseLeftButtonDown += TaskGraphCanvas_PreviewMouseLeftButtonDown;
+        TaskGraphCanvas.PreviewMouseMove += TaskGraphCanvas_PreviewMouseMove;
+        TaskGraphCanvas.PreviewMouseLeftButtonUp += TaskGraphCanvas_PreviewMouseLeftButtonUp;
+        TaskGraphCanvas.LostMouseCapture += TaskGraphCanvas_LostMouseCapture;
+        PreviewMouseLeftButtonUp += MainWindow_PreviewMouseLeftButtonUp;
         SizeChanged += (_, _) => ScheduleConnectorRefresh();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
 
@@ -319,7 +372,9 @@ public partial class MainWindow : Window
         LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json");
 
         LoadTaskButtons();
+        UpdateTaskSurfaceToggleUi();
         SyncTaskSurfaceToViewport();
+        DebugTraceLog.Write($"[Startup] MainWindow initialized. LogPath='{DebugTraceLog.CurrentLogPath}'");
     }
 
     private void TaskScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -339,13 +394,26 @@ public partial class MainWindow : Window
         if (double.IsNaN(scrollHostWidth) || double.IsInfinity(scrollHostWidth) || scrollHostWidth <= 0)
         {
             TaskWorkspaceSurface.Width = double.NaN;
+            TaskWorkspaceSurface.MinWidth = 0;
             TaskPanel.Width = double.NaN;
             TaskPanel.MaxWidth = double.PositiveInfinity;
+            TaskGraphCanvas.Width = double.NaN;
+            TaskGraphEdgeOverlay.Width = double.NaN;
             return;
         }
 
         var stableWidth = Math.Max(0, scrollHostWidth);
 
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            TaskWorkspaceSurface.Width = double.NaN;
+            TaskWorkspaceSurface.MinWidth = stableWidth;
+            TaskPanel.Width = double.NaN;
+            TaskPanel.MaxWidth = double.PositiveInfinity;
+            return;
+        }
+
+        TaskWorkspaceSurface.MinWidth = 0;
         TaskWorkspaceSurface.Width = stableWidth;
         TaskPanel.Width = double.NaN;
         TaskPanel.MaxWidth = stableWidth;
@@ -353,19 +421,23 @@ public partial class MainWindow : Window
 
     private void UpdateMainScrollBarVisibility(string reason)
     {
-        if (TaskScrollViewer.VerticalScrollBarVisibility != ScrollBarVisibility.Hidden)
+        var verticalVisibility = ScrollBarVisibility.Hidden;
+        var horizontalVisibility = ScrollBarVisibility.Hidden;
+
+        if (TaskScrollViewer.VerticalScrollBarVisibility != verticalVisibility)
         {
-            TaskScrollViewer.VerticalScrollBarVisibility = ScrollBarVisibility.Hidden;
+            TaskScrollViewer.VerticalScrollBarVisibility = verticalVisibility;
         }
 
-        if (TaskScrollViewer.HorizontalScrollBarVisibility != ScrollBarVisibility.Hidden)
+        if (TaskScrollViewer.HorizontalScrollBarVisibility != horizontalVisibility)
         {
-            TaskScrollViewer.HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden;
+            TaskScrollViewer.HorizontalScrollBarVisibility = horizontalVisibility;
         }
 
         if (EnableLayoutDebugLogging)
         {
-            Debug.WriteLine($"[MainViewLayout:{reason}] viewportW={TaskScrollViewer.ViewportWidth:F1} viewportH={TaskScrollViewer.ViewportHeight:F1} extentW={TaskScrollViewer.ExtentWidth:F1} extentH={TaskScrollViewer.ExtentHeight:F1} panelW={TaskPanel.ActualWidth:F1} panelH={TaskPanel.ActualHeight:F1} scroll=Hidden");
+            var mode = _taskSurfaceViewMode == TaskSurfaceViewMode.Task ? "Task" : "Graph";
+            Debug.WriteLine($"[MainViewLayout:{reason}] mode={mode} viewportW={TaskScrollViewer.ViewportWidth:F1} viewportH={TaskScrollViewer.ViewportHeight:F1} extentW={TaskScrollViewer.ExtentWidth:F1} extentH={TaskScrollViewer.ExtentHeight:F1} panelW={TaskPanel.ActualWidth:F1} panelH={TaskPanel.ActualHeight:F1}");
         }
     }
 
@@ -468,13 +540,15 @@ public partial class MainWindow : Window
 
         App.ThemeChanged -= OnThemeChanged;
         _sidebarStatusTimer.Stop();
+        _graphRenderDebounceTimer.Stop();
         PersistUiState();
     }
 
     private void SidebarStatusTimer_Tick(object? sender, EventArgs e)
     {
+        // Keep the frame counter for optional status glyph animation state, but avoid
+        // rebuilding the entire sidebar tree every tick (120ms), which can starve UI input.
         _sidebarSpinnerFrameIndex++;
-        RebuildGroupNavigator(GetGroupSidebarItems(GetGroupNames()));
     }
 
     private void ApplyPersistedUiState()
@@ -654,10 +728,18 @@ public partial class MainWindow : Window
         RebuildRitualsMenu();
         RebuildSidebarRitualsSection();
         RebuildGroupNavigator(GetGroupSidebarItems(groupNames));
-        RenderSelectedGroupTasks();
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            RequestGraphRender("loadTaskButtons");
+        }
+        else
+        {
+            RenderSelectedGroupTasks();
+        }
         ShowSelectedGroupOutputTabControl();
         RefreshHistoryView();
         ApplyGroupViewState();
+        UpdateTaskSurfaceToggleUi();
     }
 
     private void RebuildGroupNavigator(IReadOnlyList<GroupSidebarItem> groups)
@@ -1460,14 +1542,93 @@ public partial class MainWindow : Window
 
     private void SelectGroup(string groupName)
     {
+        DebugTraceLog.Write($"[Group] SelectGroup requested='{groupName}', previous='{_selectedGroupName ?? "(none)"}'");
         _selectedGroupName = groupName;
         var groupNames = GetGroupNames();
         RebuildGroupsMenu(groupNames);
         RebuildGroupNavigator(GetGroupSidebarItems(groupNames));
-        RenderSelectedGroupTasks();
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            RequestGraphRender("selectGroup");
+        }
+        else
+        {
+            RenderSelectedGroupTasks();
+        }
         ShowSelectedGroupOutputTabControl();
         RefreshHistoryView();
         ApplyGroupViewState();
+        UpdateTaskSurfaceToggleUi();
+        DebugTraceLog.Write($"[Group] SelectGroup applied='{_selectedGroupName ?? "(none)"}', visibleTasks={_visibleTaskIndexes.Count}");
+    }
+
+    private void RibbonTaskSurfaceToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            return;
+        }
+
+        _taskSurfaceViewMode = _taskSurfaceViewMode == TaskSurfaceViewMode.Task
+            ? TaskSurfaceViewMode.Graph
+            : TaskSurfaceViewMode.Task;
+
+        UpdateTaskSurfaceToggleUi();
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            RequestGraphRender("toggleToGraph");
+        }
+        else
+        {
+            RenderSelectedGroupTasks();
+        }
+        RecalibrateTaskScrollViewport();
+    }
+
+    private void RequestGraphRender(string reason)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph)
+        {
+            return;
+        }
+
+        DebugTraceLog.Write($"[GraphRender] Queued render ({reason})");
+
+        _graphRenderDebounceTimer.Stop();
+        _graphRenderDebounceTimer.Start();
+    }
+
+    private void GraphRenderDebounceTimer_Tick(object? sender, EventArgs e)
+    {
+        _graphRenderDebounceTimer.Stop();
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph)
+        {
+            return;
+        }
+
+        DebugTraceLog.Write("[GraphRender] Debounced render executing");
+        RenderSelectedGroupTasks();
+    }
+
+    private void UpdateTaskSurfaceToggleUi()
+    {
+        if (RibbonTaskSurfaceToggleButton is null || RibbonTaskSurfaceToggleLabel is null)
+        {
+            return;
+        }
+
+        var hasGroupSelection = !string.IsNullOrWhiteSpace(_selectedGroupName);
+        RibbonTaskSurfaceToggleButton.IsEnabled = hasGroupSelection;
+
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Task)
+        {
+            RibbonTaskSurfaceToggleLabel.Text = "Graph";
+            RibbonTaskSurfaceToggleButton.ToolTip = "Switch to Graph view";
+            return;
+        }
+
+        RibbonTaskSurfaceToggleLabel.Text = "Task";
+        RibbonTaskSurfaceToggleButton.ToolTip = "Switch to Task view";
     }
 
     private void NextGroupCommand_Executed(object sender, ExecutedRoutedEventArgs e)
@@ -1791,7 +1952,15 @@ public partial class MainWindow : Window
             TaskPanel.InvalidateArrange();
             TaskScrollViewer.UpdateLayout();
             UpdateMainScrollBarVisibility("recalibrate");
-            ScheduleConnectorRefresh();
+
+            if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+            {
+                RequestGraphRender("recalibrate");
+            }
+            else
+            {
+                ScheduleConnectorRefresh();
+            }
         }, DispatcherPriority.Loaded);
     }
 
@@ -1805,6 +1974,7 @@ public partial class MainWindow : Window
         ViewOutputMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
         UpdateRibbonHistoryButtonState(historyVisible);
         UpdateRibbonRitualsButtonState();
+        UpdateTaskSurfaceToggleUi();
     }
 
     private void UpdateRibbonHistoryButtonState(bool historyVisible)
@@ -2087,7 +2257,10 @@ public partial class MainWindow : Window
     private void RenderSelectedGroupTasks()
     {
         TaskPanel.Children.Clear();
+        TaskGraphCanvas.Children.Clear();
+        TaskGraphEdgeOverlay.Children.Clear();
         _taskCardsByIndex.Clear();
+        _graphNodesByIndex.Clear();
         _taskRunningOverlays.Clear();
         TaskConnectorOverlay.Children.Clear();
         _visibleTaskIndexes.Clear();
@@ -2099,6 +2272,7 @@ public partial class MainWindow : Window
             GroupMetaText.Text = "Replay snapshots are available from each task menu.";
             EmptyStateText.Text = "No groups are configured. Add a task to create your first group.";
             EmptyStateText.Visibility = Visibility.Visible;
+            ApplyTaskSurfaceModeVisibility();
             return;
         }
 
@@ -2130,6 +2304,15 @@ public partial class MainWindow : Window
         }
 
         RecomputeInvalidPortBindingIndicators();
+
+        ApplyTaskSurfaceModeVisibility();
+
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            RenderGraphView();
+            ApplyTaskCardSelectionVisuals();
+            return;
+        }
 
         TaskPanel.AllowDrop = !IsCurrentGroupDataflowLocked();
 
@@ -2410,6 +2593,749 @@ public partial class MainWindow : Window
 
         ScheduleConnectorRefresh();
         ApplyTaskCardSelectionVisuals();
+    }
+
+    private void ApplyTaskSurfaceModeVisibility()
+    {
+        var isTaskMode = _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
+
+        if (isTaskMode)
+        {
+            StopGraphPanning();
+        }
+
+        TaskPanel.Visibility = isTaskMode ? Visibility.Visible : Visibility.Collapsed;
+        TaskConnectorOverlay.Visibility = isTaskMode ? Visibility.Visible : Visibility.Collapsed;
+        TaskGraphCanvas.Visibility = isTaskMode ? Visibility.Collapsed : Visibility.Visible;
+        TaskGraphEdgeOverlay.Visibility = isTaskMode ? Visibility.Collapsed : Visibility.Visible;
+        TaskGraphCanvas.Cursor = isTaskMode ? Cursors.Arrow : (_isGraphPanning ? Cursors.SizeAll : Cursors.Hand);
+
+        UpdateMainScrollBarVisibility("surfaceMode");
+    }
+
+    private void RenderGraphView()
+    {
+        TaskGraphCanvas.Children.Clear();
+        TaskGraphEdgeOverlay.Children.Clear();
+        _graphNodesByIndex.Clear();
+
+        DebugTraceLog.Write($"[GraphRender] Group='{_selectedGroupName ?? "(none)"}', visibleTasks={_visibleTaskIndexes.Count}");
+
+        if (_visibleTaskIndexes.Count == 0)
+        {
+            TaskGraphCanvas.Width = TaskWorkspaceSurface.ActualWidth;
+            TaskGraphCanvas.Height = 0;
+            TaskGraphEdgeOverlay.Width = TaskWorkspaceSurface.ActualWidth;
+            TaskGraphEdgeOverlay.Height = 0;
+            return;
+        }
+
+        var graphNodes = _dataflowGraphService.BuildTaskGraphNodes(_currentConfiguration.Tasks, _visibleTaskIndexes);
+        var graphEdges = _dataflowGraphService.BuildTaskGraphEdges(_currentConfiguration.Tasks, _visibleTaskIndexes);
+
+        var nodeSummary = string.Join(", ", graphNodes.Select(node => $"{node.TaskIndex}:{node.TaskName}"));
+        DebugTraceLog.Write($"[GraphRender] Nodes=[{nodeSummary}], edges={graphEdges.Count}");
+
+        var positions = ComputeGraphNodePositions(graphNodes, graphEdges, out var surfaceSize);
+
+        TaskGraphCanvas.Width = surfaceSize.Width;
+        TaskGraphCanvas.Height = surfaceSize.Height;
+        TaskGraphEdgeOverlay.Width = surfaceSize.Width;
+        TaskGraphEdgeOverlay.Height = surfaceSize.Height;
+
+        foreach (var edge in graphEdges)
+        {
+            if (!positions.TryGetValue(edge.SourceTaskIndex, out var sourcePosition)
+                || !positions.TryGetValue(edge.TargetTaskIndex, out var targetPosition)
+                || edge.SourceTaskIndex == edge.TargetTaskIndex)
+            {
+                continue;
+            }
+
+            var sourceCenter = new Point(sourcePosition.X + GraphNodeWidth, sourcePosition.Y + (GraphNodeHeight / 2));
+            var targetCenter = new Point(targetPosition.X, targetPosition.Y + (GraphNodeHeight / 2));
+            AddGraphEdge(sourceCenter, targetCenter, edge.IsResolved, edge.Label);
+        }
+
+        foreach (var node in graphNodes)
+        {
+            if (!positions.TryGetValue(node.TaskIndex, out var position))
+            {
+                continue;
+            }
+
+            var nodeButton = CreateGraphNodeButton(node);
+            Canvas.SetLeft(nodeButton, position.X);
+            Canvas.SetTop(nodeButton, position.Y);
+            TaskGraphCanvas.Children.Add(nodeButton);
+        }
+    }
+
+    private Dictionary<int, Point> ComputeGraphNodePositions(
+        IReadOnlyList<DataflowGraphService.TaskGraphNode> nodes,
+        IReadOnlyList<DataflowGraphService.TaskGraphEdge> edges,
+        out Size surfaceSize)
+    {
+        var positions = new Dictionary<int, Point>();
+        var nodeOrder = nodes.Select((node, order) => new { node.TaskIndex, Order = order }).ToDictionary(item => item.TaskIndex, item => item.Order);
+
+        var visibleWidth = Math.Max(420, TaskScrollViewer.ViewportWidth > 0 ? TaskScrollViewer.ViewportWidth : TaskWorkspaceSurface.ActualWidth);
+        var hasEdges = edges.Count > 0;
+
+        if (!hasEdges)
+        {
+            var columns = Math.Max(1, (int)Math.Floor((visibleWidth - (GraphSurfacePadding * 2) + GraphLayerSpacing) / (GraphNodeWidth + GraphLayerSpacing)));
+
+            for (var i = 0; i < nodes.Count; i++)
+            {
+                var column = i % columns;
+                var row = i / columns;
+                var x = GraphSurfacePadding + (column * (GraphNodeWidth + GraphLayerSpacing));
+                var y = GraphSurfacePadding + (row * (GraphNodeHeight + GraphRowSpacing));
+                positions[nodes[i].TaskIndex] = new Point(x, y);
+            }
+
+            var rows = (int)Math.Ceiling(nodes.Count / (double)columns);
+            var width = Math.Max(visibleWidth, (GraphSurfacePadding * 2) + (columns * GraphNodeWidth) + ((columns - 1) * GraphLayerSpacing));
+            var height = (GraphSurfacePadding * 2) + (rows * GraphNodeHeight) + (Math.Max(0, rows - 1) * GraphRowSpacing);
+            surfaceSize = new Size(width, height);
+            return positions;
+        }
+
+        var adjacency = nodes.ToDictionary(node => node.TaskIndex, _ => new List<int>());
+        var indegree = nodes.ToDictionary(node => node.TaskIndex, _ => 0);
+
+        foreach (var edge in edges)
+        {
+            if (!adjacency.ContainsKey(edge.SourceTaskIndex) || !adjacency.ContainsKey(edge.TargetTaskIndex))
+            {
+                continue;
+            }
+
+            adjacency[edge.SourceTaskIndex].Add(edge.TargetTaskIndex);
+            indegree[edge.TargetTaskIndex]++;
+        }
+
+        var roots = indegree
+            .Where(pair => pair.Value == 0)
+            .OrderBy(pair => nodeOrder[pair.Key])
+            .Select(pair => pair.Key)
+            .ToList();
+
+        var queue = new Queue<int>(roots);
+        var layerByTask = nodes.ToDictionary(node => node.TaskIndex, _ => 0);
+        var visited = new HashSet<int>();
+
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            visited.Add(current);
+
+            foreach (var downstream in adjacency[current])
+            {
+                layerByTask[downstream] = Math.Max(layerByTask[downstream], layerByTask[current] + 1);
+                indegree[downstream]--;
+                if (indegree[downstream] == 0)
+                {
+                    queue.Enqueue(downstream);
+                }
+            }
+        }
+
+        foreach (var node in nodes)
+        {
+            if (visited.Contains(node.TaskIndex))
+            {
+                continue;
+            }
+
+            layerByTask[node.TaskIndex] = 0;
+        }
+
+        var layers = layerByTask
+            .GroupBy(pair => pair.Value)
+            .OrderBy(group => group.Key)
+            .Select(group => group
+                .Select(pair => pair.Key)
+                .OrderBy(taskIndex => nodeOrder[taskIndex])
+                .ToList())
+            .ToList();
+
+        var maxLayerCount = layers.Count == 0 ? 1 : layers.Count;
+        var maxRows = layers.Count == 0 ? 1 : layers.Max(layer => layer.Count);
+
+        for (var layerIndex = 0; layerIndex < layers.Count; layerIndex++)
+        {
+            var layer = layers[layerIndex];
+            for (var rowIndex = 0; rowIndex < layer.Count; rowIndex++)
+            {
+                var x = GraphSurfacePadding + (layerIndex * (GraphNodeWidth + GraphLayerSpacing));
+                var y = GraphSurfacePadding + (rowIndex * (GraphNodeHeight + GraphRowSpacing));
+                positions[layer[rowIndex]] = new Point(x, y);
+            }
+        }
+
+        var requiredWidth = (GraphSurfacePadding * 2) + (maxLayerCount * GraphNodeWidth) + (Math.Max(0, maxLayerCount - 1) * GraphLayerSpacing);
+        var requiredHeight = (GraphSurfacePadding * 2) + (maxRows * GraphNodeHeight) + (Math.Max(0, maxRows - 1) * GraphRowSpacing);
+        surfaceSize = new Size(Math.Max(visibleWidth, requiredWidth), requiredHeight);
+        return positions;
+    }
+
+    private void AddGraphEdge(Point start, Point end, bool isResolved, string? label)
+    {
+        var edgeStroke = isResolved ? GetResolvedConnectorBrush() : GetUnresolvedConnectorBrush();
+        var controlOffset = Math.Max(36, Math.Abs(end.X - start.X) * 0.35);
+
+        var figure = new PathFigure { StartPoint = start, IsClosed = false, IsFilled = false };
+        figure.Segments.Add(new BezierSegment(
+            new Point(start.X + controlOffset, start.Y),
+            new Point(end.X - controlOffset, end.Y),
+            end,
+            true));
+
+        var path = new System.Windows.Shapes.Path
+        {
+            Data = new PathGeometry([figure]),
+            Stroke = edgeStroke,
+            StrokeThickness = isResolved ? 3.2 : 2.8,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            Opacity = 0.9,
+            ToolTip = string.IsNullOrWhiteSpace(label)
+                ? (isResolved ? "Resolved dataflow edge" : "Unresolved dataflow edge")
+                : (isResolved ? $"Resolved: {label}" : $"Unresolved: {label}")
+        };
+
+        if (!isResolved)
+        {
+            path.StrokeDashArray = [6, 4];
+        }
+
+        var direction = new Vector(end.X - start.X, end.Y - start.Y);
+        if (direction.Length > 0.001)
+        {
+            direction.Normalize();
+            var normal = new Vector(-direction.Y, direction.X);
+            var arrowLength = 11;
+            var arrowWidth = 5.5;
+
+            var arrowTip = end;
+            var arrowBase = arrowTip - (direction * arrowLength);
+            var arrowLeft = arrowBase + (normal * arrowWidth);
+            var arrowRight = arrowBase - (normal * arrowWidth);
+
+            var arrow = new Polygon
+            {
+                Fill = edgeStroke,
+                Opacity = 0.9,
+                Points = new PointCollection([arrowTip, arrowLeft, arrowRight])
+            };
+
+            TaskGraphEdgeOverlay.Children.Add(path);
+            TaskGraphEdgeOverlay.Children.Add(arrow);
+            return;
+        }
+
+        TaskGraphEdgeOverlay.Children.Add(path);
+    }
+
+    private Button CreateGraphNodeButton(DataflowGraphService.TaskGraphNode graphNode)
+    {
+        var titleText = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(graphNode.TaskName) ? "(Unnamed Task)" : graphNode.TaskName,
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxHeight = 38
+        };
+
+        var stateText = new TextBlock
+        {
+            Margin = new Thickness(0, 8, 0, 0),
+            FontSize = 11,
+            FontWeight = FontWeights.Medium
+        };
+
+        var contentPanel = new StackPanel
+        {
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        contentPanel.Children.Add(titleText);
+        contentPanel.Children.Add(stateText);
+
+        var runningBorderBrush = new SolidColorBrush(Color.FromRgb(0x40, 0xAE, 0xFF));
+
+        var nodeBorder = new Border
+        {
+            CornerRadius = new CornerRadius(10),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12, 10, 12, 10),
+            Child = contentPanel
+        };
+
+        var selectionBorder = new Border
+        {
+            CornerRadius = new CornerRadius(12),
+            BorderThickness = new Thickness(0),
+            BorderBrush = GetFocusedConnectorBrush(),
+            Child = nodeBorder
+        };
+
+        var nodeButton = new Button
+        {
+            Width = GraphNodeWidth,
+            Height = GraphNodeHeight,
+            Padding = new Thickness(0),
+            BorderThickness = new Thickness(0),
+            Background = Brushes.Transparent,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+            ToolTip = string.IsNullOrWhiteSpace(graphNode.Description) ? graphNode.TaskName : graphNode.Description,
+            Tag = graphNode.TaskIndex
+        };
+
+        DebugTraceLog.Write($"[GraphNode] Create button taskIndex={graphNode.TaskIndex}, taskName='{graphNode.TaskName}', group='{_selectedGroupName ?? "(none)"}'");
+
+        nodeButton.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
+        nodeButton.Content = selectionBorder;
+
+        nodeButton.PreviewMouseRightButtonUp += (_, e) =>
+        {
+            if (nodeButton.Tag is not int nodeTaskIndex)
+            {
+                return;
+            }
+
+            _selectedTaskIndex = nodeTaskIndex;
+            ApplyTaskCardSelectionVisuals();
+            OpenTaskContextMenu(nodeButton, nodeTaskIndex);
+            e.Handled = true;
+        };
+
+        var visual = new GraphNodeVisual
+        {
+            TaskIndex = graphNode.TaskIndex,
+            SelectionBorder = selectionBorder,
+            NodeBorder = nodeBorder,
+            RunningBorderBrush = runningBorderBrush,
+            StateText = stateText,
+            NodeButton = nodeButton
+        };
+
+        _graphNodesByIndex[graphNode.TaskIndex] = visual;
+        ApplyGraphNodeStateVisual(graphNode.TaskIndex);
+        return nodeButton;
+    }
+
+    private void TaskGraphCanvas_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph)
+        {
+            return;
+        }
+
+        var canvasPoint = e.GetPosition(TaskGraphCanvas);
+        if (TryResolveGraphNodeIndexAtPoint(canvasPoint, out var nodeTaskIndex))
+        {
+            _selectedTaskIndex = nodeTaskIndex;
+            ApplyTaskCardSelectionVisuals();
+            _preferGroupDeleteContext = false;
+            _graphPointerDownTaskIndex = nodeTaskIndex;
+            DebugTraceLog.Write($"[GraphInput] MouseDown on node index={nodeTaskIndex}, point=({canvasPoint.X:F1},{canvasPoint.Y:F1}), group='{_selectedGroupName ?? "(none)"}', sourceType='{e.OriginalSource?.GetType().Name ?? "(null)"}'");
+        }
+        else
+        {
+            _graphPointerDownTaskIndex = null;
+            DebugTraceLog.Write($"[GraphInput] MouseDown on canvas/background point=({canvasPoint.X:F1},{canvasPoint.Y:F1}), group='{_selectedGroupName ?? "(none)"}', sourceType='{e.OriginalSource?.GetType().Name ?? "(null)"}'");
+        }
+
+        _graphPointerDownPoint = e.GetPosition(TaskScrollViewer);
+        _graphPointerWasDrag = false;
+        _graphPointerActive = true;
+    }
+
+    private void TaskGraphCanvas_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph || !_graphPointerActive || e.LeftButton != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        var current = e.GetPosition(TaskScrollViewer);
+
+        if (!_isGraphPanning)
+        {
+            var delta = current - _graphPointerDownPoint;
+            if (Math.Abs(delta.X) < GraphDragThreshold && Math.Abs(delta.Y) < GraphDragThreshold)
+            {
+                return;
+            }
+
+            _graphPointerWasDrag = true;
+            StartGraphPanning(current);
+            DebugTraceLog.Write($"[GraphInput] DragStart fromPoint=({_graphPointerDownPoint.X:F1},{_graphPointerDownPoint.Y:F1}) current=({current.X:F1},{current.Y:F1}) downTaskIndex={_graphPointerDownTaskIndex?.ToString() ?? "(none)"}");
+        }
+
+        UpdateGraphPanning(current);
+        e.Handled = true;
+    }
+
+    private void TaskGraphCanvas_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph)
+        {
+            ClearGraphPointerInteraction();
+            return;
+        }
+
+        var canvasPoint = e.GetPosition(TaskGraphCanvas);
+        var taskToRun = (!_graphPointerWasDrag && TryResolveGraphNodeIndexAtPoint(canvasPoint, out var upTaskIndex))
+            ? upTaskIndex
+            : (!_graphPointerWasDrag && _graphPointerDownTaskIndex.HasValue
+                ? _graphPointerDownTaskIndex.Value
+                : (int?)null);
+
+        DebugTraceLog.Write($"[GraphInput] MouseUp wasDrag={_graphPointerWasDrag}, point=({canvasPoint.X:F1},{canvasPoint.Y:F1}), downTaskIndex={_graphPointerDownTaskIndex?.ToString() ?? "(none)"}, resolvedRunTarget={taskToRun?.ToString() ?? "(none)"}, group='{_selectedGroupName ?? "(none)"}'");
+
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+
+        if (taskToRun.HasValue)
+        {
+            _ = RunTaskByIndexAsync(taskToRun.Value);
+            e.Handled = true;
+        }
+    }
+
+    private void TaskGraphCanvas_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        DebugTraceLog.Write("[GraphInput] LostMouseCapture");
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+    }
+
+    private void StartGraphPanning(Point startPoint)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph)
+        {
+            return;
+        }
+
+        if (!Mouse.Capture(TaskGraphCanvas, CaptureMode.SubTree))
+        {
+            _isGraphPanning = false;
+            TaskGraphCanvas.Cursor = Cursors.Hand;
+            DebugTraceLog.Write("[GraphPan] Capture failed");
+            return;
+        }
+
+        _isGraphPanning = true;
+        _graphPanStartPoint = startPoint;
+        _graphPanStartHorizontalOffset = TaskScrollViewer.HorizontalOffset;
+        _graphPanStartVerticalOffset = TaskScrollViewer.VerticalOffset;
+        TaskGraphCanvas.Cursor = Cursors.SizeAll;
+        DebugTraceLog.Write($"[GraphPan] Start point=({startPoint.X:F1},{startPoint.Y:F1}) offsets=({_graphPanStartHorizontalOffset:F1},{_graphPanStartVerticalOffset:F1})");
+    }
+
+    private void UpdateGraphPanning(Point current)
+    {
+        if (!_isGraphPanning)
+        {
+            return;
+        }
+
+        var deltaX = current.X - _graphPanStartPoint.X;
+        var deltaY = current.Y - _graphPanStartPoint.Y;
+
+        TaskScrollViewer.ScrollToHorizontalOffset(_graphPanStartHorizontalOffset - deltaX);
+        TaskScrollViewer.ScrollToVerticalOffset(_graphPanStartVerticalOffset - deltaY);
+        DebugTraceLog.Write($"[GraphPan] Move current=({current.X:F1},{current.Y:F1}) delta=({deltaX:F1},{deltaY:F1}) offsets=({TaskScrollViewer.HorizontalOffset:F1},{TaskScrollViewer.VerticalOffset:F1})");
+    }
+
+    private void StopGraphPanning()
+    {
+        if (!_isGraphPanning)
+        {
+            if (Mouse.Captured == TaskGraphCanvas)
+            {
+                Mouse.Capture(null);
+            }
+
+            TaskGraphCanvas.Cursor = _taskSurfaceViewMode == TaskSurfaceViewMode.Graph ? Cursors.Hand : Cursors.Arrow;
+            DebugTraceLog.Write("[GraphPan] Stop ignored (not active)");
+            return;
+        }
+
+        _isGraphPanning = false;
+        if (TaskGraphCanvas.IsMouseCaptured)
+        {
+            TaskGraphCanvas.ReleaseMouseCapture();
+        }
+        else if (Mouse.Captured == TaskGraphCanvas)
+        {
+            Mouse.Capture(null);
+        }
+
+        TaskGraphCanvas.Cursor = _taskSurfaceViewMode == TaskSurfaceViewMode.Graph ? Cursors.Hand : Cursors.Arrow;
+        DebugTraceLog.Write($"[GraphPan] Stop offsets=({TaskScrollViewer.HorizontalOffset:F1},{TaskScrollViewer.VerticalOffset:F1})");
+    }
+
+    private void ClearGraphPointerInteraction()
+    {
+        DebugTraceLog.Write($"[GraphInput] ClearPointerState downTaskIndex={_graphPointerDownTaskIndex?.ToString() ?? "(none)"}, wasDrag={_graphPointerWasDrag}, active={_graphPointerActive}");
+        _graphPointerDownTaskIndex = null;
+        _graphPointerWasDrag = false;
+        _graphPointerActive = false;
+
+        if (Mouse.Captured == TaskGraphCanvas)
+        {
+            Mouse.Capture(null);
+        }
+
+        TaskGraphCanvas.Cursor = _taskSurfaceViewMode == TaskSurfaceViewMode.Graph ? Cursors.Hand : Cursors.Arrow;
+    }
+
+    private bool TryResolveGraphNodeIndexAtPoint(Point pointOnCanvas, out int taskIndex)
+    {
+        for (var i = TaskGraphCanvas.Children.Count - 1; i >= 0; i--)
+        {
+            if (TaskGraphCanvas.Children[i] is not Button button || button.Tag is not int candidateIndex)
+            {
+                continue;
+            }
+
+            var left = Canvas.GetLeft(button);
+            var top = Canvas.GetTop(button);
+            var width = button.ActualWidth > 0 ? button.ActualWidth : button.Width;
+            var height = button.ActualHeight > 0 ? button.ActualHeight : button.Height;
+
+            if (double.IsNaN(left) || double.IsNaN(top) || width <= 0 || height <= 0)
+            {
+                continue;
+            }
+
+            var bounds = new Rect(left, top, width, height);
+            if (!bounds.Contains(pointOnCanvas))
+            {
+                continue;
+            }
+
+            taskIndex = candidateIndex;
+            return true;
+        }
+
+        taskIndex = -1;
+        return false;
+    }
+
+    private void MainWindow_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph)
+        {
+            return;
+        }
+
+        if (!_isGraphPanning && !_graphPointerActive)
+        {
+            return;
+        }
+
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+    }
+
+    private static T? FindVisualAncestor<T>(DependencyObject? start) where T : DependencyObject
+    {
+        var current = start;
+        while (current is not null)
+        {
+            if (current is T match)
+            {
+                return match;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
+
+    private void ApplyGraphNodeStateVisual(int taskIndex)
+    {
+        if (!_graphNodesByIndex.TryGetValue(taskIndex, out var visual) || !TryGetTask(taskIndex, out var task))
+        {
+            return;
+        }
+
+        var state = GetTaskRunState(task);
+        var stateLabel = state switch
+        {
+            TaskRunState.Running => "Running",
+            TaskRunState.Succeeded => "Last run: Succeeded",
+            TaskRunState.Failed => "Last run: Failed",
+            _ => "Ready"
+        };
+
+        if (!IsTaskEnabled(task))
+        {
+            stateLabel = "Disabled";
+        }
+
+        var stateBrush = state switch
+        {
+            TaskRunState.Running => new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0xE5)),
+            TaskRunState.Succeeded => new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)),
+            TaskRunState.Failed => new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35)),
+            _ => (Brush)Resources["SecondaryTextBrush"]
+        };
+
+        var background = IsTaskEnabled(task)
+            ? new SolidColorBrush(Color.FromRgb(0x1F, 0x2A, 0x35))
+            : new SolidColorBrush(Color.FromRgb(0x20, 0x22, 0x24));
+
+        var isEnabled = IsTaskEnabled(task);
+        var isRunning = isEnabled && state == TaskRunState.Running;
+        var nodeBorderBrush = isRunning
+            ? (Brush)visual.RunningBorderBrush
+            : isEnabled
+                ? new SolidColorBrush(Color.FromRgb(0x3D, 0x4D, 0x5D))
+                : new SolidColorBrush(Color.FromRgb(0x4A, 0x4D, 0x50));
+        var nodeBorderThickness = isRunning ? new Thickness(2) : new Thickness(1);
+
+        if (isRunning)
+        {
+            if (!visual.IsRunningBorderPulseActive)
+            {
+                visual.RunningBorderBrush.Opacity = 1;
+                visual.RunningBorderBrush.BeginAnimation(
+                    SolidColorBrush.OpacityProperty,
+                    new DoubleAnimation
+                    {
+                        From = 0.72,
+                        To = 1.0,
+                        Duration = TimeSpan.FromMilliseconds(680),
+                        AutoReverse = true,
+                        RepeatBehavior = RepeatBehavior.Forever
+                    });
+                visual.IsRunningBorderPulseActive = true;
+            }
+        }
+        else if (visual.IsRunningBorderPulseActive)
+        {
+            visual.RunningBorderBrush.BeginAnimation(SolidColorBrush.OpacityProperty, null);
+            visual.RunningBorderBrush.Opacity = 1;
+            visual.IsRunningBorderPulseActive = false;
+        }
+
+        visual.NodeBorder.Background = background;
+        visual.NodeBorder.BorderBrush = nodeBorderBrush;
+        visual.NodeBorder.BorderThickness = nodeBorderThickness;
+        visual.NodeButton.Opacity = isEnabled ? 1 : 0.72;
+        visual.StateText.Text = stateLabel;
+        visual.StateText.Foreground = stateBrush;
+
+        var isSelected = _selectedTaskIndex.HasValue && _selectedTaskIndex.Value == taskIndex;
+        visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(2) : new Thickness(0);
+    }
+
+    private async Task RunTaskByIndexAsync(int taskIndex)
+    {
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+
+        DebugTraceLog.Write($"[TaskRun] RunTaskByIndex requested index={taskIndex}, selectedGroup='{_selectedGroupName ?? "(none)"}'");
+
+        if (!TryGetTask(taskIndex, out var selectedTask))
+        {
+            DebugTraceLog.Write($"[TaskRun] RunTaskByIndex failed: invalid index={taskIndex}");
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!IsTaskEnabled(selectedTask))
+        {
+            DebugTraceLog.Write($"[TaskRun] RunTaskByIndex blocked: disabled task index={taskIndex}, name='{selectedTask.Name}', group='{selectedTask.Group}'");
+            AppMessageBox.Show(this, $"Task '{selectedTask.Name}' is disabled.", "Task Disabled", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _selectedTaskIndex = taskIndex;
+        ApplyTaskCardSelectionVisuals();
+        DebugTraceLog.Write($"[TaskRun] Executing task index={taskIndex}, name='{selectedTask.Name}', group='{selectedTask.Group}', key='{TaskIdentity.BuildKey(selectedTask)}'");
+        await ExecuteTaskAsync(selectedTask, null, isReplay: false);
+        DebugTraceLog.Write($"[TaskRun] ExecuteTaskAsync completed index={taskIndex}, name='{selectedTask.Name}', group='{selectedTask.Group}'");
+    }
+
+    private void OpenTaskContextMenu(Button anchorButton, int taskIndex)
+    {
+        var menu = CreateTaskContextMenu(taskIndex);
+        anchorButton.ContextMenu = menu;
+        menu.PlacementTarget = anchorButton;
+        menu.IsOpen = true;
+    }
+
+    private ContextMenu CreateTaskContextMenu(int taskIndex)
+    {
+        var menu = new ContextMenu();
+
+        var editItem = new MenuItem { Header = "Edit" };
+        editItem.Click += (_, _) => EditTask(taskIndex);
+
+        var toggleItem = new MenuItem
+        {
+            Header = IsTaskEnabled(_currentConfiguration.Tasks[taskIndex]) ? "Disable" : "Enable"
+        };
+        toggleItem.Click += (_, _) => ToggleTaskEnabled(taskIndex);
+
+        var replayEntry = GetLastSnapshotEntry(_currentConfiguration.Tasks[taskIndex]);
+        var replayItem = new MenuItem
+        {
+            Header = "Replay Last Snapshot",
+            IsEnabled = replayEntry is not null
+        };
+        replayItem.Click += async (_, _) =>
+        {
+            if (replayEntry is null)
+            {
+                return;
+            }
+
+            var replayTask = RunHistoryService.ToTask(replayEntry.Snapshot);
+            if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
+            {
+                AppMessageBox.Show(this, $"Task '{replayTask.Name}' is disabled and cannot be replayed.", "Replay Snapshot", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            SelectGroup(NormalizeGroupName(replayTask.Group));
+
+            await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: replayEntry.Id);
+        };
+
+        var runChainItem = new MenuItem { Header = "Run Chain (Same Group)" };
+        runChainItem.IsEnabled = _visibleTaskIndexes.Any(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
+        runChainItem.Click += async (_, _) =>
+        {
+            if (!IsValidTaskIndex(taskIndex))
+            {
+                AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            await RunTaskChainFromTaskAsync(taskIndex);
+        };
+
+        var deleteItem = new MenuItem { Header = "Delete" };
+        deleteItem.Click += (_, _) => DeleteTask(taskIndex);
+
+        menu.Items.Add(editItem);
+        menu.Items.Add(toggleItem);
+        menu.Items.Add(replayItem);
+        menu.Items.Add(runChainItem);
+        menu.Items.Add(deleteItem);
+        return menu;
     }
 
     private Button CreatePortEditorGlyphButton(bool isInput, int taskIndex)
@@ -2919,11 +3845,22 @@ public partial class MainWindow : Window
 
     private void ScheduleConnectorRefresh()
     {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Task)
+        {
+            return;
+        }
+
         Dispatcher.BeginInvoke(RedrawDataflowConnectors, DispatcherPriority.Loaded);
     }
 
     private void RedrawDataflowConnectors()
     {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Task)
+        {
+            TaskConnectorOverlay.Children.Clear();
+            return;
+        }
+
         TaskConnectorOverlay.Children.Clear();
         _connectorVisuals.Clear();
         _connectorByPath.Clear();
@@ -3509,6 +4446,12 @@ public partial class MainWindow : Window
     {
         _taskRunStates[GetTaskStateKey(task)] = state;
         ApplyTaskCardRunningVisual(task);
+        var graphTaskIndex = _currentConfiguration.Tasks.FindIndex(candidate =>
+            string.Equals(GetTaskIdentityKey(candidate), GetTaskIdentityKey(task), StringComparison.OrdinalIgnoreCase));
+        if (graphTaskIndex >= 0)
+        {
+            ApplyGraphNodeStateVisual(graphTaskIndex);
+        }
         UpdateSidebarStatusAnimation();
         RebuildGroupNavigator(GetGroupSidebarItems(GetGroupNames()));
     }
@@ -3966,6 +4909,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[Validation] Failed to load configuration from '{path}' for action '{action}'");
             AppendValidationEvent(action, path, false, ex.Message, outputTextBox);
             throw;
         }
@@ -3983,6 +4927,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[Validation] Failed to save/validate configuration at '{path}' for action '{action}'");
             AppendValidationEvent(action, path, false, ex.Message, outputTextBox);
             throw;
         }
@@ -4171,6 +5116,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[Share] ExportConfigurationToClipboardAndOutput failed for {summary}");
             AppendLog(outputTextBox, $"[Share] Export failed: {ex.Message}");
             SetTabStopped(tabContext, false);
             AppMessageBox.Show(this, $"Failed to export share payload to clipboard.\n{ex.Message}", "Share", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -4213,6 +5159,7 @@ public partial class MainWindow : Window
 
     private void ImportFromFile()
     {
+        using var importScope = DebugTraceLog.BeginOperation("import", "file");
         var tabContext = CreateOutputTab("Import");
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
@@ -4244,6 +5191,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[Import] ImportFromFile failed for '{importPath}'");
             AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
             SetTabStopped(tabContext, false);
         }
@@ -4251,6 +5199,7 @@ public partial class MainWindow : Window
 
     private void ImportFromClipboard()
     {
+        using var importScope = DebugTraceLog.BeginOperation("import", "clipboard");
         var tabContext = CreateOutputTab("Import (Clipboard)");
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
@@ -4291,6 +5240,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, "[Import] ImportFromClipboard failed");
             AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
             SetTabStopped(tabContext, false);
         }
@@ -4317,6 +5267,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[Import] Merge/persist failed from source '{importSourceLabel}'");
             AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
             SetTabStopped(tabContext, false);
         }
@@ -4589,6 +5540,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None && _taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            if (TaskScrollViewer?.IsKeyboardFocusWithin != true)
+            {
+                return;
+            }
+
+            if (!TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
+            {
+                return;
+            }
+
+            await RunTaskByIndexAsync(selectedTaskIndex);
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.E && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
         {
             if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
@@ -4703,6 +5676,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            if (_graphNodesByIndex.TryGetValue(taskIndex, out var graphNode))
+            {
+                graphNode.NodeButton.Focus();
+            }
+
+            return;
+        }
+
         if (_taskCardsByIndex.TryGetValue(taskIndex, out var card) && card.Tag is TaskCardVisual visual)
         {
             visual.TaskButton.Focus();
@@ -4739,6 +5722,11 @@ public partial class MainWindow : Window
 
             var isSelected = _selectedTaskIndex.HasValue && visual.TaskIndex == _selectedTaskIndex.Value;
             visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(2) : new Thickness(0);
+        }
+
+        foreach (var taskIndex in _graphNodesByIndex.Keys)
+        {
+            ApplyGraphNodeStateVisual(taskIndex);
         }
 
         UpdateRibbonTaskActionState();
@@ -4872,68 +5860,7 @@ public partial class MainWindow : Window
         {
             return;
         }
-
-        var menu = new ContextMenu();
-
-        var editItem = new MenuItem { Header = "Edit" };
-        editItem.Click += (_, _) => EditTask(taskIndex);
-
-        var toggleItem = new MenuItem
-        {
-            Header = IsTaskEnabled(_currentConfiguration.Tasks[taskIndex]) ? "Disable" : "Enable"
-        };
-        toggleItem.Click += (_, _) => ToggleTaskEnabled(taskIndex);
-
-        var replayEntry = GetLastSnapshotEntry(_currentConfiguration.Tasks[taskIndex]);
-        var replayItem = new MenuItem
-        {
-            Header = "Replay Last Snapshot",
-            IsEnabled = replayEntry is not null
-        };
-        replayItem.Click += async (_, _) =>
-        {
-            if (replayEntry is null)
-            {
-                return;
-            }
-
-            var replayTask = RunHistoryService.ToTask(replayEntry.Snapshot);
-            if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
-            {
-                AppMessageBox.Show(this, $"Task '{replayTask.Name}' is disabled and cannot be replayed.", "Replay Snapshot", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            SelectGroup(NormalizeGroupName(replayTask.Group));
-
-            await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: replayEntry.Id);
-        };
-
-        var runChainItem = new MenuItem { Header = "Run Chain (Same Group)" };
-        runChainItem.IsEnabled = _visibleTaskIndexes.Any(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
-        runChainItem.Click += async (_, _) =>
-        {
-            if (!IsValidTaskIndex(taskIndex))
-            {
-                AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            await RunTaskChainFromTaskAsync(taskIndex);
-        };
-
-        var deleteItem = new MenuItem { Header = "Delete" };
-        deleteItem.Click += (_, _) => DeleteTask(taskIndex);
-
-        menu.Items.Add(editItem);
-        menu.Items.Add(toggleItem);
-        menu.Items.Add(replayItem);
-        menu.Items.Add(runChainItem);
-        menu.Items.Add(deleteItem);
-
-        button.ContextMenu = menu;
-        menu.PlacementTarget = button;
-        menu.IsOpen = true;
+        OpenTaskContextMenu(button, taskIndex);
     }
 
     private void EditTask(int taskIndex)
@@ -5094,6 +6021,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[Persist] TryPersistConfiguration failed. Title='{errorTitle}'");
             AppMessageBox.Show(this, $"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
@@ -5199,6 +6127,8 @@ public partial class MainWindow : Window
         DataflowContext? dataflowContext = null,
         string? chainStepLabel = null)
     {
+        var operationDetail = isReplay ? $"{task.Name}-replay" : task.Name;
+        using var taskRunScope = DebugTraceLog.BeginOperation("task", operationDetail);
         var tabName = isReplay ? $"{task.Name} (replay)" : task.Name;
         var tabContext = CreateOutputTab(tabName);
         var outputTextBox = tabContext.OutputTextBox;
@@ -5393,6 +6323,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[TaskRun] ExecuteTaskAsync failed for task '{task.Name}'");
             AppendLog(outputTextBox, $"[{task.Name}] Failed to execute task. {ex.Message}");
             SetTabStopped(tabContext, false);
             SetTaskRunState(task, TaskRunState.Failed);

@@ -24,8 +24,9 @@ internal static class JsonFileStorage
             var json = File.ReadAllText(path);
             return JsonSerializer.Deserialize<T>(json, options) ?? new T();
         }
-        catch
+        catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[JsonFileStorage] LoadOrDefault failed for '{path}', returning default");
             return new T();
         }
     }
@@ -70,6 +71,7 @@ internal static class JsonFileStorage
             }
             catch (PlatformNotSupportedException)
             {
+                DebugTraceLog.Write("[JsonFileStorage] File.Replace not supported; using backup/delete/move fallback");
                 CreateBackupSnapshot(path);
                 File.Delete(path);
                 File.Move(tempPath, path);
@@ -77,6 +79,7 @@ internal static class JsonFileStorage
             catch (IOException)
             {
                 // Fallback for file systems where File.Replace semantics are unavailable.
+                DebugTraceLog.Write($"[JsonFileStorage] File.Replace IO fallback engaged for '{path}'");
                 CreateBackupSnapshot(path);
                 if (File.Exists(path))
                 {
@@ -94,8 +97,9 @@ internal static class JsonFileStorage
                 {
                     File.Delete(tempPath);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    DebugTraceLog.Write(ex, $"[JsonFileStorage] Temp file cleanup failed for '{tempPath}'");
                     // Best-effort cleanup.
                 }
             }
@@ -110,8 +114,9 @@ internal static class JsonFileStorage
             {
                 pair.Value.Dispose();
             }
-            catch
+            catch (Exception ex)
             {
+                DebugTraceLog.Write(ex, "[JsonFileStorage] ReleaseAllLocks dispose failed");
                 // Best-effort lock cleanup at shutdown.
             }
         }
@@ -142,6 +147,7 @@ internal static class JsonFileStorage
             {
                 if (Environment.TickCount64 - start >= LockAcquireTimeoutMs)
                 {
+                    DebugTraceLog.Write($"[JsonFileStorage] Lock acquire timed out (IOException) for '{targetPath}'");
                     throw;
                 }
 
@@ -151,6 +157,7 @@ internal static class JsonFileStorage
             {
                 if (Environment.TickCount64 - start >= LockAcquireTimeoutMs)
                 {
+                    DebugTraceLog.Write($"[JsonFileStorage] Lock acquire timed out (UnauthorizedAccessException) for '{targetPath}'");
                     throw;
                 }
 
@@ -198,8 +205,9 @@ internal static class JsonFileStorage
             {
                 stale.Delete();
             }
-            catch
+            catch (Exception ex)
             {
+                DebugTraceLog.Write(ex, $"[JsonFileStorage] Stale backup delete failed for '{stale.FullName}'");
                 // Best-effort cleanup; stale backups are non-fatal.
             }
         }

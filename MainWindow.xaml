@@ -737,6 +737,12 @@
                                     <TextBlock Text="History" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
+                            <Button x:Name="RibbonTaskSurfaceToggleButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonTaskSurfaceToggleButton_Click">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE81E;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock x:Name="RibbonTaskSurfaceToggleLabel" Text="Graph" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
                         </StackPanel>
                     </StackPanel>
 
@@ -985,6 +991,16 @@
                     VerticalContentAlignment="Center">
                     <Grid x:Name="TaskWorkspaceSurface">
                         <WrapPanel x:Name="TaskPanel" HorizontalAlignment="Center" />
+                        <Canvas x:Name="TaskGraphEdgeOverlay"
+                            Visibility="Collapsed"
+                            IsHitTestVisible="False"
+                            Panel.ZIndex="12" />
+                        <Canvas x:Name="TaskGraphCanvas"
+                            Visibility="Collapsed"
+                            Background="Transparent"
+                            Cursor="Hand"
+                            IsHitTestVisible="True"
+                            Panel.ZIndex="14" />
                         <Canvas x:Name="TaskConnectorOverlay"
                             IsHitTestVisible="True"
                                 Panel.ZIndex="20" />

@@ -2,6 +2,18 @@ namespace tsky;
 
 public sealed class DataflowGraphService
 {
+    public sealed record TaskGraphNode(
+        int TaskIndex,
+        string TaskName,
+        string? Description,
+        bool IsEnabled);
+
+    public sealed record TaskGraphEdge(
+        int SourceTaskIndex,
+        int TargetTaskIndex,
+        string? Label,
+        bool IsResolved);
+
     public sealed class ConnectorTooltipItem
     {
         public required bool Resolved { get; init; }
@@ -348,6 +360,50 @@ public sealed class DataflowGraphService
         }
 
         return connectors;
+    }
+
+    public List<TaskGraphNode> BuildTaskGraphNodes(IReadOnlyList<LauncherTask> tasks, IReadOnlyList<int> visibleTaskIndexes)
+    {
+        var nodes = new List<TaskGraphNode>();
+
+        foreach (var taskIndex in visibleTaskIndexes)
+        {
+            if (taskIndex < 0 || taskIndex >= tasks.Count)
+            {
+                continue;
+            }
+
+            var task = tasks[taskIndex];
+            nodes.Add(new TaskGraphNode(
+                taskIndex,
+                task.Name,
+                task.Description,
+                task.IsEnabled));
+        }
+
+        return nodes;
+    }
+
+    public List<TaskGraphEdge> BuildTaskGraphEdges(IReadOnlyList<LauncherTask> tasks, IReadOnlyList<int> visibleTaskIndexes)
+    {
+        var edges = new List<TaskGraphEdge>();
+        var connectors = BuildConnectorComputations(tasks, visibleTaskIndexes);
+
+        foreach (var connector in connectors)
+        {
+            if (!connector.SourceTaskIndex.HasValue)
+            {
+                continue;
+            }
+
+            edges.Add(new TaskGraphEdge(
+                connector.SourceTaskIndex.Value,
+                connector.TargetTaskIndex,
+                connector.SourceOutputName,
+                connector.Resolved));
+        }
+
+        return edges;
     }
 
     public HashSet<int> ComputeUpstreamAndDownstreamConnectorIndexes(IReadOnlyList<ConnectorRelationItem> connectors, int focalIndex)

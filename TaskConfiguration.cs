@@ -82,8 +82,9 @@ public sealed class TaskConfiguration
         {
             rawText = File.ReadAllText(path);
         }
-        catch
+        catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[TaskConfiguration] EnsureValidFileOrReset could not read '{path}'");
             // If the file cannot be read, leave it untouched and let normal load behavior handle fallback.
             return;
         }
@@ -132,6 +133,7 @@ public sealed class TaskConfiguration
         }
         catch (JsonException ex)
         {
+            DebugTraceLog.Write(ex, "[TaskConfiguration] TryValidateSchema failed");
             error = ex.Message;
             return false;
         }
@@ -170,6 +172,7 @@ public sealed class TaskConfiguration
         }
         catch (JsonException ex)
         {
+            DebugTraceLog.Write(ex, "[TaskConfiguration] TryDeserializeTask failed");
             task = new LauncherTask();
             error = ex.Message;
             return false;

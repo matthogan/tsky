@@ -144,8 +144,9 @@ public static class TaskExecutionService
                         process.Kill(task.KillProcessTreeOnCancel);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    DebugTraceLog.Write(ex, $"[TaskExecutionService] Best-effort kill failed for task '{task.Name}'");
                     // Best-effort termination; completion path will return cancellation/timeout state.
                 }
             });
@@ -293,6 +294,7 @@ public static class TaskExecutionService
         }
         catch (Win32Exception ex) when (launchAsAdministrator && ex.NativeErrorCode == 1223)
         {
+            DebugTraceLog.Write(ex, $"[TaskExecutionService] Elevation prompt canceled for task '{task.Name}'");
             return new TaskExecutionRunResult
             {
                 Started = false,
@@ -306,8 +308,9 @@ public static class TaskExecutionService
                 FailureMessage = "Elevation was canceled by the user."
             };
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
+            DebugTraceLog.Write(ex, $"[TaskExecutionService] Cancellation observed for task '{task.Name}'");
             return new TaskExecutionRunResult
             {
                 Started = true,
@@ -321,8 +324,9 @@ public static class TaskExecutionService
                 FailureMessage = "Process execution was cancelled."
             };
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
+            DebugTraceLog.Write(ex, $"[TaskExecutionService] Timeout observed for task '{task.Name}'");
             return new TaskExecutionRunResult
             {
                 Started = true,
@@ -340,6 +344,7 @@ public static class TaskExecutionService
         }
         catch (Exception ex)
         {
+            DebugTraceLog.Write(ex, $"[TaskExecutionService] Launch/execute failed for task '{task.Name}'");
             return new TaskExecutionRunResult
             {
                 Started = false,

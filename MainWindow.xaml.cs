@@ -67,6 +67,7 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _favoriteGroups = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _favoriteGroupOrder = [];
     private readonly List<string> _nonFavoriteGroupsOrder = [];
+    private readonly Dictionary<string, List<TextBlock>> _sidebarTaskStateGlyphs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
     private readonly Dictionary<int, GraphNodeVisual> _graphNodesByIndex = [];
     private readonly Dictionary<string, TaskRunningOverlayVisual> _taskRunningOverlays = new(StringComparer.OrdinalIgnoreCase);
@@ -546,9 +547,35 @@ public partial class MainWindow : Window
 
     private void SidebarStatusTimer_Tick(object? sender, EventArgs e)
     {
-        // Keep the frame counter for optional status glyph animation state, but avoid
-        // rebuilding the entire sidebar tree every tick (120ms), which can starve UI input.
         _sidebarSpinnerFrameIndex++;
+        UpdateSidebarRunningGlyphs();
+    }
+
+    private void UpdateSidebarRunningGlyphs()
+    {
+        if (_sidebarTaskStateGlyphs.Count == 0)
+        {
+            return;
+        }
+
+        var runningGlyph = SidebarRunningFrames[_sidebarSpinnerFrameIndex % SidebarRunningFrames.Length];
+
+        foreach (var pair in _sidebarTaskStateGlyphs)
+        {
+            var state = _taskRunStates.TryGetValue(pair.Key, out var trackedState)
+                ? trackedState
+                : TaskRunState.NeverRun;
+
+            if (state != TaskRunState.Running)
+            {
+                continue;
+            }
+
+            foreach (var glyph in pair.Value)
+            {
+                glyph.Text = runningGlyph;
+            }
+        }
     }
 
     private void ApplyPersistedUiState()
@@ -745,6 +772,7 @@ public partial class MainWindow : Window
     private void RebuildGroupNavigator(IReadOnlyList<GroupSidebarItem> groups)
     {
         GroupListPanel.Children.Clear();
+        _sidebarTaskStateGlyphs.Clear();
 
         var searchTerm = GroupSearchTextBox?.Text?.Trim();
 
@@ -872,6 +900,7 @@ public partial class MainWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                     Foreground = GetStateBrush(preview.State)
                 };
+                RegisterSidebarTaskStateGlyph(GetTaskIdentityKey(groupName, preview.Name), stateText);
                 DockPanel.SetDock(stateText, Dock.Left);
 
                 var taskText = new TextBlock
@@ -1006,6 +1035,17 @@ public partial class MainWindow : Window
         ApplyTaskCardSelectionVisuals();
         FocusSelectedTaskCard();
         e.Handled = true;
+    }
+
+    private void RegisterSidebarTaskStateGlyph(string taskIdentityKey, TextBlock glyph)
+    {
+        if (!_sidebarTaskStateGlyphs.TryGetValue(taskIdentityKey, out var glyphs))
+        {
+            glyphs = [];
+            _sidebarTaskStateGlyphs[taskIdentityKey] = glyphs;
+        }
+
+        glyphs.Add(glyph);
     }
 
     private sealed record SidebarTaskSelectionTarget(string GroupName, string TaskName);

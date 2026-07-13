@@ -31,6 +31,29 @@ The second major risk is lack of automated verification. The project currently h
 
 ### 1. Split `MainWindow.xaml.cs` Into Application Services
 
+Status: Implemented (phase 2) on 2026-07-13.
+
+Completed in this phase:
+
+- `TaskExecutionService` extracted from `MainWindow.xaml.cs` process-launch/execution internals.
+- `RunHistoryService` extracted from `MainWindow.xaml.cs` run snapshot lifecycle, retention trimming, and persistence.
+- `TaskCatalogService` extracted for task indexing, enable/disable, delete, reorder, identity checks, and group dataflow lock checks.
+- `ImportExportService` extracted for share serialization and import merge/persist operations.
+- `DataflowGraphService` extracted for binding parsing and non-UI graph validation logic.
+- Connector computation/model-building extracted into `DataflowGraphService`, while WPF drawing/interaction remains in `MainWindow.xaml.cs`.
+- Connector relation traversal/highlight graph selection (upstream/downstream set computation) extracted into `DataflowGraphService`; `MainWindow.xaml.cs` now applies styles only.
+- Connector tooltip text composition and connector status text formatting extracted into `DataflowGraphService`; `MainWindow.xaml.cs` retains Path creation and event hookup.
+- `MainWindow.xaml.cs` rewired to orchestrate UI state while delegating execution/history responsibilities to services.
+  
+Additional phase-2 rewiring completed:
+
+- `MainWindow.xaml.cs` now delegates catalog operations, import/export merge flow, and dataflow binding validation/parsing to service boundaries.
+
+Remaining scope for full recommendation completion:
+
+- Continue moving stateful UI orchestration to view models incrementally.
+- Continue extracting connector rendering and remaining non-UI catalog/import concerns from `MainWindow.xaml.cs`.
+
 `MainWindow.xaml.cs` currently owns too many responsibilities. It contains large state dictionaries for groups, outputs, selection, history, connector visuals, drag/drop, running overlays, and dataflow UI; it also executes processes and writes configuration/history files.
 
 Recommended extraction order:
@@ -70,6 +93,17 @@ Recommended changes:
 
 ### 4. Use Atomic Persistence for User Data
 
+Status: Implemented (phase 2) on 2026-07-13.
+
+Completed in this phase:
+
+- `JsonFileStorage.Save` now writes to a temp file, flushes to disk, and atomically replaces the target file.
+- User profile import merge no longer overwrites with direct `File.Copy`; it now persists through atomic `TaskConfiguration.Save`.
+- Atomic persistence now applies to configuration, run history, and UI state stores through shared storage helpers.
+- Cross-instance file locking added around JSON load/save operations to avoid concurrent writes from multiple app instances.
+- Bounded backup history is now enforced per persisted file target.
+- App shutdown now explicitly releases any remaining lock handles.
+
 Current save paths use direct `File.WriteAllText` and import uses `File.Copy(..., overwrite: true)`. A process crash, power loss, disk error, antivirus interference, or concurrent app instance can leave user configuration/history partially written.
 
 Recommended approach:
@@ -82,16 +116,17 @@ Recommended approach:
 
 ### 5. Improve Task Execution Control
 
-`ExecuteTaskAsync` currently creates a process, optionally buffers stdout/stderr with `ReadToEndAsync`, waits for exit without timeout/cancellation, and treats fire-and-forget launches as immediate success.
+Status: Implemented on 2026-07-13.
 
-Recommended improvements:
+Completed in this phase:
 
-- Add cancellation support from the UI, including optional process-tree termination.
-- Add configurable timeouts per task and sensible defaults for chains/rituals.
-- Stream stdout/stderr incrementally instead of buffering until process exit.
-- Cap retained output size per run to avoid very large process output consuming memory or freezing the UI.
-- Record a distinct outcome for fire-and-forget tasks, such as `Started`, instead of `Succeeded`.
-- Distinguish launch failure, timeout, cancellation, non-zero exit, and ignored non-zero exit in history.
+- Added per-task cancellation support with Escape-triggered cancellation for the selected running task.
+- Added task-level timeout and cancellation policy fields (`timeoutSeconds`, `killProcessTreeOnCancel`).
+- Added incremental stdout/stderr streaming into run output tabs during execution.
+- Added configurable per-stream output capture caps (`maxCapturedOutputChars`) with truncation notices.
+- Added distinct `Started` outcome for fire-and-forget runs.
+- Expanded run outcome taxonomy to track `LaunchFailed`, `TimedOut`, `Cancelled`, `FailedNonZeroExit`, and `IgnoredNonZeroExit`.
+- Updated history persistence and replay snapshots to include new execution-control fields.
 
 ### 6. Harden Trust and Secret Handling
 
@@ -123,25 +158,25 @@ Recommended direction:
 
 ### 8. Introduce a Schema Version and JSON Schema
 
-The configuration format has grown to include groups, rituals, ports, import metadata, and execution policy. It should now have explicit versioning.
+Status: Implemented on 2026-07-13.
 
-Recommended additions:
+Completed in this phase:
 
-- Top-level `schemaVersion`.
-- A JSON Schema file in `docs/`.
-- Migration tests for older flat `tasks` files.
-- Clear compatibility rules for unknown fields.
-- A sample config for each major feature: basic tasks, rituals, dataflow, import/share.
+- Added top-level `schemaVersion` to persisted task configuration files.
+- Added legacy compatibility for files without `schemaVersion`.
+- Added schema validation in `TaskConfiguration.Load` and reset validation paths.
+- Added `docs/tasks.schema.json` as the canonical JSON Schema document.
+- Added unit tests for schema version persistence, legacy load compatibility, and invalid schema rejection.
 
 ### 9. Finish History Retention
 
-`MaxRunHistoryEntries` and `TrimRunHistory` exist, but `TrimRunHistory` is not called from the history write path. As written, history can grow without the intended cap.
+Status: Implemented on 2026-07-13.
 
-Recommended fix:
+Completed in this phase:
 
-- Move trimming into the history service and call it before every save.
-- Add a test that verifies the store keeps only the newest configured number of entries.
-- Consider making the retention limit configurable.
+- Retention trimming is now enforced in `RunHistoryService` on every save path.
+- History completion writes (`CompleteEntry`) also pass through retention trimming before persistence.
+- Added unit tests verifying only the newest configured entries are retained.
 
 ### 10. Improve Editor Consistency
 

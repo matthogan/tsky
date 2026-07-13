@@ -22,6 +22,7 @@ public partial class App : System.Windows.Application
 	protected override void OnExit(ExitEventArgs e)
 	{
 		SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+		JsonFileStorage.ReleaseAllLocks();
 		base.OnExit(e);
 	}
 

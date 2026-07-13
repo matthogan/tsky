@@ -7,8 +7,13 @@ namespace tsky;
 public enum TaskRunOutcome
 {
     Running,
+    Started,
     Succeeded,
-    Failed
+    FailedNonZeroExit,
+    IgnoredNonZeroExit,
+    LaunchFailed,
+    TimedOut,
+    Cancelled
 }
 
 public sealed class TaskRunSnapshot
@@ -32,6 +37,12 @@ public sealed class TaskRunSnapshot
     public bool RequiresElevation { get; set; }
 
     public bool IgnoreExitCode { get; set; }
+
+    public int TimeoutSeconds { get; set; } = 600;
+
+    public bool KillProcessTreeOnCancel { get; set; } = true;
+
+    public int MaxCapturedOutputChars { get; set; } = 65536;
 }
 
 public sealed class TaskRunHistoryEntry

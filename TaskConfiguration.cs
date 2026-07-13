@@ -8,6 +8,8 @@ namespace tsky;
 
 public sealed class TaskConfiguration
 {
+    public const int CurrentSchemaVersion = 1;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -34,7 +36,24 @@ public sealed class TaskConfiguration
 
     public static TaskConfiguration Load(string path)
     {
-        var fileModel = JsonFileStorage.LoadOrDefault<TaskConfigurationFileModel>(path, JsonOptions);
+        if (!File.Exists(path))
+        {
+            return new TaskConfiguration();
+        }
+
+        var rawText = File.ReadAllText(path);
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return new TaskConfiguration();
+        }
+
+        if (!TryValidateSchema(rawText, out var schemaError))
+        {
+            throw new InvalidDataException($"Configuration schema validation failed: {schemaError}");
+        }
+
+        var fileModel = JsonSerializer.Deserialize<TaskConfigurationFileModel>(rawText, JsonOptions)
+            ?? new TaskConfigurationFileModel();
         return FromFileModel(fileModel);
     }
 
@@ -69,22 +88,51 @@ public sealed class TaskConfiguration
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(rawText) || !IsValidConfigurationJson(rawText))
+        if (string.IsNullOrWhiteSpace(rawText) || !TryValidateSchema(rawText, out _))
         {
             BackupExistingFile(path);
             Save(path, new TaskConfiguration());
         }
     }
 
-    private static bool IsValidConfigurationJson(string rawText)
+    public static bool TryValidateSchema(string rawText, out string error)
     {
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            error = "Configuration JSON is empty.";
+            return false;
+        }
+
         try
         {
-            var config = JsonSerializer.Deserialize<TaskConfigurationFileModel>(rawText, JsonOptions);
-            return config is not null;
+            using var document = JsonDocument.Parse(rawText);
+
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                error = "Root JSON value must be an object.";
+                return false;
+            }
+
+            var root = document.RootElement;
+
+            if (!TryValidateSchemaVersion(root, out error)
+                || !TryValidateArrayProperty(root, "tasks", out error)
+                || !TryValidateArrayProperty(root, "groups", out error)
+                || !TryValidateArrayProperty(root, "rituals", out error)
+                || !TryValidateTasks(root, out error)
+                || !TryValidateGroups(root, out error)
+                || !TryValidateRituals(root, out error))
+            {
+                return false;
+            }
+
+            return true;
         }
-        catch
+        catch (JsonException ex)
         {
+            error = ex.Message;
             return false;
         }
     }
@@ -171,10 +219,344 @@ public sealed class TaskConfiguration
         var groups = BuildGroups(config.Tasks);
         return new TaskConfigurationFileModel
         {
+            SchemaVersion = CurrentSchemaVersion,
             Groups = groups,
             Tasks = null,
             Rituals = config.Rituals
         };
+    }
+
+    private static bool TryValidateSchemaVersion(JsonElement root, out string error)
+    {
+        error = string.Empty;
+
+        if (!TryGetPropertyIgnoreCase(root, "schemaVersion", out var schemaVersionElement))
+        {
+            // Missing schemaVersion is supported for legacy files.
+            return true;
+        }
+
+        if (schemaVersionElement.ValueKind != JsonValueKind.Number || !schemaVersionElement.TryGetInt32(out var schemaVersion))
+        {
+            error = "schemaVersion must be an integer.";
+            return false;
+        }
+
+        if (schemaVersion < 1)
+        {
+            error = "schemaVersion must be greater than or equal to 1.";
+            return false;
+        }
+
+        if (schemaVersion > CurrentSchemaVersion)
+        {
+            error = $"schemaVersion {schemaVersion} is not supported by this build (max supported: {CurrentSchemaVersion}).";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateArrayProperty(JsonElement root, string propertyName, out string error)
+    {
+        error = string.Empty;
+
+        if (!TryGetPropertyIgnoreCase(root, propertyName, out var value))
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            error = $"{propertyName} must be an array when provided.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateTasks(JsonElement root, out string error)
+    {
+        error = string.Empty;
+
+        if (!TryGetPropertyIgnoreCase(root, "tasks", out var tasksElement)
+            || tasksElement.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        foreach (var task in tasksElement.EnumerateArray())
+        {
+            if (!TryValidateTaskObject(task, out error))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateGroups(JsonElement root, out string error)
+    {
+        error = string.Empty;
+
+        if (!TryGetPropertyIgnoreCase(root, "groups", out var groupsElement)
+            || groupsElement.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        foreach (var group in groupsElement.EnumerateArray())
+        {
+            if (group.ValueKind != JsonValueKind.Object)
+            {
+                error = "Each item in groups must be an object.";
+                return false;
+            }
+
+            if (TryGetPropertyIgnoreCase(group, "name", out var nameElement)
+                && nameElement.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            {
+                error = "groups[].name must be a string when provided.";
+                return false;
+            }
+
+            if (TryGetPropertyIgnoreCase(group, "tasks", out var groupTasks)
+                && groupTasks.ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
+            {
+                error = "groups[].tasks must be an array when provided.";
+                return false;
+            }
+
+            if (group.TryGetProperty("tasks", out var tasksElement) && tasksElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var task in tasksElement.EnumerateArray())
+                {
+                    if (!TryValidateTaskObject(task, out error))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateTaskObject(JsonElement task, out string error)
+    {
+        error = string.Empty;
+
+        if (task.ValueKind != JsonValueKind.Object)
+        {
+            error = "Each task must be an object.";
+            return false;
+        }
+
+        if (!TryValidateStringProperty(task, "name", out error)
+            || !TryValidateStringProperty(task, "description", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "group", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "commandLine", out error)
+            || !TryValidateStringProperty(task, "runner", out error)
+            || !TryValidateStringProperty(task, "workingDirectory", out error)
+            || !TryValidateStringProperty(task, "importedFromFile", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "importedAtUtc", out error, allowNull: true)
+            || !TryValidateBooleanProperty(task, "waitForExit", out error)
+            || !TryValidateBooleanProperty(task, "requiresElevation", out error)
+            || !TryValidateBooleanProperty(task, "ignoreExitCode", out error)
+            || !TryValidateBooleanProperty(task, "isEnabled", out error)
+            || !TryValidateBooleanProperty(task, "killProcessTreeOnCancel", out error)
+            || !TryValidateIntegerProperty(task, "timeoutSeconds", out error)
+            || !TryValidateIntegerProperty(task, "maxCapturedOutputChars", out error)
+            || !TryValidateStringDictionary(task, "env", out error)
+            || !TryValidateStringDictionary(task, "inputs", out error)
+            || !TryValidateStringDictionary(task, "inputBindings", out error)
+            || !TryValidateStringDictionary(task, "outputs", out error))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateRituals(JsonElement root, out string error)
+    {
+        error = string.Empty;
+
+        if (!TryGetPropertyIgnoreCase(root, "rituals", out var ritualsElement)
+            || ritualsElement.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        foreach (var ritual in ritualsElement.EnumerateArray())
+        {
+            if (ritual.ValueKind != JsonValueKind.Object)
+            {
+                error = "Each item in rituals must be an object.";
+                return false;
+            }
+
+            if (!TryValidateStringProperty(ritual, "name", out error)
+                || !TryValidateStringProperty(ritual, "description", out error, allowNull: true))
+            {
+                return false;
+            }
+
+            if (TryGetPropertyIgnoreCase(ritual, "steps", out var stepsElement)
+                && stepsElement.ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
+            {
+                error = "rituals[].steps must be an array when provided.";
+                return false;
+            }
+
+            if (stepsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var step in stepsElement.EnumerateArray())
+                {
+                    if (step.ValueKind != JsonValueKind.Object)
+                    {
+                        error = "Each ritual step must be an object.";
+                        return false;
+                    }
+
+                    if (!TryValidateStringProperty(step, "taskName", out error)
+                        || !TryValidateStringProperty(step, "group", out error, allowNull: true)
+                        || !TryValidateIntegerProperty(step, "delayMs", out error)
+                        || !TryValidateBooleanProperty(step, "continueOnError", out error)
+                        || !TryValidateBooleanProperty(step, "waitForExit", out error, allowNull: true))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateStringProperty(JsonElement obj, string propertyName, out string error, bool allowNull = false)
+    {
+        error = string.Empty;
+        if (!TryGetPropertyIgnoreCase(obj, propertyName, out var value))
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            if (allowNull)
+            {
+                return true;
+            }
+
+            error = $"{propertyName} cannot be null.";
+            return false;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            error = $"{propertyName} must be a string.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateBooleanProperty(JsonElement obj, string propertyName, out string error, bool allowNull = false)
+    {
+        error = string.Empty;
+        if (!TryGetPropertyIgnoreCase(obj, propertyName, out var value))
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            if (allowNull)
+            {
+                return true;
+            }
+
+            error = $"{propertyName} cannot be null.";
+            return false;
+        }
+
+        if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            error = $"{propertyName} must be a boolean.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateIntegerProperty(JsonElement obj, string propertyName, out string error)
+    {
+        error = string.Empty;
+        if (!TryGetPropertyIgnoreCase(obj, propertyName, out var value))
+        {
+            return true;
+        }
+
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out _))
+        {
+            error = $"{propertyName} must be an integer.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateStringDictionary(JsonElement obj, string propertyName, out string error)
+    {
+        error = string.Empty;
+        if (!TryGetPropertyIgnoreCase(obj, propertyName, out var value))
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            error = $"{propertyName} must be an object with string values.";
+            return false;
+        }
+
+        foreach (var property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.String)
+            {
+                error = $"{propertyName}.{property.Name} must be a string value.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement obj, string propertyName, out JsonElement value)
+    {
+        foreach (var property in obj.EnumerateObject())
+        {
+            if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        value = default;
+        return false;
     }
 
     private static List<LauncherTaskGroup> BuildGroups(IEnumerable<LauncherTask> tasks)
@@ -406,6 +788,8 @@ public sealed class LauncherTaskGroup
 
 public sealed class TaskConfigurationFileModel
 {
+    public int? SchemaVersion { get; set; }
+
     public List<LauncherTask>? Tasks { get; set; }
 
     public List<LauncherTaskGroup>? Groups { get; set; }
@@ -456,6 +840,12 @@ public sealed class LauncherTask
     public bool RequiresElevation { get; set; }
 
     public bool IgnoreExitCode { get; set; }
+
+    public int TimeoutSeconds { get; set; } = 600;
+
+    public bool KillProcessTreeOnCancel { get; set; } = true;
+
+    public int MaxCapturedOutputChars { get; set; } = 65536;
 
     public bool IsEnabled { get; set; } = true;
 

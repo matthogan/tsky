@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
-using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -54,6 +53,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, OutputGroupPanelContext> _groupOutputPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupExpandedStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TaskRunState> _taskRunStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CancellationTokenSource> _taskExecutionCancellation = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupHistoryVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupOutputVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupSidebarVisibility = new(StringComparer.OrdinalIgnoreCase);
@@ -67,6 +67,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<System.Windows.Shapes.Path, ConnectorVisual> _connectorByPath = [];
     private ConnectorVisual? _pinnedConnector;
     private List<TaskRunHistoryEntry> _runHistory = [];
+    private readonly RunHistoryService _runHistoryService;
+    private readonly TaskCatalogService _taskCatalogService = new();
+    private readonly ImportExportService _importExportService = new();
+    private readonly DataflowGraphService _dataflowGraphService = new();
     private bool _isReplayingHistoryBatch;
     private bool _isRunningRitual;
     private bool _isHistoryDetailsVisible = true;
@@ -228,8 +232,13 @@ public partial class MainWindow : Window
                 var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss");
                 var statusText = Entry.Outcome switch
                 {
+                    TaskRunOutcome.Started => "BG",
                     TaskRunOutcome.Succeeded => "OK",
-                    TaskRunOutcome.Failed => "ERR",
+                    TaskRunOutcome.IgnoredNonZeroExit => "IGN",
+                    TaskRunOutcome.FailedNonZeroExit => "ERR",
+                    TaskRunOutcome.LaunchFailed => "LAUNCH",
+                    TaskRunOutcome.TimedOut => "TIME",
+                    TaskRunOutcome.Cancelled => "CXL",
                     _ => "RUN"
                 };
 
@@ -272,6 +281,7 @@ public partial class MainWindow : Window
         App.ThemeChanged += OnThemeChanged;
         Closing += MainWindow_Closing;
         _runHistory = TaskRunHistoryStore.Load();
+        _runHistoryService = new RunHistoryService(_runHistory, MaxRunHistoryEntries);
         TaskScrollViewer.ScrollChanged += TaskScrollViewer_ScrollChanged;
         TaskScrollViewer.SizeChanged += (_, _) =>
         {
@@ -432,6 +442,11 @@ public partial class MainWindow : Window
             {
                 e.Cancel = true;
                 return;
+            }
+
+            foreach (var runningTask in _currentConfiguration.Tasks.Where(task => GetTaskRunState(task) == TaskRunState.Running))
+            {
+                TryCancelTaskExecution(runningTask, out _);
             }
         }
 
@@ -1998,7 +2013,7 @@ public partial class MainWindow : Window
 
             foreach (var entry in selectedEntries)
             {
-                var replayTask = ToTask(entry.Snapshot);
+                var replayTask = RunHistoryService.ToTask(entry.Snapshot);
 
                 if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
                 {
@@ -2383,11 +2398,7 @@ public partial class MainWindow : Window
 
     private bool IsCurrentGroupDataflowLocked()
     {
-        return _visibleTaskIndexes.Any(index =>
-        {
-            var task = _currentConfiguration.Tasks[index];
-            return task.InputBindings.Count > 0 || task.Outputs.Count > 0;
-        });
+        return _taskCatalogService.IsGroupDataflowLocked(_currentConfiguration.Tasks, _visibleTaskIndexes);
     }
 
     private void OpenInputPortsEditor(int taskIndex, bool selectTab = true)
@@ -2688,137 +2699,20 @@ public partial class MainWindow : Window
 
     private bool ValidateInputBindingsAgainstPreviousTasks(int taskIndex, IReadOnlyDictionary<string, string> bindings, out string error)
     {
-        error = string.Empty;
-        var sameGroupTaskIndexes = _visibleTaskIndexes;
-        var position = sameGroupTaskIndexes.IndexOf(taskIndex);
-        if (position < 0)
-        {
-            return true;
-        }
-
-        var previousTasks = sameGroupTaskIndexes.Take(position).Select(index => _currentConfiguration.Tasks[index]).ToList();
-
-        foreach (var pair in bindings)
-        {
-            var binding = pair.Value;
-            if (string.IsNullOrWhiteSpace(binding))
-            {
-                continue;
-            }
-
-            if (binding.StartsWith("port:", StringComparison.OrdinalIgnoreCase))
-            {
-                var portName = binding[5..].Trim();
-                var found = previousTasks.Any(task => task.Outputs.ContainsKey(portName));
-                if (!found)
-                {
-                    error = $"Input '{pair.Key}' binding '{binding}' does not match any previous output port.";
-                    return false;
-                }
-
-                continue;
-            }
-
-            if (TryParseBindingTaskOutputReference(binding, out var sourceTaskName, out var sourceOutputName))
-            {
-                var matchingTasks = previousTasks
-                    .Where(task => string.Equals(task.Name.Trim(), sourceTaskName, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                if (matchingTasks.Count > 1)
-                {
-                    error = $"Input '{pair.Key}' binding '{binding}' is ambiguous because multiple previous tasks are named '{sourceTaskName}'. Rename tasks or use unique task names.";
-                    return false;
-                }
-
-                var found = matchingTasks.Any(task => task.Outputs.ContainsKey(sourceOutputName));
-
-                if (!found)
-                {
-                    error = $"Input '{pair.Key}' binding '{binding}' does not match any previous task output.";
-                    return false;
-                }
-
-                continue;
-            }
-
-            error = $"Input '{pair.Key}' binding '{binding}' uses an unsupported format. Use 'port:OutputName' or 'TaskName.OutputName'.";
-            return false;
-        }
-
-        return true;
+        return _dataflowGraphService.ValidateInputBindingsAgainstPreviousTasks(
+            _currentConfiguration.Tasks,
+            _visibleTaskIndexes,
+            taskIndex,
+            bindings,
+            out error);
     }
 
     private void RecomputeInvalidPortBindingIndicators()
     {
         _invalidPortBindingTaskIndexes.Clear();
-
-        var seenPorts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var seenTaskOutputs = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var taskIndex in _visibleTaskIndexes)
+        foreach (var taskIndex in _dataflowGraphService.ComputeInvalidPortBindingTaskIndexes(_currentConfiguration.Tasks, _visibleTaskIndexes))
         {
-            var task = _currentConfiguration.Tasks[taskIndex];
-            var taskName = task.Name.Trim();
-            var outputNames = new HashSet<string>(task.Outputs.Keys.Where(key => !string.IsNullOrWhiteSpace(key)).Select(key => key.Trim()), StringComparer.OrdinalIgnoreCase);
-
-            var isInvalid = false;
-            foreach (var binding in task.InputBindings.Where(pair => !string.IsNullOrWhiteSpace(pair.Key)))
-            {
-                var reference = binding.Value?.Trim() ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(reference))
-                {
-                    continue;
-                }
-
-                if (reference.StartsWith("port:", StringComparison.OrdinalIgnoreCase))
-                {
-                    var portName = reference[5..].Trim();
-                    if (!seenPorts.Contains(portName))
-                    {
-                        isInvalid = true;
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if (TryParseBindingTaskOutputReference(reference, out var sourceTaskName, out var sourceOutputName))
-                {
-                    var matchingNames = seenTaskOutputs.Keys
-                        .Where(name => string.Equals(name, sourceTaskName, StringComparison.OrdinalIgnoreCase))
-                        .ToList();
-
-                    if (matchingNames.Count != 1)
-                    {
-                        isInvalid = true;
-                        break;
-                    }
-
-                    if (!seenTaskOutputs.TryGetValue(matchingNames[0], out var sourceOutputs) || !sourceOutputs.Contains(sourceOutputName))
-                    {
-                        isInvalid = true;
-                        break;
-                    }
-
-                    continue;
-                }
-
-                isInvalid = true;
-                break;
-            }
-
-            if (isInvalid)
-            {
-                _invalidPortBindingTaskIndexes.Add(taskIndex);
-            }
-
-            foreach (var outputName in outputNames)
-            {
-                seenPorts.Add(outputName);
-            }
-
-            seenTaskOutputs[taskName] = outputNames;
+            _invalidPortBindingTaskIndexes.Add(taskIndex);
         }
     }
 
@@ -2928,174 +2822,53 @@ public partial class MainWindow : Window
         TaskConnectorOverlay.Width = TaskPanel.ActualWidth;
         TaskConnectorOverlay.Height = TaskPanel.ActualHeight;
 
-        var selectedGroupTasks = _visibleTaskIndexes
-            .Select(index => new { Index = index, Task = _currentConfiguration.Tasks[index] })
-            .ToList();
+        var connectorItems = _dataflowGraphService.BuildConnectorComputations(_currentConfiguration.Tasks, _visibleTaskIndexes);
 
-        var taskByName = selectedGroupTasks
-            .Where(item => !string.IsNullOrWhiteSpace(item.Task.Name))
-            .GroupBy(item => item.Task.Name.Trim(), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
-
-        for (var targetOrder = 0; targetOrder < selectedGroupTasks.Count; targetOrder++)
+        foreach (var connectorItem in connectorItems)
         {
-            var target = selectedGroupTasks[targetOrder];
-
-            if (!_taskCardsByIndex.TryGetValue(target.Index, out var targetCard))
+            if (!_taskCardsByIndex.TryGetValue(connectorItem.TargetTaskIndex, out var targetCard))
             {
                 continue;
             }
 
-            var bindingEntries = target.Task.InputBindings
-                .Where(pair => !string.IsNullOrWhiteSpace(pair.Key))
-                .Select(pair => new
-                {
-                    InputName = pair.Key.Trim(),
-                    Reference = pair.Value?.Trim() ?? string.Empty
-                })
-                .ToList();
+            var targetTask = _currentConfiguration.Tasks[connectorItem.TargetTaskIndex];
+            var targetInputNames = GetInputPortNames(targetTask);
+            var targetPoint = GetCardPortPoint(targetCard, isOutput: false, targetInputNames, connectorItem.TargetInputName);
 
-            var targetInputNames = GetInputPortNames(target.Task);
-
-            for (var bindingIndex = 0; bindingIndex < bindingEntries.Count; bindingIndex++)
+            if (!connectorItem.SourceTaskIndex.HasValue
+                || string.IsNullOrWhiteSpace(connectorItem.SourceOutputName)
+                || !_taskCardsByIndex.TryGetValue(connectorItem.SourceTaskIndex.Value, out var sourceCard))
             {
-                var binding = bindingEntries[bindingIndex];
-                var targetPoint = GetCardPortPoint(targetCard, isOutput: false, targetInputNames, binding.InputName);
-
-                string? sourceTaskName = null;
-                string? sourceOutputName = null;
-                Grid? sourceCard = null;
-                var hasOutput = false;
-                var status = string.Empty;
-
-                if (TryParseBindingTaskOutputReference(binding.Reference, out var explicitSourceTaskName, out var explicitSourceOutputName))
-                {
-                    sourceTaskName = explicitSourceTaskName;
-                    sourceOutputName = explicitSourceOutputName;
-
-                    if (taskByName.TryGetValue(sourceTaskName, out var sourceTaskInfo) &&
-                        _taskCardsByIndex.TryGetValue(sourceTaskInfo.Index, out var explicitSourceCard))
-                    {
-                        var sourceOutputNames = GetOutputPortNames(sourceTaskInfo.Task);
-                        hasOutput = sourceOutputNames.Contains(sourceOutputName, StringComparer.OrdinalIgnoreCase);
-                        sourceCard = explicitSourceCard;
-                        status = hasOutput
-                            ? "Binding resolved."
-                            : $"Source task '{sourceTaskName}' does not declare output '{sourceOutputName}'.";
-                    }
-                    else
-                    {
-                        status = "Binding source task could not be matched in this group.";
-                    }
-                }
-                else if (TryParseBindingPortReference(binding.Reference, out var boundPortName))
-                {
-                    sourceOutputName = boundPortName;
-
-                    for (var sourceOrder = targetOrder - 1; sourceOrder >= 0; sourceOrder--)
-                    {
-                        var candidate = selectedGroupTasks[sourceOrder];
-                        var candidateOutputNames = GetOutputPortNames(candidate.Task);
-                        if (!candidateOutputNames.Contains(boundPortName, StringComparer.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
-
-                        if (_taskCardsByIndex.TryGetValue(candidate.Index, out var candidateCard))
-                        {
-                            sourceTaskName = candidate.Task.Name;
-                            sourceCard = candidateCard;
-                            hasOutput = true;
-                            status = $"Port binding resolved from nearest upstream output '{boundPortName}'.";
-                            break;
-                        }
-                    }
-
-                    if (!hasOutput)
-                    {
-                        status = $"No upstream task output found for port '{boundPortName}'.";
-                    }
-                }
-                else
-                {
-                    status = string.IsNullOrWhiteSpace(binding.Reference)
-                        ? "Binding reference is empty."
-                        : "Binding could not be matched to a task output in this group.";
-                }
-
-                if (sourceCard is null || string.IsNullOrWhiteSpace(sourceOutputName))
-                {
-                    var fallbackStart = new Point(Math.Max(0, targetPoint.X - 56), targetPoint.Y);
-
-                    AddConnector(
-                        fallbackStart,
-                        targetPoint,
-                        resolved: false,
-                        sourceTaskName: sourceTaskName,
-                        sourceOutputName: sourceOutputName,
-                        targetTaskName: target.Task.Name,
-                        targetInputName: binding.InputName,
-                        bindingReference: binding.Reference,
-                        statusDetail: status);
-                    continue;
-                }
-
-                var sourcePortsForAnchor = GetOutputPortNames(selectedGroupTasks
-                    .First(item => _taskCardsByIndex.ContainsKey(item.Index) && ReferenceEquals(_taskCardsByIndex[item.Index], sourceCard))
-                    .Task);
-                var sourcePoint = GetCardPortPoint(sourceCard, isOutput: true, sourcePortsForAnchor, sourceOutputName);
-
+                var fallbackStart = new Point(Math.Max(0, targetPoint.X - 56), targetPoint.Y);
                 AddConnector(
-                    sourcePoint,
+                    fallbackStart,
                     targetPoint,
-                    hasOutput,
-                    sourceTaskName,
-                    sourceOutputName,
-                    target.Task.Name,
-                    binding.InputName,
-                    binding.Reference,
-                    status);
+                    resolved: false,
+                    sourceTaskName: connectorItem.SourceTaskName,
+                    sourceOutputName: connectorItem.SourceOutputName,
+                    targetTaskName: connectorItem.TargetTaskName,
+                    targetInputName: connectorItem.TargetInputName,
+                    bindingReference: connectorItem.BindingReference,
+                    statusDetail: connectorItem.StatusDetail);
+
+                continue;
             }
+
+            var sourceTask = _currentConfiguration.Tasks[connectorItem.SourceTaskIndex.Value];
+            var sourcePortsForAnchor = GetOutputPortNames(sourceTask);
+            var sourcePoint = GetCardPortPoint(sourceCard, isOutput: true, sourcePortsForAnchor, connectorItem.SourceOutputName!);
+
+            AddConnector(
+                sourcePoint,
+                targetPoint,
+                connectorItem.Resolved,
+                connectorItem.SourceTaskName,
+                connectorItem.SourceOutputName,
+                connectorItem.TargetTaskName,
+                connectorItem.TargetInputName,
+                connectorItem.BindingReference,
+                connectorItem.StatusDetail);
         }
-    }
-
-    private static bool TryParseBindingPortReference(string reference, out string portName)
-    {
-        portName = string.Empty;
-        if (string.IsNullOrWhiteSpace(reference) || !reference.StartsWith("port:", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        portName = reference[5..].Trim();
-        return !string.IsNullOrWhiteSpace(portName);
-    }
-
-    private static bool TryParseBindingTaskOutputReference(string reference, out string taskName, out string outputName)
-    {
-        taskName = string.Empty;
-        outputName = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(reference) ||
-            reference.StartsWith("port:", StringComparison.OrdinalIgnoreCase) ||
-            reference.StartsWith("input:", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var normalizedReference = reference.StartsWith("output:", StringComparison.OrdinalIgnoreCase)
-            ? reference[7..].Trim()
-            : reference;
-
-        var dotIndex = normalizedReference.IndexOf('.');
-        if (dotIndex <= 0 || dotIndex >= normalizedReference.Length - 1)
-        {
-            return false;
-        }
-
-        taskName = normalizedReference[..dotIndex].Trim();
-        outputName = normalizedReference[(dotIndex + 1)..].Trim();
-        return !string.IsNullOrWhiteSpace(taskName) && !string.IsNullOrWhiteSpace(outputName);
     }
 
     private Point GetCardPortPoint(Grid card, bool isOutput, IReadOnlyList<string> portNames, string portName)
@@ -3231,7 +3004,16 @@ public partial class MainWindow : Window
             StatusDetail = statusDetail
         };
 
-        path.ToolTip = BuildConnectorToolTip(connector);
+        path.ToolTip = _dataflowGraphService.BuildConnectorToolTipText(new DataflowGraphService.ConnectorTooltipItem
+        {
+            Resolved = connector.Resolved,
+            SourceTaskName = connector.SourceTaskName,
+            SourceOutputName = connector.SourceOutputName,
+            TargetTaskName = connector.TargetTaskName,
+            TargetInputName = connector.TargetInputName,
+            BindingReference = connector.BindingReference,
+            StatusDetail = connector.StatusDetail
+        });
         path.Cursor = Cursors.Hand;
         path.MouseEnter += Connector_MouseEnter;
         path.MouseLeave += Connector_MouseLeave;
@@ -3240,23 +3022,6 @@ public partial class MainWindow : Window
         TaskConnectorOverlay.Children.Add(path);
         _connectorVisuals.Add(connector);
         _connectorByPath[path] = connector;
-    }
-
-    private static string BuildConnectorToolTip(ConnectorVisual connector)
-    {
-        var source = connector.SourceTaskName is null
-            ? "(unresolved source)"
-            : $"{connector.SourceTaskName}.{connector.SourceOutputName}";
-
-        var status = connector.Resolved ? "Resolved" : "Unresolved";
-
-        var builder = new StringBuilder();
-        builder.AppendLine($"{status} binding");
-        builder.AppendLine($"From: {source}");
-        builder.AppendLine($"To: {connector.TargetTaskName}.{connector.TargetInputName}");
-        builder.AppendLine($"Reference: {connector.BindingReference}");
-        builder.Append($"Detail: {connector.StatusDetail}");
-        return builder.ToString();
     }
 
     private void Connector_MouseEnter(object sender, MouseEventArgs e)
@@ -3316,13 +3081,25 @@ public partial class MainWindow : Window
 
     private void ApplyConnectorHighlight(ConnectorVisual focal)
     {
-        var related = GetUpstreamAndDownstreamConnectors(focal);
+        var focalIndex = _connectorVisuals.FindIndex(item => ReferenceEquals(item, focal));
+        var relationItems = _connectorVisuals
+            .Select(item => new DataflowGraphService.ConnectorRelationItem
+            {
+                Resolved = item.Resolved,
+                SourceTaskName = item.SourceTaskName,
+                TargetTaskName = item.TargetTaskName
+            })
+            .ToList();
+
+        var relatedIndexes = _dataflowGraphService.ComputeUpstreamAndDownstreamConnectorIndexes(relationItems, focalIndex);
         var resolvedStroke = GetResolvedConnectorBrush();
         var unresolvedStroke = GetUnresolvedConnectorBrush();
         var focusedStroke = GetFocusedConnectorBrush();
 
-        foreach (var connector in _connectorVisuals)
+        for (var i = 0; i < _connectorVisuals.Count; i++)
         {
+            var connector = _connectorVisuals[i];
+
             if (ReferenceEquals(connector, focal))
             {
                 connector.Path.Stroke = focusedStroke;
@@ -3331,7 +3108,7 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            if (related.Contains(connector))
+            if (relatedIndexes.Contains(i))
             {
                 connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
                 connector.Path.StrokeThickness = connector.Resolved ? 5 : 4.7;
@@ -3343,70 +3120,6 @@ public partial class MainWindow : Window
             connector.Path.StrokeThickness = connector.Resolved ? 3.2 : 3;
             connector.Path.Opacity = 0.38;
         }
-    }
-
-    private HashSet<ConnectorVisual> GetUpstreamAndDownstreamConnectors(ConnectorVisual focal)
-    {
-        var result = new HashSet<ConnectorVisual>();
-
-        var upstreamFrontier = new Queue<string>();
-        var upstreamVisited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        if (!string.IsNullOrWhiteSpace(focal.SourceTaskName))
-        {
-            upstreamFrontier.Enqueue(focal.SourceTaskName);
-            upstreamVisited.Add(focal.SourceTaskName);
-        }
-
-        while (upstreamFrontier.Count > 0)
-        {
-            var taskName = upstreamFrontier.Dequeue();
-
-            foreach (var connector in _connectorVisuals.Where(item => item.Resolved && string.Equals(item.TargetTaskName, taskName, StringComparison.OrdinalIgnoreCase)))
-            {
-                if (ReferenceEquals(connector, focal))
-                {
-                    continue;
-                }
-
-                result.Add(connector);
-
-                if (!string.IsNullOrWhiteSpace(connector.SourceTaskName) && upstreamVisited.Add(connector.SourceTaskName))
-                {
-                    upstreamFrontier.Enqueue(connector.SourceTaskName);
-                }
-            }
-        }
-
-        var downstreamFrontier = new Queue<string>();
-        var downstreamVisited = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            focal.TargetTaskName
-        };
-
-        downstreamFrontier.Enqueue(focal.TargetTaskName);
-
-        while (downstreamFrontier.Count > 0)
-        {
-            var taskName = downstreamFrontier.Dequeue();
-
-            foreach (var connector in _connectorVisuals.Where(item => item.Resolved && !string.IsNullOrWhiteSpace(item.SourceTaskName) && string.Equals(item.SourceTaskName, taskName, StringComparison.OrdinalIgnoreCase)))
-            {
-                if (ReferenceEquals(connector, focal))
-                {
-                    continue;
-                }
-
-                result.Add(connector);
-
-                if (downstreamVisited.Add(connector.TargetTaskName))
-                {
-                    downstreamFrontier.Enqueue(connector.TargetTaskName);
-                }
-            }
-        }
-
-        return result;
     }
 
     private IReadOnlyList<string> GetGroupNames()
@@ -3646,6 +3359,37 @@ public partial class MainWindow : Window
     private static string GetTaskIdentityKey(string? groupName, string? taskName)
     {
         return TaskIdentity.BuildKey(groupName, taskName);
+    }
+
+    private bool TryCancelTaskExecution(LauncherTask task, out string message)
+    {
+        var stateKey = GetTaskStateKey(task);
+        if (!_taskExecutionCancellation.TryGetValue(stateKey, out var cancellationSource))
+        {
+            message = "Task was not cancellable at this stage.";
+            return false;
+        }
+
+        if (cancellationSource.IsCancellationRequested)
+        {
+            message = "Cancellation is already in progress.";
+            return true;
+        }
+
+        cancellationSource.Cancel();
+        message = task.KillProcessTreeOnCancel
+            ? "Cancellation requested. tsky will terminate the process tree."
+            : "Cancellation requested. tsky will terminate only the main process.";
+        return true;
+    }
+
+    private void UnregisterTaskCancellation(LauncherTask task)
+    {
+        var stateKey = GetTaskStateKey(task);
+        if (_taskExecutionCancellation.Remove(stateKey, out var cancellationSource))
+        {
+            cancellationSource.Dispose();
+        }
     }
 
     private Brush GetStateBrush(TaskRunState state)
@@ -4196,10 +3940,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-share-{Guid.NewGuid():N}.json");
-            SaveAndValidateConfiguration(tempPath, payload, "Write shared tasks.json", outputTextBox);
-            var json = File.ReadAllText(tempPath);
-            File.Delete(tempPath);
+            var json = _importExportService.SerializeConfiguration(payload);
 
             Clipboard.SetText(json);
 
@@ -4338,29 +4079,15 @@ public partial class MainWindow : Window
 
     private void ImportConfiguration(TaskConfiguration importedConfig, RichTextBox outputTextBox, TaskTabContext tabContext, string importSourceLabel)
     {
-        string? tempPath = null;
-
         try
         {
-            var importedAtUtc = DateTime.UtcNow.ToString("O");
-            foreach (var importedTask in importedConfig.Tasks)
-            {
-                importedTask.ImportedFromFile = importSourceLabel;
-                importedTask.ImportedAtUtc = importedAtUtc;
-            }
+            var mergeResult = _importExportService.MergeAndPersistImportedConfiguration(
+                _userProfileConfigPath,
+                importedConfig,
+                importSourceLabel);
 
-            // User profile takes precedence over imported tasks for same group+task identity.
-            var userProfileConfig = LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json for merge", outputTextBox);
-            var mergedConfig = TaskConfiguration.MergeWithOverlay(importedConfig, userProfileConfig);
-
-            tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-import-{Guid.NewGuid():N}.json");
-            SaveAndValidateConfiguration(tempPath, mergedConfig, "Write merged import tasks.json", outputTextBox);
-
-            // Validate merged content before replacing user profile configuration.
-            var validatedMergedConfig = LoadConfigurationWithValidation(tempPath, "Re-read merged import tasks.json", outputTextBox);
-
-            File.Copy(tempPath, _userProfileConfigPath, overwrite: true);
-            var validatedWrittenProfile = LoadConfigurationWithValidation(_userProfileConfigPath, "Validate imported user profile tasks.json", outputTextBox);
+            var validatedMergedConfig = mergeResult.ValidatedMergedConfiguration;
+            var validatedWrittenProfile = mergeResult.ValidatedWrittenUserProfileConfiguration;
 
             AppendLog(outputTextBox, $"[Import] Merged configuration validated and written to user profile: {_userProfileConfigPath}");
             AppendLog(outputTextBox, $"[Import] Final merged result: {validatedWrittenProfile.Tasks.Count} task(s), {validatedWrittenProfile.Rituals.Count} ritual(s).");
@@ -4373,20 +4100,6 @@ public partial class MainWindow : Window
         {
             AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
             SetTabStopped(tabContext, false);
-        }
-        finally
-        {
-            if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath))
-            {
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch
-                {
-                    // Best-effort cleanup; non-fatal.
-                }
-            }
         }
     }
 
@@ -4500,36 +4213,9 @@ public partial class MainWindow : Window
         var sourceDisplayIndex = _visibleTaskIndexes.IndexOf(sourceGlobalIndex);
         var targetDisplayIndex = GetDropTargetDisplayIndex(e.GetPosition(TaskPanel));
 
-        if (sourceDisplayIndex < 0 || sourceDisplayIndex >= _visibleTaskIndexes.Count)
+        if (!_taskCatalogService.ReorderVisibleGroupTasks(_currentConfiguration, _visibleTaskIndexes, sourceDisplayIndex, targetDisplayIndex))
         {
             return;
-        }
-
-        if (targetDisplayIndex < 0 || targetDisplayIndex > _visibleTaskIndexes.Count)
-        {
-            return;
-        }
-
-        if (sourceDisplayIndex == targetDisplayIndex || sourceDisplayIndex == targetDisplayIndex - 1)
-        {
-            return;
-        }
-
-        var groupTasks = _visibleTaskIndexes.Select(index => _currentConfiguration.Tasks[index]).ToList();
-        var movedTask = groupTasks[sourceDisplayIndex];
-        groupTasks.RemoveAt(sourceDisplayIndex);
-
-        if (sourceDisplayIndex < targetDisplayIndex)
-        {
-            targetDisplayIndex--;
-        }
-
-        targetDisplayIndex = Math.Clamp(targetDisplayIndex, 0, groupTasks.Count);
-        groupTasks.Insert(targetDisplayIndex, movedTask);
-
-        for (var i = 0; i < _visibleTaskIndexes.Count; i++)
-        {
-            _currentConfiguration.Tasks[_visibleTaskIndexes[i]] = groupTasks[i];
         }
 
         SaveTasksAndRefresh("Task Reorder");
@@ -4618,6 +4304,25 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex)
+                && TryGetTask(selectedTaskIndex, out var selectedTask)
+                && GetTaskRunState(selectedTask) == TaskRunState.Running
+                && TryCancelTaskExecution(selectedTask, out var cancelMessage))
+            {
+                var outputPanel = GetOrCreateSelectedGroupOutputPanel();
+                if (outputPanel.Runs.Count > 0)
+                {
+                    AppendLog(outputPanel.Runs[^1].OutputTextBox, $"[{selectedTask.Name}] {cancelMessage}");
+                }
+
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         if (e.Key == Key.R && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
         {
             if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
@@ -4911,7 +4616,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var replayTask = ToTask(replayEntry.Snapshot);
+            var replayTask = RunHistoryService.ToTask(replayEntry.Snapshot);
             if (IsTaskDisabledByIdentity(replayTask.Group, replayTask.Name))
             {
                 AppMessageBox.Show(this, $"Task '{replayTask.Name}' is disabled and cannot be replayed.", "Replay Snapshot", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -4979,44 +4684,32 @@ public partial class MainWindow : Window
 
     private void DeleteTask(int taskIndex)
     {
-        if (!IsValidTaskIndex(taskIndex))
+        if (!_taskCatalogService.DeleteTask(_currentConfiguration, taskIndex))
         {
             AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-
-        _currentConfiguration.Tasks.RemoveAt(taskIndex);
 
         SaveTasksAndRefresh(TaskEditorTitle);
     }
 
     private bool IsValidTaskIndex(int taskIndex)
     {
-        return taskIndex >= 0 && taskIndex < _currentConfiguration.Tasks.Count;
+        return _taskCatalogService.IsValidTaskIndex(_currentConfiguration, taskIndex);
     }
 
     private bool TryGetTask(int taskIndex, out LauncherTask task)
     {
-        task = new LauncherTask();
-
-        if (!IsValidTaskIndex(taskIndex))
-        {
-            return false;
-        }
-
-        task = _currentConfiguration.Tasks[taskIndex];
-        return true;
+        return _taskCatalogService.TryGetTask(_currentConfiguration, taskIndex, out task);
     }
 
     private void ToggleTaskEnabled(int taskIndex)
     {
-        if (!TryGetTask(taskIndex, out var task))
+        if (!_taskCatalogService.ToggleTaskEnabled(_currentConfiguration, taskIndex))
         {
             AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-
-        task.IsEnabled = !task.IsEnabled;
         SaveTasksAndRefresh("Enable/Disable Task");
     }
 
@@ -5027,14 +4720,7 @@ public partial class MainWindow : Window
 
     private bool IsTaskDisabledByIdentity(string? groupName, string? taskName)
     {
-        var normalizedGroup = NormalizeGroupName(groupName);
-        var normalizedName = TaskIdentity.NormalizeTaskName(taskName);
-
-        var match = _currentConfiguration.Tasks.FirstOrDefault(task =>
-            string.Equals(NormalizeGroupName(task.Group), normalizedGroup, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(TaskIdentity.NormalizeTaskName(task.Name), normalizedName, StringComparison.OrdinalIgnoreCase));
-
-        return match is not null && !IsTaskEnabled(match);
+        return _taskCatalogService.IsTaskDisabledByIdentity(_currentConfiguration.Tasks, groupName, taskName);
     }
 
     private void SaveTasksAndRefresh(string errorTitle)
@@ -5174,6 +4860,9 @@ public partial class MainWindow : Window
         var historyEntry = StartHistoryEntry(effectiveTask, isReplay, replayFromEntryId);
         var capturedStandardOutput = string.Empty;
         var capturedStandardError = string.Empty;
+        var taskStateKey = GetTaskStateKey(task);
+        var taskCancellationSource = new CancellationTokenSource();
+        _taskExecutionCancellation[taskStateKey] = taskCancellationSource;
 
         if (!string.IsNullOrWhiteSpace(chainStepLabel))
         {
@@ -5187,13 +4876,14 @@ public partial class MainWindow : Window
             AppendLog(outputTextBox, $"[{task.Name}] Command line is empty.");
             SetTabStopped(tabContext, false);
             SetTaskRunState(task, TaskRunState.Failed);
-            CompleteHistoryEntry(historyEntry, false, null);
+            CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+            UnregisterTaskCancellation(task);
             return new TaskExecutionResult { Succeeded = false, ExitCode = null };
         }
 
         var runner = TaskProcessStartInfoFactory.NormalizeRunner(effectiveTask.Runner);
         var waitForExit = effectiveTask.WaitForExit;
-        var launchAsAdministrator = ShouldLaunchAsAdministrator(effectiveTask);
+        var launchAsAdministrator = TaskExecutionService.ShouldLaunchAsAdministrator(effectiveTask);
         var canCaptureOutput = waitForExit && !launchAsAdministrator;
 
         if (sourceButton is not null)
@@ -5204,6 +4894,10 @@ public partial class MainWindow : Window
         var modePrefix = isReplay ? "[replay] " : string.Empty;
         var executionMode = waitForExit ? "wait" : "fire-and-forget";
         AppendLog(outputTextBox, $"[{task.Name}] {modePrefix}Running ({runner}, {executionMode}): {effectiveTask.CommandLine}");
+        if (waitForExit && effectiveTask.TimeoutSeconds > 0)
+        {
+            AppendLog(outputTextBox, $"[{task.Name}] Timeout: {effectiveTask.TimeoutSeconds}s | Kill tree on cancel: {effectiveTask.KillProcessTreeOnCancel} | Max output capture: {effectiveTask.MaxCapturedOutputChars} chars/stream.");
+        }
 
         if (effectiveTask.RequiresElevation)
         {
@@ -5219,40 +4913,56 @@ public partial class MainWindow : Window
 
         try
         {
-            if (!TaskProcessStartInfoFactory.TryBuild(effectiveTask, out var processStartInfo, out var configurationError))
+            var executionResult = await TaskExecutionService.ExecuteAsync(
+                effectiveTask,
+                onOutputLine: (line, isError) =>
+                {
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        AppendLog(outputTextBox, isError ? $"[stderr] {line}" : $"[stdout] {line}");
+                    });
+                },
+                cancellationToken: taskCancellationSource.Token);
+
+            if (!string.IsNullOrWhiteSpace(executionResult.ConfigurationError))
             {
-                AppendLog(outputTextBox, $"[{task.Name}] Invalid task configuration. {configurationError}");
+                AppendLog(outputTextBox, $"[{task.Name}] Invalid task configuration. {executionResult.ConfigurationError}");
                 SetTabStopped(tabContext, false);
                 SetTaskRunState(task, TaskRunState.Failed);
-                CompleteHistoryEntry(historyEntry, false, null);
+                CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
                 return new TaskExecutionResult { Succeeded = false, ExitCode = null };
             }
 
-            if (!canCaptureOutput)
+            if (!executionResult.Started)
             {
-                // Shell elevation cannot redirect streams. Detached launches also do not need redirected streams.
-                processStartInfo.RedirectStandardOutput = false;
-                processStartInfo.RedirectStandardError = false;
+                if (executionResult.ElevationPromptCanceled)
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Elevation was canceled by the user.");
+                }
+                else
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Failed to execute task. {executionResult.FailureMessage}");
+                    AppMessageBox.Show(this, $"Failed to run task '{task.Name}'.\n{executionResult.FailureMessage}",
+                        "Task Execution Error",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
+
+                SetTabStopped(tabContext, false);
+                SetTaskRunState(task, TaskRunState.Failed);
+                CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+
+                return new TaskExecutionResult { Succeeded = false, ExitCode = null };
             }
 
-            if (launchAsAdministrator)
-            {
-                processStartInfo.UseShellExecute = true;
-                processStartInfo.Verb = "runas";
-                processStartInfo.CreateNoWindow = false;
-            }
-
-            using var process = new Process { StartInfo = processStartInfo };
-            process.Start();
-
-            if (!waitForExit)
+            if (!executionResult.WaitedForExit)
             {
                 AppendRuntimeOutputCaptureWarningIfNeeded(outputTextBox, task.Name, publishedOutputs, reason: "task is configured to not wait for process exit");
                 publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, exitCode: null);
-                AppendLog(outputTextBox, $"[{task.Name}] Process started (PID {process.Id}). Not waiting for exit.");
+                AppendLog(outputTextBox, $"[{task.Name}] Process started (PID {executionResult.ProcessId}). Not waiting for exit.");
                 SetTabStopped(tabContext, true);
                 SetTaskRunState(task, TaskRunState.Succeeded);
-                CompleteHistoryEntry(historyEntry, true, null);
+                CompleteHistoryEntry(historyEntry, TaskRunOutcome.Started, null);
 
                 if (publishedOutputs.Count > 0)
                 {
@@ -5268,51 +4978,55 @@ public partial class MainWindow : Window
                 };
             }
 
-            if (canCaptureOutput)
+            if (executionResult.CanCaptureOutput)
             {
-                var standardOutputTask = process.StandardOutput.ReadToEndAsync();
-                var standardErrorTask = process.StandardError.ReadToEndAsync();
-
-                await process.WaitForExitAsync();
-
-                capturedStandardOutput = await standardOutputTask;
-                capturedStandardError = await standardErrorTask;
-
-                AppendProcessOutput(outputTextBox, task.Name, process.ExitCode, capturedStandardOutput, capturedStandardError);
+                capturedStandardOutput = executionResult.StandardOutput;
+                capturedStandardError = executionResult.StandardError;
+                AppendLog(outputTextBox, $"[{task.Name}] Process completed with exit code {executionResult.ExitCode}.");
             }
             else
             {
-                await process.WaitForExitAsync();
-
                 if (launchAsAdministrator)
                 {
-                    AppendLog(outputTextBox, $"[{task.Name}] Elevated process completed with exit code {process.ExitCode}. Output capture is disabled for elevated launches.");
+                    AppendLog(outputTextBox, $"[{task.Name}] Elevated process completed with exit code {executionResult.ExitCode}. Output capture is disabled for elevated launches.");
                 }
                 else
                 {
-                    AppendLog(outputTextBox, $"[{task.Name}] Process completed with exit code {process.ExitCode}.");
+                    AppendLog(outputTextBox, $"[{task.Name}] Process completed with exit code {executionResult.ExitCode}.");
                 }
             }
 
-            var isSuccessfulExit = process.ExitCode == 0 || effectiveTask.IgnoreExitCode;
-            if (process.ExitCode != 0 && effectiveTask.IgnoreExitCode)
+            var isSuccessfulExit = executionResult.Succeeded;
+            if (executionResult.IgnoreExitCodeApplied)
             {
-                AppendLog(outputTextBox, $"[{task.Name}] Exit code {process.ExitCode} ignored because ignoreExitCode=true.");
+                AppendLog(outputTextBox, $"[{task.Name}] Exit code {executionResult.ExitCode} ignored because ignoreExitCode=true.");
+            }
+
+            if (executionResult.Outcome == TaskExecutionOutcome.TimedOut)
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] {executionResult.FailureMessage}");
+            }
+            else if (executionResult.Outcome == TaskExecutionOutcome.Cancelled)
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Execution cancelled.");
+            }
+
+            if (executionResult.OutputTruncated)
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Captured output was truncated to {executionResult.MaxCapturedOutputChars} characters per stream.");
             }
 
             SetTabStopped(tabContext, isSuccessfulExit);
             SetTaskRunState(task, isSuccessfulExit ? TaskRunState.Succeeded : TaskRunState.Failed);
-            CompleteHistoryEntry(historyEntry, isSuccessfulExit, process.ExitCode);
+            CompleteHistoryEntry(historyEntry, MapOutcome(executionResult.Outcome), executionResult.ExitCode);
 
-            if (!canCaptureOutput)
+            if (!executionResult.CanCaptureOutput)
             {
-                var reason = launchAsAdministrator
-                    ? "process ran elevated (stream redirection unavailable)"
-                    : "process output capture was disabled";
+                var reason = executionResult.OutputCaptureDisabledReason ?? "process output capture was disabled";
                 AppendRuntimeOutputCaptureWarningIfNeeded(outputTextBox, task.Name, publishedOutputs, reason);
             }
 
-            publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, process.ExitCode);
+            publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, executionResult.ExitCode);
 
             if (isSuccessfulExit && publishedOutputs.Count > 0)
             {
@@ -5323,24 +5037,16 @@ public partial class MainWindow : Window
             return new TaskExecutionResult
             {
                 Succeeded = isSuccessfulExit,
-                ExitCode = process.ExitCode,
+                ExitCode = executionResult.ExitCode,
                 PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
             };
-        }
-        catch (Win32Exception ex) when (launchAsAdministrator && ex.NativeErrorCode == 1223)
-        {
-            AppendLog(outputTextBox, $"[{task.Name}] Elevation was canceled by the user.");
-            SetTabStopped(tabContext, false);
-            SetTaskRunState(task, TaskRunState.Failed);
-            CompleteHistoryEntry(historyEntry, false, null);
-            return new TaskExecutionResult { Succeeded = false, ExitCode = null };
         }
         catch (Exception ex)
         {
             AppendLog(outputTextBox, $"[{task.Name}] Failed to execute task. {ex.Message}");
             SetTabStopped(tabContext, false);
             SetTaskRunState(task, TaskRunState.Failed);
-            CompleteHistoryEntry(historyEntry, false, null);
+            CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
             AppMessageBox.Show(this, $"Failed to run task '{task.Name}'.\n{ex.Message}",
                 "Task Execution Error",
                 MessageBoxButton.OK,
@@ -5349,6 +5055,8 @@ public partial class MainWindow : Window
         }
         finally
         {
+            UnregisterTaskCancellation(task);
+
             if (sourceButton is not null)
             {
                 sourceButton.IsEnabled = true;
@@ -5441,109 +5149,37 @@ public partial class MainWindow : Window
 
     private TaskRunHistoryEntry StartHistoryEntry(LauncherTask task, bool isReplay, string? replayFromEntryId)
     {
-        var entry = new TaskRunHistoryEntry
-        {
-            Snapshot = CreateSnapshot(task),
-            IsReplay = isReplay,
-            ReplayFromRunId = replayFromEntryId,
-            Outcome = TaskRunOutcome.Running,
-            StartedAtUtc = DateTime.UtcNow
-        };
-
-        _runHistory.Add(entry);
-        TaskRunHistoryStore.Save(_runHistory);
+        var entry = _runHistoryService.StartEntry(task, isReplay, replayFromEntryId);
         RefreshHistoryView();
         return entry;
     }
 
-    private void CompleteHistoryEntry(TaskRunHistoryEntry entry, bool succeeded, int? exitCode)
+    private void CompleteHistoryEntry(TaskRunHistoryEntry entry, TaskRunOutcome outcome, int? exitCode)
     {
-        entry.CompletedAtUtc = DateTime.UtcNow;
-        entry.ExitCode = exitCode;
-        entry.Outcome = succeeded ? TaskRunOutcome.Succeeded : TaskRunOutcome.Failed;
-        TaskRunHistoryStore.Save(_runHistory);
+        _runHistoryService.CompleteEntry(entry, outcome, exitCode);
         RefreshHistoryView();
         GroupMetaText.Text = string.IsNullOrWhiteSpace(_selectedGroupName)
             ? GroupMetaText.Text
             : $"Snapshots in this group: {_runHistory.Count(item => string.Equals(item.Snapshot.Group, _selectedGroupName, StringComparison.OrdinalIgnoreCase))}";
     }
 
-    private void TrimRunHistory()
+    private static TaskRunOutcome MapOutcome(TaskExecutionOutcome outcome)
     {
-        if (_runHistory.Count <= MaxRunHistoryEntries)
+        return outcome switch
         {
-            return;
-        }
-
-        _runHistory = _runHistory
-            .OrderByDescending(entry => entry.StartedAtUtc)
-            .Take(MaxRunHistoryEntries)
-            .OrderBy(entry => entry.StartedAtUtc)
-            .ToList();
-    }
-
-    private static TaskRunSnapshot CreateSnapshot(LauncherTask task)
-    {
-        return new TaskRunSnapshot
-        {
-            Name = task.Name,
-            Group = NormalizeGroupName(task.Group),
-            Description = task.Description,
-            CommandLine = task.CommandLine,
-            Runner = task.Runner,
-            WorkingDirectory = task.WorkingDirectory,
-            WaitForExit = task.WaitForExit,
-            RequiresElevation = task.RequiresElevation,
-            IgnoreExitCode = task.IgnoreExitCode,
-            Env = new Dictionary<string, string>(task.Env, StringComparer.OrdinalIgnoreCase)
+            TaskExecutionOutcome.Started => TaskRunOutcome.Started,
+            TaskExecutionOutcome.Succeeded => TaskRunOutcome.Succeeded,
+            TaskExecutionOutcome.IgnoredNonZeroExit => TaskRunOutcome.IgnoredNonZeroExit,
+            TaskExecutionOutcome.FailedNonZeroExit => TaskRunOutcome.FailedNonZeroExit,
+            TaskExecutionOutcome.TimedOut => TaskRunOutcome.TimedOut,
+            TaskExecutionOutcome.Cancelled => TaskRunOutcome.Cancelled,
+            _ => TaskRunOutcome.LaunchFailed
         };
-    }
-
-    private static LauncherTask ToTask(TaskRunSnapshot snapshot)
-    {
-        return new LauncherTask
-        {
-            Name = snapshot.Name,
-            Group = NormalizeGroupName(snapshot.Group),
-            Description = snapshot.Description,
-            CommandLine = snapshot.CommandLine,
-            Runner = snapshot.Runner,
-            WorkingDirectory = snapshot.WorkingDirectory,
-            WaitForExit = snapshot.WaitForExit,
-            RequiresElevation = snapshot.RequiresElevation,
-            IgnoreExitCode = snapshot.IgnoreExitCode,
-            Env = new Dictionary<string, string>(snapshot.Env, StringComparer.OrdinalIgnoreCase)
-        };
-    }
-
-    private static bool ShouldLaunchAsAdministrator(LauncherTask task)
-    {
-        return task.RequiresElevation && !IsCurrentProcessElevated();
-    }
-
-    private static bool IsCurrentProcessElevated()
-    {
-        using var identity = WindowsIdentity.GetCurrent();
-        if (identity is null)
-        {
-            return false;
-        }
-
-        var principal = new WindowsPrincipal(identity);
-        return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
     private TaskRunHistoryEntry? GetLastSnapshotEntry(LauncherTask task)
     {
-        var taskName = task.Name.Trim();
-        var groupName = NormalizeGroupName(task.Group);
-
-        return _runHistory
-            .Where(entry => string.Equals(entry.Snapshot.Name, taskName, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(entry.Snapshot.Group, groupName, StringComparison.OrdinalIgnoreCase)
-                && entry.Outcome != TaskRunOutcome.Running)
-            .OrderByDescending(entry => entry.StartedAtUtc)
-            .FirstOrDefault();
+        return _runHistoryService.GetLastSnapshotEntry(task);
     }
 
     private TaskTabContext CreateOutputTab(string taskName)

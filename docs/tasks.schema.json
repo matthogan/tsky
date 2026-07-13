@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/tsky/tasks.schema.json",
+  "title": "tsky Task Configuration",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/task"
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/group"
+      }
+    },
+    "rituals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ritual"
+      }
+    }
+  },
+  "$defs": {
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "group": { "type": ["string", "null"] },
+        "commandLine": { "type": "string" },
+        "runner": { "type": "string" },
+        "env": { "$ref": "#/$defs/stringMap" },
+        "workingDirectory": { "type": "string" },
+        "waitForExit": { "type": "boolean" },
+        "requiresElevation": { "type": "boolean" },
+        "ignoreExitCode": { "type": "boolean" },
+        "timeoutSeconds": { "type": "integer" },
+        "killProcessTreeOnCancel": { "type": "boolean" },
+        "maxCapturedOutputChars": { "type": "integer" },
+        "isEnabled": { "type": "boolean" },
+        "importedFromFile": { "type": ["string", "null"] },
+        "importedAtUtc": { "type": ["string", "null"] },
+        "inputs": { "$ref": "#/$defs/stringMap" },
+        "inputBindings": { "$ref": "#/$defs/stringMap" },
+        "outputs": { "$ref": "#/$defs/stringMap" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/task"
+          }
+        }
+      }
+    },
+    "ritualStep": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "taskName": { "type": "string" },
+        "group": { "type": ["string", "null"] },
+        "delayMs": { "type": "integer" },
+        "continueOnError": { "type": "boolean" },
+        "waitForExit": { "type": ["boolean", "null"] }
+      }
+    },
+    "ritual": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ritualStep"
+          }
+        }
+      }
+    }
+  }
+}

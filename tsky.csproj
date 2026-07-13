@@ -23,4 +23,12 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="tsky.Tests\**\*.cs" />
+    <EmbeddedResource Remove="tsky.Tests\**\*" />
+    <None Remove="tsky.Tests\**\*" />
+    <Page Remove="tsky.Tests\**\*" />
+    <ApplicationDefinition Remove="tsky.Tests\**\*" />
+  </ItemGroup>
+
 </Project>

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace tsky;
 
@@ -238,12 +239,33 @@ public static class TaskExecutionService
                 };
             }
 
-            var isSuccessfulExit = process.ExitCode == 0 || task.IgnoreExitCode;
+            var isPowerShellRunner = string.Equals(
+                TaskProcessStartInfoFactory.NormalizeRunner(task.Runner),
+                "powershell",
+                StringComparison.OrdinalIgnoreCase);
+
+            var hasPowerShellErrorRecord = process.ExitCode == 0
+                && isPowerShellRunner
+                && ContainsPowerShellErrorRecord(capturedStandardError);
+
+            var hasPowerShellStderrOutput = process.ExitCode == 0
+                && isPowerShellRunner
+                && !string.IsNullOrWhiteSpace(capturedStandardError);
+
+            var hasPowerShellFailureSignal = hasPowerShellErrorRecord || hasPowerShellStderrOutput;
+
+            var isSuccessfulExit = process.ExitCode == 0 && !hasPowerShellFailureSignal
+                || process.ExitCode != 0 && task.IgnoreExitCode;
             var outcome = process.ExitCode == 0
-                ? TaskExecutionOutcome.Succeeded
+                ? hasPowerShellFailureSignal
+                    ? TaskExecutionOutcome.FailedNonZeroExit
+                    : TaskExecutionOutcome.Succeeded
                 : task.IgnoreExitCode
                     ? TaskExecutionOutcome.IgnoredNonZeroExit
                     : TaskExecutionOutcome.FailedNonZeroExit;
+            var failureMessage = hasPowerShellFailureSignal
+                ? "PowerShell produced stderr output even though the process exited with code 0."
+                : null;
 
             return new TaskExecutionRunResult
             {
@@ -260,6 +282,7 @@ public static class TaskExecutionService
                 WaitForExit = true,
                 CanCaptureOutput = canCaptureOutput,
                 LaunchedElevated = launchAsAdministrator,
+                FailureMessage = failureMessage,
                 IgnoreExitCodeApplied = process.ExitCode != 0 && task.IgnoreExitCode,
                 OutputCaptureDisabledReason = canCaptureOutput
                     ? null
@@ -365,5 +388,25 @@ public static class TaskExecutionService
 
         var principal = new WindowsPrincipal(identity);
         return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    private static bool ContainsPowerShellErrorRecord(string standardError)
+    {
+        if (string.IsNullOrWhiteSpace(standardError))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(standardError, @"(?im)^\s*(CategoryInfo|FullyQualifiedErrorId)\s*:")
+            || Regex.IsMatch(standardError, @"(?im)^\s*At\s+line:\d+"))
+        {
+            return true;
+        }
+
+        var hasCmdletErrorPrefix = Regex.IsMatch(standardError, @"(?im)^\s*[A-Za-z][A-Za-z0-9-]*\s*:\s*(?:$|.+)");
+        var hasPowerShellLineContext = Regex.IsMatch(standardError, @"(?im)^\s*Line\s*\|\s*$")
+            || Regex.IsMatch(standardError, @"(?im)^\s*\|\s+.+$");
+
+        return hasCmdletErrorPrefix && hasPowerShellLineContext;
     }
 }

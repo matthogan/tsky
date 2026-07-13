@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "groups": [
+    {
+      "name": "Web Intelligence Pipeline",
+      "tasks": [
+        {
+          "name": "1 - Seed Pipeline Context",
+          "description": "Defines pipeline parameters and shared ports.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "Write-Output \"Pipeline context initialized\"",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "query": "ai agents",
+            "maxItems": "8",
+            "sourceUrlA": "https://news.ycombinator.com/",
+            "sourceUrlB": "https://dev.to/",
+            "postEndpoint": "https://httpbin.org/post",
+            "reportTitle": "Daily Web Intelligence Report"
+          },
+          "inputBindings": {},
+          "outputs": {
+            "query": "${input:query}",
+            "maxItems": "${input:maxItems}",
+            "sourceUrlA": "${input:sourceUrlA}",
+            "sourceUrlB": "${input:sourceUrlB}",
+            "postEndpoint": "${input:postEndpoint}",
+            "reportTitle": "${input:reportTitle}",
+            "runId": "${input:query}-${input:maxItems}"
+          }
+        },
+        {
+          "name": "2 - Fetch And Extract HN Headlines",
+          "description": "Downloads Hacker News and extracts top headline text.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$u='${input:url}'; $max=[int]'${input:maxItems}'; $html=(Invoke-WebRequest -Uri $u -UseBasicParsing).Content; $m=[regex]::Matches($html,'<span class=\"titleline\"><a[^>]*>(.*?)</a></span>','IgnoreCase'); $items=foreach($x in $m){ [regex]::Replace($x.Groups[1].Value,'<.*?>','').Trim() }; $items | Where-Object { $_ } | Select-Object -First $max | ConvertTo-Json -Compress",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "url": "https://news.ycombinator.com/",
+            "maxItems": "8"
+          },
+          "inputBindings": {
+            "url": "port:sourceUrlA",
+            "maxItems": "port:maxItems"
+          },
+          "outputs": {
+            "headlinesAJson": "${stdout}"
+          }
+        },
+        {
+          "name": "3 - Fetch And Extract DevTo Headlines",
+          "description": "Downloads dev.to and extracts headline text.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$u='${input:url}'; $max=[int]'${input:maxItems}'; $html=(Invoke-WebRequest -Uri $u -UseBasicParsing).Content; $m=[regex]::Matches($html,'<h2[^>]*class=\"[^\"]*crayons-story__title[^\"]*\"[^>]*>\\s*<a[^>]*>(.*?)</a>','IgnoreCase,Singleline'); if($m.Count -eq 0){ $m=[regex]::Matches($html,'<a[^>]*class=\"[^\"]*crayons-story__hidden-navigation-link[^\"]*\"[^>]*>(.*?)</a>','IgnoreCase,Singleline') }; $items=foreach($x in $m){ [regex]::Replace($x.Groups[1].Value,'<.*?>','').Trim() }; $items | Where-Object { $_ } | Select-Object -First $max | ConvertTo-Json -Compress",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "url": "https://dev.to/",
+            "maxItems": "8"
+          },
+          "inputBindings": {
+            "url": "port:sourceUrlB",
+            "maxItems": "port:maxItems"
+          },
+          "outputs": {
+            "headlinesBJson": "${stdout}"
+          }
+        },
+        {
+          "name": "4 - Merge And Normalize Headlines",
+          "description": "Combines both sources, removes duplicates, and keeps top N.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$a='${input:aJson}'; $b='${input:bJson}'; $max=[int]'${input:maxItems}'; $aItems=if([string]::IsNullOrWhiteSpace($a)){@()} else { @($a | ConvertFrom-Json) }; $bItems=if([string]::IsNullOrWhiteSpace($b)){@()} else { @($b | ConvertFrom-Json) }; $merged=@($aItems + $bItems) | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ } | Select-Object -Unique | Select-Object -First $max; $merged | ConvertTo-Json -Compress",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "aJson": "[]",
+            "bJson": "[]",
+            "maxItems": "8"
+          },
+          "inputBindings": {
+            "aJson": "port:headlinesAJson",
+            "bJson": "port:headlinesBJson",
+            "maxItems": "port:maxItems"
+          },
+          "outputs": {
+            "mergedHeadlinesJson": "${stdout}"
+          }
+        },
+        {
+          "name": "5 - Score Headlines",
+          "description": "Adds lightweight relevance score based on query term presence.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$itemsRaw='${input:itemsJson}'; $query='${input:query}'; $items=if([string]::IsNullOrWhiteSpace($itemsRaw)){@()} else { @($itemsRaw | ConvertFrom-Json) }; $terms=$query.Split(' ',[System.StringSplitOptions]::RemoveEmptyEntries); $scored=foreach($h in $items){ $title=$h.ToString(); $score=0; foreach($t in $terms){ if($title -match [regex]::Escape($t)){ $score++ } }; [pscustomobject]@{ title=$title; score=$score; length=$title.Length } }; $scored | Sort-Object -Property @{Expression='score';Descending=$true}, @{Expression='length';Descending=$false} | ConvertTo-Json -Compress",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "itemsJson": "[]",
+            "query": "ai agents"
+          },
+          "inputBindings": {
+            "itemsJson": "port:mergedHeadlinesJson",
+            "query": "port:query"
+          },
+          "outputs": {
+            "scoredHeadlinesJson": "${stdout}"
+          }
+        },
+        {
+          "name": "6 - Build API Payload",
+          "description": "Builds JSON payload with metadata and scored headlines.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$itemsRaw='${input:scoredJson}'; $query='${input:query}'; $runId='${input:runId}'; $items=if([string]::IsNullOrWhiteSpace($itemsRaw)){@()} else { @($itemsRaw | ConvertFrom-Json) }; $payload=[ordered]@{ runId=$runId; query=$query; generatedAt=(Get-Date).ToString('o'); totalItems=$items.Count; items=$items }; $payload | ConvertTo-Json -Depth 8 -Compress",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "scoredJson": "[]",
+            "query": "ai agents",
+            "runId": "default-run"
+          },
+          "inputBindings": {
+            "scoredJson": "port:scoredHeadlinesJson",
+            "query": "port:query",
+            "runId": "port:runId"
+          },
+          "outputs": {
+            "apiPayloadJson": "${stdout}"
+          }
+        },
+        {
+          "name": "7 - Post Payload To API",
+          "description": "Posts payload to an API endpoint and captures response summary.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$endpoint='${input:endpoint}'; $payload='${input:payloadJson}'; $resp=Invoke-RestMethod -Uri $endpoint -Method Post -Body $payload -ContentType 'application/json'; $out=[ordered]@{ endpoint=$endpoint; receivedBytes=$payload.Length; responseKeys=@($resp.psobject.Properties.Name) }; $out | ConvertTo-Json -Compress",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "endpoint": "https://httpbin.org/post",
+            "payloadJson": "{}"
+          },
+          "inputBindings": {
+            "endpoint": "port:postEndpoint",
+            "payloadJson": "port:apiPayloadJson"
+          },
+          "outputs": {
+            "apiResponseSummaryJson": "${stdout}"
+          }
+        },
+        {
+          "name": "8 - Build CSV Summary",
+          "description": "Converts scored headline objects to CSV text.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$itemsRaw='${input:scoredJson}'; $items=if([string]::IsNullOrWhiteSpace($itemsRaw)){@()} else { @($itemsRaw | ConvertFrom-Json) }; $csv = $items | Select-Object title, score, length | ConvertTo-Csv -NoTypeInformation; ($csv -join [Environment]::NewLine)",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "scoredJson": "[]"
+          },
+          "inputBindings": {
+            "scoredJson": "port:scoredHeadlinesJson"
+          },
+          "outputs": {
+            "csvSummaryText": "${stdout}"
+          }
+        },
+        {
+          "name": "9 - Build Markdown Report",
+          "description": "Creates a markdown report using scored data + API response + CSV excerpt.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$title='${input:reportTitle}'; $query='${input:query}'; $runId='${input:runId}'; $scoredRaw='${input:scoredJson}'; $apiRaw='${input:apiSummaryJson}'; $csv='${input:csvText}'; $scored=if([string]::IsNullOrWhiteSpace($scoredRaw)){@()} else { @($scoredRaw | ConvertFrom-Json) }; $api=if([string]::IsNullOrWhiteSpace($apiRaw)){@{}} else { $apiRaw | ConvertFrom-Json }; $top=$scored | Select-Object -First 5; $lines=@(); $lines += '# ' + $title; $lines += ''; $lines += '- Run ID: ' + $runId; $lines += '- Query: ' + $query; $lines += '- Generated: ' + (Get-Date).ToString('u'); $lines += ''; $lines += '## Top Headlines'; foreach($item in $top){ $lines += ('- ({0}) {1}' -f $item.score, $item.title) }; $lines += ''; $lines += '## API Post Summary'; $lines += '- Endpoint: ' + $api.endpoint; $lines += '- Payload bytes: ' + $api.receivedBytes; $lines += '- Response keys: ' + ((@($api.responseKeys) -join ', ')); $lines += ''; $lines += '## CSV Snapshot'; $lines += '```csv'; $lines += $csv; $lines += '```'; $lines -join [Environment]::NewLine",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "reportTitle": "Daily Web Intelligence Report",
+            "query": "ai agents",
+            "runId": "default-run",
+            "scoredJson": "[]",
+            "apiSummaryJson": "{}",
+            "csvText": ""
+          },
+          "inputBindings": {
+            "reportTitle": "port:reportTitle",
+            "query": "port:query",
+            "runId": "port:runId",
+            "scoredJson": "port:scoredHeadlinesJson",
+            "apiSummaryJson": "port:apiResponseSummaryJson",
+            "csvText": "port:csvSummaryText"
+          },
+          "outputs": {
+            "reportMarkdown": "${stdout}"
+          }
+        },
+        {
+          "name": "10 - Persist Report To Docs",
+          "description": "Writes report markdown to docs folder and outputs final path.",
+          "group": "Web Intelligence Pipeline",
+          "commandLine": "$runId='${input:runId}'; $report='${input:reportMarkdown}'; $safeRunId=($runId -replace '[^a-zA-Z0-9_-]','_'); $root=(Get-Location).Path; while($true){ if(Test-Path (Join-Path $root 'tsky.csproj')){ break }; $parent=Split-Path -Path $root -Parent; if([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $root){ break }; $root=$parent }; $docsDir=Join-Path $root 'docs'; New-Item -Path $docsDir -ItemType Directory -Force | Out-Null; $path=Join-Path $docsDir (\"pipeline-report-$safeRunId.md\"); Set-Content -Path $path -Value $report -Encoding UTF8; Write-Output $path",
+          "runner": "powershell",
+          "env": {},
+          "workingDirectory": "",
+          "waitForExit": true,
+          "inputs": {
+            "runId": "default-run",
+            "reportMarkdown": ""
+          },
+          "inputBindings": {
+            "runId": "port:runId",
+            "reportMarkdown": "port:reportMarkdown"
+          },
+          "outputs": {
+            "reportPath": "${stdout}"
+          }
+        }
+      ]
+    }
+  ],
+  "rituals": [
+    {
+      "name": "Run Web Intelligence Pipeline",
+      "description": "Executes all ten pipeline stages in order.",
+      "steps": [
+        { "taskName": "1 - Seed Pipeline Context", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "2 - Fetch And Extract HN Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "3 - Fetch And Extract DevTo Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "4 - Merge And Normalize Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "5 - Score Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "6 - Build API Payload", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "7 - Post Payload To API", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "8 - Build CSV Summary", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "9 - Build Markdown Report", "group": "Web Intelligence Pipeline", "continueOnError": false },
+        { "taskName": "10 - Persist Report To Docs", "group": "Web Intelligence Pipeline", "continueOnError": false }
+      ]
+    }
+  ]
+}

@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private bool _isDraggingTaskCard;
     private Border? _activeDropCueBorder;
     private string? _selectedGroupName;
+    private bool _preferGroupDeleteContext;
     private int? _selectedTaskIndex;
     private readonly List<int> _visibleTaskIndexes = [];
     private readonly Dictionary<string, OutputGroupPanelContext> _groupOutputPanels = new(StringComparer.OrdinalIgnoreCase);
@@ -159,6 +160,19 @@ public partial class MainWindow : Window
         public required Button TaskButton { get; init; }
     }
 
+    private sealed class TaskCardTitleTooltipContext
+    {
+        public required TextBlock NameText { get; init; }
+
+        public required string FullText { get; init; }
+
+        public required Color CardColor { get; init; }
+
+        public required Brush ForegroundBrush { get; init; }
+
+        public required FontFamily FontFamily { get; init; }
+    }
+
     private sealed class TaskExecutionResult
     {
         public bool Succeeded { get; init; }
@@ -177,7 +191,9 @@ public partial class MainWindow : Window
 
     private sealed class ConnectorVisual
     {
-        public required System.Windows.Shapes.Path Path { get; init; }
+        public required System.Windows.Shapes.Path PrimaryPath { get; init; }
+
+        public System.Windows.Shapes.Path? CardOverlayPath { get; init; }
 
         public string? SourceTaskName { get; init; }
 
@@ -715,26 +731,28 @@ public partial class MainWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center
             };
 
-            var favoriteButton = new Button
+            var favoriteGlyph = new Border
             {
                 Tag = groupName,
-                Content = "❤",
                 Background = Brushes.Transparent,
-                BorderBrush = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
                 Padding = new Thickness(2, 0, 2, 0),
                 Margin = new Thickness(6, 0, 0, 0),
                 Cursor = Cursors.Hand,
                 ToolTip = isFavorited ? "Unfavorite group" : "Favorite group",
-                Foreground = isFavorited
-                    ? new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35))
-                    : new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
-                FontSize = 13,
-                FontWeight = FontWeights.SemiBold,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock
+                {
+                    Text = "❤",
+                    Foreground = isFavorited
+                        ? new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35))
+                        : new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                    FontSize = 13,
+                    FontWeight = FontWeights.SemiBold,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
             };
-            DockPanel.SetDock(favoriteButton, Dock.Right);
-            favoriteButton.Click += FavoriteGroupButton_Click;
+            DockPanel.SetDock(favoriteGlyph, Dock.Right);
+            favoriteGlyph.PreviewMouseLeftButtonDown += FavoriteGroupGlyph_PreviewMouseLeftButtonDown;
 
             var groupNameText = new TextBlock
             {
@@ -749,7 +767,7 @@ public partial class MainWindow : Window
 
             headerLayout.Children.Add(chevronText);
             headerLayout.Children.Add(folderIcon);
-            headerLayout.Children.Add(favoriteButton);
+            headerLayout.Children.Add(favoriteGlyph);
             headerLayout.Children.Add(badge);
             headerLayout.Children.Add(groupNameText);
             headerButton.Content = headerLayout;
@@ -814,7 +832,6 @@ public partial class MainWindow : Window
 
             expander.Expanded += (_, _) => _groupExpandedStates[groupName] = true;
             expander.Collapsed += (_, _) => _groupExpandedStates[groupName] = false;
-            expander.PreviewMouseLeftButtonUp += GroupExpander_PreviewMouseLeftButtonUp;
             GroupListPanel.Children.Add(expander);
         }
 
@@ -884,23 +901,29 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!string.Equals(NormalizeGroupName(_selectedGroupName), NormalizeGroupName(target.GroupName), StringComparison.OrdinalIgnoreCase))
+        _preferGroupDeleteContext = false;
+        var targetGroup = NormalizeGroupName(target.GroupName);
+        var targetTaskName = TaskIdentity.NormalizeTaskName(target.TaskName);
+        var targetTaskKey = TaskIdentity.BuildKey(targetGroup, targetTaskName);
+
+        if (!string.Equals(NormalizeGroupName(_selectedGroupName), targetGroup, StringComparison.OrdinalIgnoreCase))
         {
-            SelectGroup(target.GroupName);
+            SelectGroup(targetGroup);
         }
 
         var selectedIndex = _currentConfiguration.Tasks.FindIndex(task =>
-            string.Equals(NormalizeGroupName(task.Group), target.GroupName, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(task.Name.Trim(), target.TaskName, StringComparison.OrdinalIgnoreCase));
+            string.Equals(TaskIdentity.BuildKey(task), targetTaskKey, StringComparison.OrdinalIgnoreCase));
 
         if (selectedIndex < 0)
         {
+            e.Handled = true;
             return;
         }
 
         _selectedTaskIndex = selectedIndex;
         ApplyTaskCardSelectionVisuals();
         FocusSelectedTaskCard();
+        e.Handled = true;
     }
 
     private sealed record SidebarTaskSelectionTarget(string GroupName, string TaskName);
@@ -911,6 +934,9 @@ public partial class MainWindow : Window
         {
             return;
         }
+
+        _preferGroupDeleteContext = true;
+        FocusSidebarPaneForKeyboardCommands();
 
         if (string.Equals(_selectedGroupName, groupName, StringComparison.OrdinalIgnoreCase))
         {
@@ -927,7 +953,21 @@ public partial class MainWindow : Window
             return;
         }
 
+        _preferGroupDeleteContext = true;
+        FocusSidebarPaneForKeyboardCommands();
         SelectGroup(selectedGroup);
+    }
+
+    private void FocusSidebarPaneForKeyboardCommands()
+    {
+        if (GroupsTreeScrollViewer is null)
+        {
+            return;
+        }
+
+        GroupsTreeScrollViewer.Focusable = true;
+        GroupsTreeScrollViewer.Focus();
+        Keyboard.Focus(GroupsTreeScrollViewer);
     }
 
     private void GroupsMenuEntry_Click(object sender, RoutedEventArgs e)
@@ -1308,6 +1348,7 @@ public partial class MainWindow : Window
         _isRunningRitual = true;
         var tabContext = CreateOutputTab($"Ritual: {ritual.Name}");
         SetTabRunning(tabContext);
+        var dataflowContext = new DataflowContext();
 
         try
         {
@@ -1352,7 +1393,12 @@ public partial class MainWindow : Window
                 var effectiveTask = CreateRitualStepExecutionTask(stepTask, step);
                 AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: running '{effectiveTask.Name}' (waitForExit={effectiveTask.WaitForExit}).");
                 SelectGroup(NormalizeGroupName(effectiveTask.Group));
-                var result = await ExecuteTaskAsync(effectiveTask, null, isReplay: false, chainStepLabel: $"ritual {label}");
+                var result = await ExecuteTaskAsync(
+                    effectiveTask,
+                    null,
+                    isReplay: false,
+                    dataflowContext: dataflowContext,
+                    chainStepLabel: $"ritual {label}");
 
                 if (!result.Succeeded)
                 {
@@ -2157,6 +2203,16 @@ public partial class MainWindow : Window
                 Padding = new Thickness(10, 8, 42, 8),
                 Child = nameText
             };
+            titleBar.Tag = new TaskCardTitleTooltipContext
+            {
+                NameText = nameText,
+                FullText = task.Name,
+                CardColor = cardColor,
+                ForegroundBrush = foregroundBrush,
+                FontFamily = cardFontFamily
+            };
+            titleBar.ToolTip = string.Empty;
+            titleBar.ToolTipOpening += TaskCardTitleBar_ToolTipOpening;
             Grid.SetRow(titleBar, 0);
 
             var adminGlyph = new TextBlock
@@ -2394,6 +2450,74 @@ public partial class MainWindow : Window
         };
 
         return button;
+    }
+
+    private void TaskCardTitleBar_ToolTipOpening(object sender, ToolTipEventArgs e)
+    {
+        if (sender is not Border { Tag: TaskCardTitleTooltipContext context } titleBar)
+        {
+            return;
+        }
+
+        if (!ShouldShowTaskCardTitleTooltip(context.NameText, context.FullText))
+        {
+            titleBar.ToolTip = string.Empty;
+            e.Handled = true;
+            return;
+        }
+
+        titleBar.ToolTip = CreateTaskCardTitleToolTip(context);
+    }
+
+    private static bool ShouldShowTaskCardTitleTooltip(TextBlock nameText, string fullText)
+    {
+        if (string.IsNullOrWhiteSpace(fullText)
+            || nameText.ActualWidth <= 0
+            || nameText.ActualHeight <= 0)
+        {
+            return false;
+        }
+
+        var measuringBlock = new TextBlock
+        {
+            Text = fullText,
+            FontFamily = nameText.FontFamily,
+            FontStyle = nameText.FontStyle,
+            FontWeight = nameText.FontWeight,
+            FontStretch = nameText.FontStretch,
+            FontSize = nameText.FontSize,
+            LineStackingStrategy = nameText.LineStackingStrategy,
+            LineHeight = nameText.LineHeight,
+            TextWrapping = nameText.TextWrapping,
+            TextTrimming = TextTrimming.None,
+            Width = nameText.ActualWidth
+        };
+
+        measuringBlock.Measure(new Size(nameText.ActualWidth, double.PositiveInfinity));
+        return measuringBlock.DesiredSize.Height > nameText.ActualHeight + 0.5;
+    }
+
+    private static ToolTip CreateTaskCardTitleToolTip(TaskCardTitleTooltipContext context)
+    {
+        var borderBrushColor = Color.FromArgb(220, context.CardColor.R, context.CardColor.G, context.CardColor.B);
+
+        return new ToolTip
+        {
+            Background = new SolidColorBrush(context.CardColor),
+            Foreground = context.ForegroundBrush,
+            BorderBrush = new SolidColorBrush(borderBrushColor),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(10, 8, 10, 8),
+            MaxWidth = 380,
+            Content = new TextBlock
+            {
+                Text = context.FullText,
+                FontFamily = context.FontFamily,
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                TextWrapping = TextWrapping.Wrap
+            }
+        };
     }
 
     private bool IsCurrentGroupDataflowLocked()
@@ -2821,6 +2945,7 @@ public partial class MainWindow : Window
 
         TaskConnectorOverlay.Width = TaskPanel.ActualWidth;
         TaskConnectorOverlay.Height = TaskPanel.ActualHeight;
+        var cardCoverGeometry = BuildTaskCardCoverGeometry();
 
         var connectorItems = _dataflowGraphService.BuildConnectorComputations(_currentConfiguration.Tasks, _visibleTaskIndexes);
 
@@ -2849,7 +2974,8 @@ public partial class MainWindow : Window
                     targetTaskName: connectorItem.TargetTaskName,
                     targetInputName: connectorItem.TargetInputName,
                     bindingReference: connectorItem.BindingReference,
-                    statusDetail: connectorItem.StatusDetail);
+                    statusDetail: connectorItem.StatusDetail,
+                    cardCoverGeometry);
 
                 continue;
             }
@@ -2867,8 +2993,38 @@ public partial class MainWindow : Window
                 connectorItem.TargetTaskName,
                 connectorItem.TargetInputName,
                 connectorItem.BindingReference,
-                connectorItem.StatusDetail);
+                connectorItem.StatusDetail,
+                cardCoverGeometry);
         }
+    }
+
+    private Geometry? BuildTaskCardCoverGeometry()
+    {
+        var geometryGroup = new GeometryGroup();
+
+        foreach (var card in _taskCardsByIndex.Values)
+        {
+            if (card.ActualWidth <= 0 || card.ActualHeight <= 0)
+            {
+                continue;
+            }
+
+            var topLeft = card.TranslatePoint(new Point(0, 0), TaskConnectorOverlay);
+            if (double.IsNaN(topLeft.X) || double.IsNaN(topLeft.Y)
+                || double.IsInfinity(topLeft.X) || double.IsInfinity(topLeft.Y))
+            {
+                continue;
+            }
+
+            geometryGroup.Children.Add(new RectangleGeometry(new Rect(topLeft, new Size(card.ActualWidth, card.ActualHeight))));
+        }
+
+        if (geometryGroup.Children.Count == 0)
+        {
+            return null;
+        }
+
+        return geometryGroup;
     }
 
     private Point GetCardPortPoint(Grid card, bool isOutput, IReadOnlyList<string> portNames, string portName)
@@ -2965,7 +3121,8 @@ public partial class MainWindow : Window
         string targetTaskName,
         string targetInputName,
         string bindingReference,
-        string statusDetail)
+        string statusDetail,
+        Geometry? cardCoverGeometry)
     {
         var stroke = resolved ? GetResolvedConnectorBrush() : GetUnresolvedConnectorBrush();
         var controlOffset = Math.Max(24, Math.Abs(end.X - start.X) * 0.35);
@@ -2987,14 +3144,38 @@ public partial class MainWindow : Window
             StrokeEndLineCap = PenLineCap.Round
         };
 
+        System.Windows.Shapes.Path? cardOverlayPath = null;
+
+        if (cardCoverGeometry is not null)
+        {
+            var fullOverlayBounds = new RectangleGeometry(new Rect(0, 0, TaskConnectorOverlay.Width, TaskConnectorOverlay.Height));
+            path.Clip = new CombinedGeometry(GeometryCombineMode.Exclude, fullOverlayBounds, cardCoverGeometry);
+
+            cardOverlayPath = new System.Windows.Shapes.Path
+            {
+                Data = ((PathGeometry)path.Data).Clone(),
+                Stroke = stroke,
+                StrokeThickness = path.StrokeThickness,
+                Opacity = 0.24,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                Clip = cardCoverGeometry
+            };
+        }
+
         if (!resolved)
         {
             path.StrokeDashArray = [6, 4];
+            if (cardOverlayPath is not null)
+            {
+                cardOverlayPath.StrokeDashArray = [6, 4];
+            }
         }
 
         var connector = new ConnectorVisual
         {
-            Path = path,
+            PrimaryPath = path,
+            CardOverlayPath = cardOverlayPath,
             SourceTaskName = sourceTaskName,
             SourceOutputName = sourceOutputName,
             TargetTaskName = string.IsNullOrWhiteSpace(targetTaskName) ? "(Unnamed Task)" : targetTaskName.Trim(),
@@ -3014,13 +3195,32 @@ public partial class MainWindow : Window
             BindingReference = connector.BindingReference,
             StatusDetail = connector.StatusDetail
         });
+        ApplyConnectorInteractivity(path, connector);
+        if (cardOverlayPath is not null)
+        {
+            cardOverlayPath.ToolTip = path.ToolTip;
+            ApplyConnectorInteractivity(cardOverlayPath, connector);
+        }
+
+        TaskConnectorOverlay.Children.Add(path);
+        if (cardOverlayPath is not null)
+        {
+            TaskConnectorOverlay.Children.Add(cardOverlayPath);
+        }
+        _connectorVisuals.Add(connector);
+        _connectorByPath[path] = connector;
+        if (cardOverlayPath is not null)
+        {
+            _connectorByPath[cardOverlayPath] = connector;
+        }
+    }
+
+    private void ApplyConnectorInteractivity(System.Windows.Shapes.Path path, ConnectorVisual connector)
+    {
         path.Cursor = Cursors.Hand;
         path.MouseEnter += Connector_MouseEnter;
         path.MouseLeave += Connector_MouseLeave;
         path.MouseLeftButtonUp += Connector_MouseLeftButtonUp;
-
-        TaskConnectorOverlay.Children.Add(path);
-        _connectorVisuals.Add(connector);
         _connectorByPath[path] = connector;
     }
 
@@ -3073,9 +3273,12 @@ public partial class MainWindow : Window
 
         foreach (var connector in _connectorVisuals)
         {
-            connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
-            connector.Path.StrokeThickness = connector.Resolved ? 4.4 : 4;
-            connector.Path.Opacity = 0.98;
+            ApplyConnectorVisualStyle(
+                connector,
+                connector.Resolved ? resolvedStroke : unresolvedStroke,
+                connector.Resolved ? 4.4 : 4,
+                primaryOpacity: 0.98,
+                cardOverlayOpacity: 0.24);
         }
     }
 
@@ -3102,23 +3305,51 @@ public partial class MainWindow : Window
 
             if (ReferenceEquals(connector, focal))
             {
-                connector.Path.Stroke = focusedStroke;
-                connector.Path.StrokeThickness = 6.2;
-                connector.Path.Opacity = 1;
+                ApplyConnectorVisualStyle(
+                    connector,
+                    focusedStroke,
+                    6.2,
+                    primaryOpacity: 1,
+                    cardOverlayOpacity: 0.34);
                 continue;
             }
 
             if (relatedIndexes.Contains(i))
             {
-                connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
-                connector.Path.StrokeThickness = connector.Resolved ? 5 : 4.7;
-                connector.Path.Opacity = 1;
+                ApplyConnectorVisualStyle(
+                    connector,
+                    connector.Resolved ? resolvedStroke : unresolvedStroke,
+                    connector.Resolved ? 5 : 4.7,
+                    primaryOpacity: 1,
+                    cardOverlayOpacity: 0.28);
                 continue;
             }
 
-            connector.Path.Stroke = connector.Resolved ? resolvedStroke : unresolvedStroke;
-            connector.Path.StrokeThickness = connector.Resolved ? 3.2 : 3;
-            connector.Path.Opacity = 0.38;
+            ApplyConnectorVisualStyle(
+                connector,
+                connector.Resolved ? resolvedStroke : unresolvedStroke,
+                connector.Resolved ? 3.2 : 3,
+                primaryOpacity: 0.38,
+                cardOverlayOpacity: 0.14);
+        }
+    }
+
+    private static void ApplyConnectorVisualStyle(
+        ConnectorVisual connector,
+        Brush stroke,
+        double strokeThickness,
+        double primaryOpacity,
+        double cardOverlayOpacity)
+    {
+        connector.PrimaryPath.Stroke = stroke;
+        connector.PrimaryPath.StrokeThickness = strokeThickness;
+        connector.PrimaryPath.Opacity = primaryOpacity;
+
+        if (connector.CardOverlayPath is not null)
+        {
+            connector.CardOverlayPath.Stroke = stroke;
+            connector.CardOverlayPath.StrokeThickness = strokeThickness;
+            connector.CardOverlayPath.Opacity = cardOverlayOpacity;
         }
     }
 
@@ -3222,6 +3453,17 @@ public partial class MainWindow : Window
     private void FavoriteGroupButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: string groupName })
+        {
+            return;
+        }
+
+        ToggleFavoriteGroup(groupName);
+        e.Handled = true;
+    }
+
+    private void FavoriteGroupGlyph_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string groupName })
         {
             return;
         }
@@ -3461,30 +3703,7 @@ public partial class MainWindow : Window
 
     private void RibbonDeleteTaskButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
-        {
-            AppMessageBox.Show(this, "No tasks are available in the current group.", "Delete Task", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (!TryGetTask(taskIndex, out var taskToDelete))
-        {
-            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var result = AppMessageBox.Show(this, 
-            $"Delete task '{taskToDelete.Name}' from this group?",
-            "Delete Task",
-            MessageBoxButton.OKCancel,
-            MessageBoxImage.Warning);
-
-        if (result != MessageBoxResult.OK)
-        {
-            return;
-        }
-
-        DeleteTask(taskIndex);
+        TryDeleteFromCurrentContext();
     }
 
     private void RibbonEditTaskButton_Click(object sender, RoutedEventArgs e)
@@ -4304,6 +4523,19 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            TryDeleteFromCurrentContext();
+            e.Handled = true;
+
+            return;
+        }
+
         if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None)
         {
             if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex)
@@ -4390,6 +4622,55 @@ public partial class MainWindow : Window
 
         SelectNextVisibleTask(step: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1);
         e.Handled = true;
+    }
+
+    private bool IsSidebarPaneFocused()
+    {
+        return SidebarPaneBorder?.IsKeyboardFocusWithin == true
+            || GroupsTreeScrollViewer?.IsKeyboardFocusWithin == true
+            || GroupListPanel?.IsKeyboardFocusWithin == true;
+    }
+
+    private void TryDeleteFromCurrentContext()
+    {
+        if (IsSidebarPaneFocused() || _preferGroupDeleteContext)
+        {
+            TryDeleteSelectedGroup();
+            return;
+        }
+
+        TryDeleteSelectedTask();
+    }
+
+    private void TryDeleteSelectedTask()
+    {
+        _preferGroupDeleteContext = false;
+
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
+        {
+            AppMessageBox.Show(this, "No tasks are available in the current group.", "Delete Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryGetTask(taskIndex, out var taskToDelete))
+        {
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = AppMessageBox.Show(
+            this,
+            $"Delete task '{taskToDelete.Name}' from this group?",
+            "Delete Task",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        DeleteTask(taskIndex);
     }
 
     private void SelectNextVisibleTask(int step)
@@ -4693,6 +4974,78 @@ public partial class MainWindow : Window
         SaveTasksAndRefresh(TaskEditorTitle);
     }
 
+    private void TryDeleteSelectedGroup()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            AppMessageBox.Show(this, "No group is selected.", "Delete Group", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var selectedGroup = NormalizeGroupName(_selectedGroupName);
+        var tasksInGroup = _currentConfiguration.Tasks
+            .Where(task => string.Equals(NormalizeGroupName(task.Group), selectedGroup, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (tasksInGroup.Count == 0)
+        {
+            AppMessageBox.Show(this, $"Group '{selectedGroup}' has no tasks to delete.", "Delete Group", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var ritualsWithGroupSteps = _currentConfiguration.Rituals
+            .Where(ritual => ritual.Steps.Any(step =>
+                !string.IsNullOrWhiteSpace(step.Group)
+                && string.Equals(NormalizeGroupName(step.Group), selectedGroup, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        var message = $"Delete group '{selectedGroup}' and {tasksInGroup.Count} task(s)?";
+        if (ritualsWithGroupSteps.Count > 0)
+        {
+            message += Environment.NewLine + Environment.NewLine
+                + $"This will also remove ritual steps that explicitly reference this group in {ritualsWithGroupSteps.Count} ritual(s).";
+        }
+
+        var result = AppMessageBox.Show(
+            this,
+            message,
+            "Delete Group",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        _currentConfiguration.Tasks = _currentConfiguration.Tasks
+            .Where(task => !string.Equals(NormalizeGroupName(task.Group), selectedGroup, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        foreach (var ritual in _currentConfiguration.Rituals)
+        {
+            ritual.Steps = ritual.Steps
+                .Where(step => string.IsNullOrWhiteSpace(step.Group)
+                    || !string.Equals(NormalizeGroupName(step.Group), selectedGroup, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        _currentConfiguration.Rituals = _currentConfiguration.Rituals
+            .Where(ritual => ritual.Steps.Count > 0)
+            .ToList();
+
+        _groupExpandedStates.Remove(selectedGroup);
+        _groupHistoryVisibility.Remove(selectedGroup);
+        _groupOutputVisibility.Remove(selectedGroup);
+        _groupSidebarVisibility.Remove(selectedGroup);
+        _groupOutputHeights.Remove(selectedGroup);
+        _favoriteGroups.Remove(selectedGroup);
+        _favoriteGroupOrder.RemoveAll(groupName => string.Equals(groupName, selectedGroup, StringComparison.OrdinalIgnoreCase));
+        _nonFavoriteGroupsOrder.RemoveAll(groupName => string.Equals(groupName, selectedGroup, StringComparison.OrdinalIgnoreCase));
+
+        SaveTasksAndRefresh("Delete Group");
+    }
+
     private bool IsValidTaskIndex(int taskIndex)
     {
         return _taskCatalogService.IsValidTaskIndex(_currentConfiguration, taskIndex);
@@ -4777,6 +5130,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        _preferGroupDeleteContext = false;
+
         if (button.Parent is Grid card && card.Tag is TaskCardVisual visual)
         {
             _selectedTaskIndex = visual.TaskIndex;
@@ -4831,11 +5186,6 @@ public partial class MainWindow : Window
 
             if (!result.Succeeded)
             {
-                AppMessageBox.Show(this, 
-                    $"Chain stopped at '{taskInfo.Task.Name}' (step {chainLabel}) due to failure.",
-                    "Chain Execution",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
                 return;
             }
         }
@@ -4919,7 +5269,7 @@ public partial class MainWindow : Window
                 {
                     Dispatcher.BeginInvoke(() =>
                     {
-                        AppendLog(outputTextBox, isError ? $"[stderr] {line}" : $"[stdout] {line}");
+                        AppendStreamOutputLine(outputTextBox, isError ? "stderr" : "stdout", line);
                     });
                 },
                 cancellationToken: taskCancellationSource.Token);
@@ -4942,10 +5292,6 @@ public partial class MainWindow : Window
                 else
                 {
                     AppendLog(outputTextBox, $"[{task.Name}] Failed to execute task. {executionResult.FailureMessage}");
-                    AppMessageBox.Show(this, $"Failed to run task '{task.Name}'.\n{executionResult.FailureMessage}",
-                        "Task Execution Error",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error);
                 }
 
                 SetTabStopped(tabContext, false);
@@ -5010,6 +5356,10 @@ public partial class MainWindow : Window
             {
                 AppendLog(outputTextBox, $"[{task.Name}] Execution cancelled.");
             }
+            else if (!isSuccessfulExit && !string.IsNullOrWhiteSpace(executionResult.FailureMessage))
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] {executionResult.FailureMessage}");
+            }
 
             if (executionResult.OutputTruncated)
             {
@@ -5047,10 +5397,6 @@ public partial class MainWindow : Window
             SetTabStopped(tabContext, false);
             SetTaskRunState(task, TaskRunState.Failed);
             CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
-            AppMessageBox.Show(this, $"Failed to run task '{task.Name}'.\n{ex.Message}",
-                "Task Execution Error",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
             return new TaskExecutionResult { Succeeded = false, ExitCode = null };
         }
         finally
@@ -5650,8 +5996,154 @@ public partial class MainWindow : Window
     private void AppendLog(RichTextBox outputTextBox, string message)
     {
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-        AppendPlainText(outputTextBox, $"[{timestamp}] {message}{Environment.NewLine}{Environment.NewLine}");
+        var paragraph = EnsureOutputParagraph(outputTextBox);
+        AppendTimestampRun(paragraph, timestamp);
+        paragraph.Inlines.Add(new Run(" "));
+        AppendTaggedMessageRuns(paragraph, message);
+        paragraph.Inlines.Add(new Run(Environment.NewLine + Environment.NewLine));
         outputTextBox.ScrollToEnd();
+    }
+
+    private void AppendStreamOutputLine(RichTextBox outputTextBox, string streamName, string line)
+    {
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var paragraph = EnsureOutputParagraph(outputTextBox);
+        AppendTimestampRun(paragraph, timestamp);
+        paragraph.Inlines.Add(new Run(" "));
+
+        var streamTagBrush = streamName.Equals("stderr", StringComparison.OrdinalIgnoreCase)
+            ? StderrTagBrush
+            : StdoutTagBrush;
+
+        paragraph.Inlines.Add(new Run($"[{streamName}]")
+        {
+            Foreground = streamTagBrush,
+            FontWeight = FontWeights.SemiBold
+        });
+        paragraph.Inlines.Add(new Run(" "));
+
+        AppendAnsiText(outputTextBox, line);
+        AppendPlainText(outputTextBox, Environment.NewLine + Environment.NewLine);
+        outputTextBox.ScrollToEnd();
+    }
+
+    private static void AppendTimestampRun(Paragraph paragraph, string timestamp)
+    {
+        paragraph.Inlines.Add(new Run($"[{timestamp}]")
+        {
+            Foreground = TimestampBrush,
+            FontWeight = FontWeights.SemiBold
+        });
+    }
+
+    private static void AppendTaggedMessageRuns(Paragraph paragraph, string message)
+    {
+        if (string.IsNullOrEmpty(message))
+        {
+            return;
+        }
+
+        var index = 0;
+
+        while (index < message.Length && message[index] == '[')
+        {
+            var closeBracket = message.IndexOf(']', index + 1);
+            if (closeBracket < 0)
+            {
+                break;
+            }
+
+            var tag = message.Substring(index, closeBracket - index + 1);
+            paragraph.Inlines.Add(new Run(tag)
+            {
+                Foreground = ResolveTagBrush(tag),
+                FontWeight = FontWeights.SemiBold
+            });
+
+            index = closeBracket + 1;
+            while (index < message.Length && message[index] == ' ')
+            {
+                paragraph.Inlines.Add(new Run(" "));
+                index++;
+            }
+        }
+
+        if (index < message.Length)
+        {
+            AppendOutcomeHighlightedText(paragraph, message[index..]);
+        }
+    }
+
+    private static void AppendOutcomeHighlightedText(Paragraph paragraph, string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        var currentIndex = 0;
+        foreach (Match match in OutcomeWordRegex.Matches(text))
+        {
+            if (match.Index > currentIndex)
+            {
+                paragraph.Inlines.Add(new Run(text[currentIndex..match.Index]));
+            }
+
+            var matchedText = match.Value;
+            paragraph.Inlines.Add(new Run(matchedText)
+            {
+                Foreground = ResolveOutcomeWordBrush(matchedText),
+                FontWeight = FontWeights.SemiBold
+            });
+
+            currentIndex = match.Index + match.Length;
+        }
+
+        if (currentIndex < text.Length)
+        {
+            paragraph.Inlines.Add(new Run(text[currentIndex..]));
+        }
+    }
+
+    private static Brush ResolveOutcomeWordBrush(string matchedText)
+    {
+        if (matchedText.Equals("passed", StringComparison.OrdinalIgnoreCase))
+        {
+            return PassedWordBrush;
+        }
+
+        if (matchedText.Equals("failed", StringComparison.OrdinalIgnoreCase))
+        {
+            return FailedWordBrush;
+        }
+
+        if (matchedText.Equals("cancelled", StringComparison.OrdinalIgnoreCase)
+            || matchedText.Equals("canceled", StringComparison.OrdinalIgnoreCase))
+        {
+            return CancelledWordBrush;
+        }
+
+        return TimeoutWordBrush;
+    }
+
+    private static Brush ResolveTagBrush(string tag)
+    {
+        if (tag.Equals("[stdout]", StringComparison.OrdinalIgnoreCase))
+        {
+            return StdoutTagBrush;
+        }
+
+        if (tag.Equals("[stderr]", StringComparison.OrdinalIgnoreCase))
+        {
+            return StderrTagBrush;
+        }
+
+        if (tag.Equals("[Validation]", StringComparison.OrdinalIgnoreCase))
+        {
+            return ValidationTagBrush;
+        }
+
+        return GenericTagBrush;
     }
 
     private static void AppendAnsiText(RichTextBox outputTextBox, string text)
@@ -5808,4 +6300,15 @@ public partial class MainWindow : Window
 
         public bool Bold { get; set; }
     }
+
+    private static readonly Brush TimestampBrush = new SolidColorBrush(Color.FromRgb(0x9A, 0xA6, 0xB2));
+    private static readonly Brush StdoutTagBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+    private static readonly Brush StderrTagBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+    private static readonly Brush ValidationTagBrush = new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0xE5));
+    private static readonly Brush GenericTagBrush = new SolidColorBrush(Color.FromRgb(0x26, 0xC6, 0xDA));
+    private static readonly Brush PassedWordBrush = new SolidColorBrush(Color.FromRgb(0x66, 0xBB, 0x6A));
+    private static readonly Brush FailedWordBrush = new SolidColorBrush(Color.FromRgb(0xEF, 0x53, 0x50));
+    private static readonly Brush TimeoutWordBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xA7, 0x26));
+    private static readonly Brush CancelledWordBrush = new SolidColorBrush(Color.FromRgb(0xAB, 0x47, 0xBC));
+    private static readonly Regex OutcomeWordRegex = new(@"\b(passed|failed|timeout|timed\s*out|cancelled|canceled)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 }

@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Add Task"
         Width="760"
-        Height="680"
+        Height="860"
         MinWidth="640"
-        MinHeight="560"
+        MinHeight="680"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize"
         ShowInTaskbar="False"
@@ -82,6 +82,147 @@
         <Style x:Key="PrimaryDialogButtonStyle" TargetType="Button" BasedOn="{StaticResource DialogButtonStyle}">
             <Setter Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
         </Style>
+
+        <Style x:Key="ThemedEditableComboBoxStyle" TargetType="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Grid.Resources>
+                                <Style x:Key="ComboEditableTextBoxStyle" TargetType="TextBox">
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                    <Setter Property="BorderBrush" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Setter Property="Padding" Value="0" />
+                                    <Setter Property="VerticalContentAlignment" Value="Center" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="TextBox">
+                                                <ScrollViewer x:Name="PART_ContentHost" />
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+
+                                <Style x:Key="ComboDropDownToggleStyle" TargetType="ToggleButton">
+                                    <Setter Property="Focusable" Value="False" />
+                                    <Setter Property="Background" Value="Transparent" />
+                                    <Setter Property="BorderBrush" Value="Transparent" />
+                                    <Setter Property="BorderThickness" Value="0" />
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ToggleButton">
+                                                <Border Background="Transparent" BorderThickness="0" />
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </Grid.Resources>
+
+                            <Border x:Name="OuterBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6"
+                                    SnapsToDevicePixels="True">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="28" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <ContentPresenter x:Name="SelectionContent"
+                                                      Grid.Column="0"
+                                                      Margin="{TemplateBinding Padding}"
+                                                      VerticalAlignment="Center"
+                                                      HorizontalAlignment="Left"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                                      RecognizesAccessKey="True" />
+
+                                    <TextBox x:Name="PART_EditableTextBox"
+                                             Grid.Column="0"
+                                             Margin="{TemplateBinding Padding}"
+                                             Padding="0"
+                                             VerticalContentAlignment="Center"
+                                             VerticalAlignment="Center"
+                                             HorizontalAlignment="Stretch"
+                                             Background="Transparent"
+                                             Foreground="{TemplateBinding Foreground}"
+                                             BorderThickness="0"
+                                             Style="{StaticResource ComboEditableTextBoxStyle}"
+                                             Visibility="Hidden"
+                                             IsReadOnly="{TemplateBinding IsReadOnly}" />
+
+                                    <Border Grid.Column="1" Background="Transparent" BorderThickness="0">
+                                        <Path Data="M 0 0 L 8 0 L 4 4 Z"
+                                              Fill="{DynamicResource PrimaryTextBrush}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Stretch="None" />
+                                    </Border>
+                                </Grid>
+                            </Border>
+
+                            <ToggleButton x:Name="DropDownToggle"
+                                          Background="Transparent"
+                                          BorderBrush="Transparent"
+                                          BorderThickness="0"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Style="{StaticResource ComboDropDownToggleStyle}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
+
+                            <Popup x:Name="PART_Popup"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   PopupAnimation="Slide">
+                                <Border Margin="0,4,0,0"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        Background="{DynamicResource PanelBackgroundBrush}"
+                                        BorderBrush="{DynamicResource InputBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        SnapsToDevicePixels="True">
+                                    <ScrollViewer Margin="2"
+                                                  SnapsToDevicePixels="True"
+                                                  Background="{DynamicResource PanelBackgroundBrush}"
+                                                  CanContentScroll="True">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="SelectionContent" Property="Visibility" Value="Collapsed" />
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="OuterBorder" Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{DynamicResource ConnectorFocusedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="OuterBorder" Property="Opacity" Value="0.55" />
+                                <Setter Property="Opacity" Value="0.55" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid Margin="18">
@@ -109,6 +250,15 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
@@ -124,10 +274,28 @@
                     <TextBox x:Name="DescriptionTextBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" />
 
                     <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Group" />
-                    <TextBox x:Name="GroupTextBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="General" />
+                    <ComboBox x:Name="GroupComboBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" IsEditable="True" Style="{StaticResource ThemedEditableComboBoxStyle}">
+                        <ComboBox.ItemContainerStyle>
+                            <Style TargetType="ComboBoxItem">
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+                                <Setter Property="Padding" Value="8,4" />
+                                <Style.Triggers>
+                                    <Trigger Property="IsHighlighted" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource TabHeaderHoverBackgroundBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
+                    </ComboBox>
 
                     <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
-                    <ComboBox x:Name="RunnerComboBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0">
+                    <ComboBox x:Name="RunnerComboBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
                         <ComboBox.ItemContainerStyle>
                             <Style TargetType="ComboBoxItem">
                                 <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
@@ -174,11 +342,44 @@
                               VerticalAlignment="Center"
                               Content="Ignore non-zero exit code (treat as success)" />
 
-                    <TextBlock Grid.Row="8" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
-                    <TextBlock Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
+                    <CheckBox x:Name="WaitForExitCheckBox"
+                              Grid.Row="8"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="2"
+                              Margin="0,0,0,12"
+                              VerticalAlignment="Center"
+                              IsChecked="True"
+                              Content="Wait for task process to exit before completing" />
+
+                    <CheckBox x:Name="KillProcessTreeOnCancelCheckBox"
+                              Grid.Row="9"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="2"
+                              Margin="0,0,0,12"
+                              VerticalAlignment="Center"
+                              IsChecked="True"
+                              Content="Cancel kills full process tree" />
+
+                    <TextBlock Grid.Row="10" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Timeout (sec)" />
+                    <TextBox x:Name="TimeoutSecondsTextBox" Grid.Row="10" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="600" />
+
+                    <TextBlock Grid.Row="11" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
+                    <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="11" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="65536" />
+
+                    <CheckBox x:Name="IsEnabledCheckBox"
+                              Grid.Row="12"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="2"
+                              Margin="0,0,0,12"
+                              VerticalAlignment="Center"
+                              IsChecked="True"
+                              Content="Task is enabled" />
+
+                    <TextBlock Grid.Row="13" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                    <TextBlock Grid.Row="13" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
 
                     <TextBox x:Name="EnvVarsTextBox"
-                             Grid.Row="9"
+                             Grid.Row="14"
                              Grid.Column="0"
                              Grid.ColumnSpan="3"
                              AcceptsReturn="True"
@@ -186,7 +387,9 @@
                              HorizontalScrollBarVisibility="Auto"
                              TextWrapping="NoWrap"
                              FontFamily="{DynamicResource AppMonoFontFamily}"
-                             MinHeight="200" />
+                             MinHeight="100"
+                             Margin="0,0,0,12" />
+
                 </Grid>
             </ScrollViewer>
         </Border>

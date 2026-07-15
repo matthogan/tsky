@@ -20,12 +20,6 @@
       "items": {
         "$ref": "#/$defs/group"
       }
-    },
-    "rituals": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/ritual"
-      }
     }
   },
   "$defs": {
@@ -69,31 +63,6 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/task"
-          }
-        }
-      }
-    },
-    "ritualStep": {
-      "type": "object",
-      "additionalProperties": true,
-      "properties": {
-        "taskName": { "type": "string" },
-        "group": { "type": ["string", "null"] },
-        "delayMs": { "type": "integer" },
-        "continueOnError": { "type": "boolean" },
-        "waitForExit": { "type": ["boolean", "null"] }
-      }
-    },
-    "ritual": {
-      "type": "object",
-      "additionalProperties": true,
-      "properties": {
-        "name": { "type": "string" },
-        "description": { "type": ["string", "null"] },
-        "steps": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ritualStep"
           }
         }
       }

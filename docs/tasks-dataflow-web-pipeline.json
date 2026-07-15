@@ -233,23 +233,5 @@
         }
       ]
     }
-  ],
-  "rituals": [
-    {
-      "name": "Run Web Intelligence Pipeline",
-      "description": "Executes all ten pipeline stages in order.",
-      "steps": [
-        { "taskName": "1 - Seed Pipeline Context", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "2 - Fetch And Extract HN Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "3 - Fetch And Extract DevTo Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "4 - Merge And Normalize Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "5 - Score Headlines", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "6 - Build API Payload", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "7 - Post Payload To API", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "8 - Build CSV Summary", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "9 - Build Markdown Report", "group": "Web Intelligence Pipeline", "continueOnError": false },
-        { "taskName": "10 - Persist Report To Docs", "group": "Web Intelligence Pipeline", "continueOnError": false }
-      ]
-    }
   ]
 }

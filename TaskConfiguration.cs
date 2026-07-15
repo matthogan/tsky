@@ -22,8 +22,6 @@ public sealed class TaskConfiguration
 
     public List<LauncherTaskGroup> Groups { get; set; } = [];
 
-    public List<RitualDefinition> Rituals { get; set; } = [];
-
     public static string GetCurrentDirectoryConfigPath()
     {
         return Path.Combine(Environment.CurrentDirectory, "tasks.json");
@@ -121,10 +119,8 @@ public sealed class TaskConfiguration
             if (!TryValidateSchemaVersion(root, out error)
                 || !TryValidateArrayProperty(root, "tasks", out error)
                 || !TryValidateArrayProperty(root, "groups", out error)
-                || !TryValidateArrayProperty(root, "rituals", out error)
                 || !TryValidateTasks(root, out error)
-                || !TryValidateGroups(root, out error)
-                || !TryValidateRituals(root, out error))
+                || !TryValidateGroups(root, out error))
             {
                 return false;
             }
@@ -206,14 +202,11 @@ public sealed class TaskConfiguration
 
         tasks = MergeTasks([], tasks);
 
-        var rituals = NormalizeRituals(fileModel.Rituals);
-
         var normalizedGroups = BuildGroups(tasks);
         return new TaskConfiguration
         {
             Tasks = tasks,
-            Groups = normalizedGroups,
-            Rituals = rituals
+            Groups = normalizedGroups
         };
     }
 
@@ -224,8 +217,7 @@ public sealed class TaskConfiguration
         {
             SchemaVersion = CurrentSchemaVersion,
             Groups = groups,
-            Tasks = null,
-            Rituals = config.Rituals
+            Tasks = null
         };
     }
 
@@ -382,62 +374,6 @@ public sealed class TaskConfiguration
             || !TryValidateStringDictionary(task, "outputs", out error))
         {
             return false;
-        }
-
-        return true;
-    }
-
-    private static bool TryValidateRituals(JsonElement root, out string error)
-    {
-        error = string.Empty;
-
-        if (!TryGetPropertyIgnoreCase(root, "rituals", out var ritualsElement)
-            || ritualsElement.ValueKind == JsonValueKind.Null)
-        {
-            return true;
-        }
-
-        foreach (var ritual in ritualsElement.EnumerateArray())
-        {
-            if (ritual.ValueKind != JsonValueKind.Object)
-            {
-                error = "Each item in rituals must be an object.";
-                return false;
-            }
-
-            if (!TryValidateStringProperty(ritual, "name", out error)
-                || !TryValidateStringProperty(ritual, "description", out error, allowNull: true))
-            {
-                return false;
-            }
-
-            if (TryGetPropertyIgnoreCase(ritual, "steps", out var stepsElement)
-                && stepsElement.ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
-            {
-                error = "rituals[].steps must be an array when provided.";
-                return false;
-            }
-
-            if (stepsElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var step in stepsElement.EnumerateArray())
-                {
-                    if (step.ValueKind != JsonValueKind.Object)
-                    {
-                        error = "Each ritual step must be an object.";
-                        return false;
-                    }
-
-                    if (!TryValidateStringProperty(step, "taskName", out error)
-                        || !TryValidateStringProperty(step, "group", out error, allowNull: true)
-                        || !TryValidateIntegerProperty(step, "delayMs", out error)
-                        || !TryValidateBooleanProperty(step, "continueOnError", out error)
-                        || !TryValidateBooleanProperty(step, "waitForExit", out error, allowNull: true))
-                    {
-                        return false;
-                    }
-                }
-            }
         }
 
         return true;
@@ -619,13 +555,11 @@ public sealed class TaskConfiguration
     private static TaskConfiguration MergeConfigurations(TaskConfiguration baseConfig, TaskConfiguration overlayConfig)
     {
         var mergedTasks = MergeTasks(baseConfig.Tasks, overlayConfig.Tasks);
-        var mergedRituals = MergeRituals(baseConfig.Rituals, overlayConfig.Rituals);
 
         return new TaskConfiguration
         {
             Tasks = mergedTasks,
-            Groups = BuildGroups(mergedTasks),
-            Rituals = mergedRituals
+            Groups = BuildGroups(mergedTasks)
         };
     }
 
@@ -702,84 +636,11 @@ public sealed class TaskConfiguration
         return ordered;
     }
 
-    private static List<RitualDefinition> MergeRituals(IReadOnlyList<RitualDefinition> baseRituals, IReadOnlyList<RitualDefinition> overlayRituals)
-    {
-        var merged = new List<RitualDefinition>();
-        var indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-        AddRituals(baseRituals);
-        AddRituals(overlayRituals);
-
-        return merged;
-
-        void AddRituals(IReadOnlyList<RitualDefinition> source)
-        {
-            for (var index = 0; index < source.Count; index++)
-            {
-                var ritual = source[index];
-                if (string.IsNullOrWhiteSpace(ritual.Name))
-                {
-                    continue;
-                }
-
-                var ritualName = ritual.Name.Trim();
-                if (indexByName.TryGetValue(ritualName, out var existingIndex))
-                {
-                    merged[existingIndex] = ritual;
-                    continue;
-                }
-
-                indexByName[ritualName] = merged.Count;
-                merged.Add(ritual);
-            }
-        }
-    }
-
     private static string BuildTaskIdentityKey(string? groupName, string? taskName)
     {
         return TaskIdentity.BuildKey(groupName, taskName);
     }
 
-    private static List<RitualDefinition> NormalizeRituals(List<RitualDefinition>? rituals)
-    {
-        if (rituals is null || rituals.Count == 0)
-        {
-            return [];
-        }
-
-        var normalized = new List<RitualDefinition>();
-
-        foreach (var ritual in rituals)
-        {
-            if (string.IsNullOrWhiteSpace(ritual.Name))
-            {
-                continue;
-            }
-
-            ritual.Name = ritual.Name.Trim();
-            ritual.Steps ??= [];
-
-            ritual.Steps = ritual.Steps
-                .Where(step => !string.IsNullOrWhiteSpace(step.TaskName))
-                .Select(step =>
-                {
-                    step.TaskName = step.TaskName.Trim();
-                    step.Group = string.IsNullOrWhiteSpace(step.Group) ? null : step.Group.Trim();
-                    step.DelayMs = Math.Max(0, step.DelayMs);
-                    return step;
-                })
-                .ToList();
-
-            if (ritual.Steps.Count == 0)
-            {
-                continue;
-            }
-
-            normalized.Add(ritual);
-        }
-
-        return normalized;
-    }
 }
 
 public sealed class LauncherTaskGroup
@@ -796,30 +657,6 @@ public sealed class TaskConfigurationFileModel
     public List<LauncherTask>? Tasks { get; set; }
 
     public List<LauncherTaskGroup>? Groups { get; set; }
-
-    public List<RitualDefinition>? Rituals { get; set; }
-}
-
-public sealed class RitualDefinition
-{
-    public string Name { get; set; } = string.Empty;
-
-    public string? Description { get; set; }
-
-    public List<RitualStepDefinition> Steps { get; set; } = [];
-}
-
-public sealed class RitualStepDefinition
-{
-    public string TaskName { get; set; } = string.Empty;
-
-    public string? Group { get; set; }
-
-    public int DelayMs { get; set; }
-
-    public bool ContinueOnError { get; set; }
-
-    public bool? WaitForExit { get; set; }
 }
 
 public sealed class LauncherTask

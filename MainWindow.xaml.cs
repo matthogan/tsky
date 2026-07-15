@@ -80,7 +80,6 @@ public partial class MainWindow : Window
     private readonly ImportExportService _importExportService = new();
     private readonly DataflowGraphService _dataflowGraphService = new();
     private bool _isReplayingHistoryBatch;
-    private bool _isRunningRitual;
     private bool _isHistoryDetailsVisible = true;
     private double _historyListPaneRatio = DefaultHistoryListPaneRatio;
     private int? _portEditorTaskIndex;
@@ -287,6 +286,7 @@ public partial class MainWindow : Window
             get
             {
                 var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+
                 var statusText = Entry.Outcome switch
                 {
                     TaskRunOutcome.Started => "BG",
@@ -672,6 +672,12 @@ public partial class MainWindow : Window
             .ToList();
 
         _uiState.HistoryListPaneRatio = _historyListPaneRatio;
+
+        // Preserve dialog-specific persisted dimensions written during this app session.
+        var currentPersistedState = UiStateStore.Load();
+        _uiState.AddTaskDialogWidth = currentPersistedState.AddTaskDialogWidth;
+        _uiState.AddTaskDialogHeight = currentPersistedState.AddTaskDialogHeight;
+
         UiStateStore.Save(_uiState);
     }
 
@@ -752,8 +758,6 @@ public partial class MainWindow : Window
         }
 
         RebuildGroupsMenu(groupNames);
-        RebuildRitualsMenu();
-        RebuildSidebarRitualsSection();
         RebuildGroupNavigator(GetGroupSidebarItems(groupNames));
         if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
         {
@@ -989,22 +993,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SidebarRitualsExpander_Expanded(object sender, RoutedEventArgs e)
-    {
-        if (RitualsSectionChevronText is not null)
-        {
-            RitualsSectionChevronText.Text = "▼";
-        }
-    }
-
-    private void SidebarRitualsExpander_Collapsed(object sender, RoutedEventArgs e)
-    {
-        if (RitualsSectionChevronText is not null)
-        {
-            RitualsSectionChevronText.Text = "▶";
-        }
-    }
-
     private void SidebarTaskRowButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: SidebarTaskSelectionTarget target })
@@ -1157,427 +1145,6 @@ public partial class MainWindow : Window
             Command = NextGroupCommand,
             Style = (Style)Resources["AppMenuItemStyle"]
         });
-    }
-
-    private void RebuildRitualsMenu()
-    {
-        RitualsMenuItem.Items.Clear();
-
-        var rituals = _currentConfiguration.Rituals
-            .OrderBy(ritual => ritual.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        if (rituals.Count == 0)
-        {
-            RitualsMenuItem.Items.Add(new MenuItem
-            {
-                Header = "(No rituals)",
-                IsEnabled = false,
-                Style = (Style)Resources["AppMenuItemStyle"]
-            });
-        }
-
-        foreach (var ritual in rituals)
-        {
-            var parentItem = new MenuItem
-            {
-                Header = ritual.Name,
-                ToolTip = ritual.Description,
-                Tag = ritual,
-                Style = (Style)Resources["AppMenuItemStyle"]
-            };
-
-            var runItem = new MenuItem
-            {
-                Header = "Run",
-                Tag = ritual,
-                Style = (Style)Resources["AppMenuItemStyle"]
-            };
-            runItem.Click += RitualMenuEntry_Click;
-
-            var editItem = new MenuItem
-            {
-                Header = "Edit...",
-                Tag = ritual,
-                Style = (Style)Resources["AppMenuItemStyle"]
-            };
-            editItem.Click += EditRitualMenuEntry_Click;
-
-            parentItem.Items.Add(runItem);
-            parentItem.Items.Add(editItem);
-
-            RitualsMenuItem.Items.Add(parentItem);
-        }
-
-        RitualsMenuItem.Items.Add(new Separator());
-        RitualsMenuItem.Items.Add(new MenuItem
-        {
-            Header = "Define Ritual From Current Group",
-            Style = (Style)Resources["AppMenuItemStyle"],
-            IsEnabled = HasSelectedGroupTasks(),
-            Command = null
-        });
-
-        if (RitualsMenuItem.Items[^1] is MenuItem defineItem)
-        {
-            defineItem.Click += DefineRitualFromCurrentGroupMenuItem_Click;
-        }
-
-        RitualsMenuItem.IsEnabled = true;
-    }
-
-    private void RebuildSidebarRitualsSection()
-    {
-        SidebarRitualsListPanel.Children.Clear();
-
-        var rituals = _currentConfiguration.Rituals
-            .OrderBy(ritual => ritual.Name, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        SidebarRitualsCountText.Text = $"({rituals.Count})";
-
-        if (rituals.Count == 0)
-        {
-            SidebarRitualsListPanel.Children.Add(new TextBlock
-            {
-                Text = "No rituals defined",
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
-                FontSize = 11,
-                Margin = new Thickness(2, 2, 2, 2)
-            });
-
-            return;
-        }
-
-        foreach (var ritual in rituals)
-        {
-            var row = new DockPanel
-            {
-                Margin = new Thickness(0, 1, 0, 3),
-                LastChildFill = true,
-                Height = 28
-            };
-
-            var runButton = new Button
-            {
-                Content = "▶",
-                Tag = ritual,
-                Width = 20,
-                Height = 20,
-                Margin = new Thickness(0, 0, 4, 0),
-                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38)),
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9B, 0xB5, 0x6A)),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
-                ToolTip = "Run ritual"
-            };
-            runButton.Click += SidebarRunRitualButton_Click;
-            DockPanel.SetDock(runButton, Dock.Left);
-
-            var editButton = new Button
-            {
-                Content = "✎",
-                Tag = ritual,
-                Width = 20,
-                Height = 20,
-                Margin = new Thickness(0, 0, 6, 0),
-                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38)),
-                Foreground = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)),
-                BorderThickness = new Thickness(0),
-                Cursor = Cursors.Hand,
-                ToolTip = "Edit ritual"
-            };
-            editButton.Click += SidebarEditRitualButton_Click;
-            DockPanel.SetDock(editButton, Dock.Left);
-
-            var ritualNameText = new TextBlock
-            {
-                Text = ritual.Name,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xB7, 0xC0, 0xC8)),
-                FontSize = 11,
-                VerticalAlignment = VerticalAlignment.Center,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                ToolTip = ritual.Description
-            };
-
-            row.Children.Add(runButton);
-            row.Children.Add(editButton);
-            row.Children.Add(ritualNameText);
-            SidebarRitualsListPanel.Children.Add(row);
-        }
-    }
-
-    private async void SidebarRunRitualButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: RitualDefinition ritual })
-        {
-            return;
-        }
-
-        await ExecuteRitualAsync(ritual);
-    }
-
-    private void SidebarEditRitualButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: RitualDefinition ritual })
-        {
-            return;
-        }
-
-        EditRitualMenuEntry_Click(new MenuItem { Tag = ritual }, new RoutedEventArgs());
-    }
-
-    private bool HasSelectedGroupTasks()
-    {
-        if (string.IsNullOrWhiteSpace(_selectedGroupName))
-        {
-            return false;
-        }
-
-        return _currentConfiguration.Tasks.Any(task =>
-            string.Equals(NormalizeGroupName(task.Group), _selectedGroupName, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private void DefineRitualFromCurrentGroupMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(_selectedGroupName))
-        {
-            AppMessageBox.Show(this, "Select a group first.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var groupName = NormalizeGroupName(_selectedGroupName);
-
-        var orderedGroupTasks = _visibleTaskIndexes.Count > 0
-            ? _visibleTaskIndexes.Select(index => _currentConfiguration.Tasks[index]).ToList()
-            : _currentConfiguration.Tasks
-                .Where(task => string.Equals(NormalizeGroupName(task.Group), groupName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-        if (orderedGroupTasks.Count == 0)
-        {
-            AppMessageBox.Show(this, $"No tasks are available in group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var ritualName = $"{groupName} Ritual";
-        var ritual = new RitualDefinition
-        {
-            Name = ritualName,
-            Description = $"Auto-generated from group '{groupName}'.",
-            Steps = orderedGroupTasks
-                .Where(task => !string.IsNullOrWhiteSpace(task.Name))
-                .Select(task => new RitualStepDefinition
-                {
-                    TaskName = task.Name.Trim(),
-                    Group = NormalizeGroupName(task.Group),
-                    DelayMs = 0,
-                    ContinueOnError = false
-                })
-                .ToList()
-        };
-
-        if (ritual.Steps.Count == 0)
-        {
-            AppMessageBox.Show(this, $"Group '{groupName}' has no named tasks to include in a ritual.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        var existingIndex = _currentConfiguration.Rituals.FindIndex(existing =>
-            string.Equals(existing.Name, ritualName, StringComparison.OrdinalIgnoreCase));
-
-        var wasUpdate = existingIndex >= 0;
-        if (wasUpdate)
-        {
-            _currentConfiguration.Rituals[existingIndex] = ritual;
-        }
-        else
-        {
-            _currentConfiguration.Rituals.Add(ritual);
-        }
-
-        if (!TryPersistConfiguration("Ritual Chains", "Failed to save ritual."))
-        {
-            return;
-        }
-
-        var actionText = wasUpdate ? "updated" : "created";
-        AppMessageBox.Show(this, $"Ritual '{ritualName}' {actionText} from group '{groupName}'.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
-    }
-
-    private async void RitualMenuEntry_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem { Tag: RitualDefinition ritual })
-        {
-            return;
-        }
-
-        await ExecuteRitualAsync(ritual);
-    }
-
-    private void EditRitualMenuEntry_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not MenuItem { Tag: RitualDefinition ritual })
-        {
-            return;
-        }
-
-        var editor = new RitualEditorWindow(ritual) { Owner = this };
-        if (editor.ShowDialog() != true || editor.UpdatedRitual is null)
-        {
-            return;
-        }
-
-        var updated = editor.UpdatedRitual;
-        var index = _currentConfiguration.Rituals.FindIndex(existing =>
-            string.Equals(existing.Name, ritual.Name, StringComparison.OrdinalIgnoreCase));
-
-        if (index < 0)
-        {
-            AppMessageBox.Show(this, "Ritual no longer exists. Reload and try again.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        if (!string.Equals(updated.Name, ritual.Name, StringComparison.OrdinalIgnoreCase) &&
-            _currentConfiguration.Rituals.Any(existing => string.Equals(existing.Name, updated.Name, StringComparison.OrdinalIgnoreCase)))
-        {
-            AppMessageBox.Show(this, $"A ritual named '{updated.Name}' already exists.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        _currentConfiguration.Rituals[index] = updated;
-
-        if (!TryPersistConfiguration("Ritual Chains", "Failed to save ritual edits."))
-        {
-            return;
-        }
-    }
-
-    private async Task ExecuteRitualAsync(RitualDefinition ritual)
-    {
-        if (_isRunningRitual)
-        {
-            AppMessageBox.Show(this, "A ritual is already running.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        if (ritual.Steps.Count == 0)
-        {
-            AppMessageBox.Show(this, $"Ritual '{ritual.Name}' has no steps.", "Ritual Chains", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        _isRunningRitual = true;
-        var tabContext = CreateOutputTab($"Ritual: {ritual.Name}");
-        SetTabRunning(tabContext);
-        var dataflowContext = new DataflowContext();
-
-        try
-        {
-            AppendLog(tabContext.OutputTextBox, $"[Ritual] Starting '{ritual.Name}' with {ritual.Steps.Count} steps.");
-
-            for (var stepIndex = 0; stepIndex < ritual.Steps.Count; stepIndex++)
-            {
-                var step = ritual.Steps[stepIndex];
-                var label = $"{stepIndex + 1}/{ritual.Steps.Count}";
-
-                if (step.DelayMs > 0)
-                {
-                    AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: waiting {step.DelayMs}ms before '{step.TaskName}'.");
-                    await Task.Delay(step.DelayMs);
-                }
-
-                var stepTask = ResolveRitualStepTask(step);
-                if (stepTask is null)
-                {
-                    var missingText = string.IsNullOrWhiteSpace(step.Group)
-                        ? $"Task '{step.TaskName}' was not found."
-                        : $"Task '{step.TaskName}' in group '{step.Group}' was not found.";
-
-                    AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: {missingText}");
-
-                    if (!step.ContinueOnError)
-                    {
-                        AppendLog(tabContext.OutputTextBox, "[Ritual] Stopped due to missing task and continueOnError=false.");
-                        SetTabStopped(tabContext, false);
-                        return;
-                    }
-
-                    continue;
-                }
-
-                if (!IsTaskEnabled(stepTask))
-                {
-                    AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: skipped disabled task '{stepTask.Name}'.");
-                    continue;
-                }
-
-                var effectiveTask = CreateRitualStepExecutionTask(stepTask, step);
-                AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: running '{effectiveTask.Name}' (waitForExit={effectiveTask.WaitForExit}).");
-                SelectGroup(NormalizeGroupName(effectiveTask.Group));
-                var result = await ExecuteTaskAsync(
-                    effectiveTask,
-                    null,
-                    isReplay: false,
-                    dataflowContext: dataflowContext,
-                    chainStepLabel: $"ritual {label}");
-
-                if (!result.Succeeded)
-                {
-                    AppendLog(tabContext.OutputTextBox, $"[Ritual] Step {label}: task '{effectiveTask.Name}' failed.");
-
-                    if (!step.ContinueOnError)
-                    {
-                        AppendLog(tabContext.OutputTextBox, "[Ritual] Stopped due to continueOnError=false.");
-                        SetTabStopped(tabContext, false);
-                        return;
-                    }
-                }
-            }
-
-            AppendLog(tabContext.OutputTextBox, $"[Ritual] '{ritual.Name}' completed.");
-            SetTabStopped(tabContext, true);
-        }
-        finally
-        {
-            _isRunningRitual = false;
-        }
-    }
-
-    private LauncherTask? ResolveRitualStepTask(RitualStepDefinition step)
-    {
-        var matches = _currentConfiguration.Tasks
-            .Where(task => string.Equals(task.Name.Trim(), step.TaskName, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (!string.IsNullOrWhiteSpace(step.Group))
-        {
-            matches = matches
-                .Where(task => string.Equals(NormalizeGroupName(task.Group), NormalizeGroupName(step.Group), StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-
-        return matches.FirstOrDefault();
-    }
-
-    private static LauncherTask CreateRitualStepExecutionTask(LauncherTask sourceTask, RitualStepDefinition step)
-    {
-        return new LauncherTask
-        {
-            Name = sourceTask.Name,
-            Description = sourceTask.Description,
-            Group = sourceTask.Group,
-            CommandLine = sourceTask.CommandLine,
-            Runner = sourceTask.Runner,
-            Env = new Dictionary<string, string>(sourceTask.Env, StringComparer.OrdinalIgnoreCase),
-            WorkingDirectory = sourceTask.WorkingDirectory,
-            Inputs = new Dictionary<string, string>(sourceTask.Inputs, StringComparer.OrdinalIgnoreCase),
-            InputBindings = new Dictionary<string, string>(sourceTask.InputBindings, StringComparer.OrdinalIgnoreCase),
-            Outputs = new Dictionary<string, string>(sourceTask.Outputs, StringComparer.OrdinalIgnoreCase),
-            WaitForExit = step.WaitForExit ?? true,
-            RequiresElevation = sourceTask.RequiresElevation,
-            IgnoreExitCode = sourceTask.IgnoreExitCode
-        };
     }
 
     private void SelectGroup(string groupName)
@@ -2013,7 +1580,6 @@ public partial class MainWindow : Window
         ViewHistoryMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
         ViewOutputMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
         UpdateRibbonHistoryButtonState(historyVisible);
-        UpdateRibbonRitualsButtonState();
         UpdateTaskSurfaceToggleUi();
     }
 
@@ -2088,25 +1654,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void UpdateRibbonRitualsButtonState()
-    {
-        if (RibbonRitualsButton is null)
-        {
-            return;
-        }
-
-        var hasCurrentGroupRitual = TryGetCurrentGroupRitual(out _);
-
-        if (hasCurrentGroupRitual)
-        {
-            RibbonRitualsButton.Foreground = RibbonHistoryActiveBrush;
-            return;
-        }
-
-        // Let style control off-state foreground so it matches peer commands.
-        RibbonRitualsButton.ClearValue(Control.ForegroundProperty);
-    }
-
     private void RefreshHistoryView()
     {
         IEnumerable<TaskRunHistoryEntry> filtered = _runHistory;
@@ -2137,6 +1684,14 @@ public partial class MainWindow : Window
     {
         _isHistoryDetailsVisible = !_isHistoryDetailsVisible;
         ApplyHistoryDetailsVisibility();
+    }
+
+    private void ToggleHistoryGroupingButton_Click(object sender, RoutedEventArgs e)
+    {
+    }
+
+    private void ApplyHistoryGroupingToggleUi()
+    {
     }
 
     private void ApplyHistoryDetailsVisibility()
@@ -2191,6 +1746,7 @@ public partial class MainWindow : Window
         builder.AppendLine($"Run: {firstEntry.Snapshot.Name}");
         builder.AppendLine($"Group: {firstEntry.Snapshot.Group}");
         builder.AppendLine($"Status: {firstEntry.Outcome}");
+
         builder.AppendLine($"Started: {startedLocal:yyyy-MM-dd HH:mm:ss}");
 
         if (firstEntry.CompletedAtUtc.HasValue)
@@ -2236,9 +1792,13 @@ public partial class MainWindow : Window
 
     private void UpdateHistoryActionState()
     {
-        var hasSelection = HistoryListBox.SelectedItems.Count > 0;
-        ReplaySelectedButton.IsEnabled = hasSelection && !_isReplayingHistoryBatch;
+        var selectedItems = HistoryListBox.SelectedItems.OfType<HistoryListItem>().ToList();
+        var hasSelection = selectedItems.Count > 0;
+        var hasReplayableSelection = hasSelection;
+
+        ReplaySelectedButton.IsEnabled = hasReplayableSelection && !_isReplayingHistoryBatch;
         ClearHistorySelectionButton.IsEnabled = hasSelection;
+
     }
 
     private void ClearHistorySelectionButton_Click(object sender, RoutedEventArgs e)
@@ -4666,7 +4226,14 @@ public partial class MainWindow : Window
 
     private void AddTaskButton_Click(object sender, RoutedEventArgs e)
     {
-        var window = new TaskFormWindow { Owner = this };
+        var groupNames = GetGroupNames()
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var defaultGroupName = string.IsNullOrWhiteSpace(_selectedGroupName)
+            ? "General"
+            : NormalizeGroupName(_selectedGroupName);
+
+        var window = new TaskFormWindow(groupNames, defaultGroupName) { Owner = this };
 
         if (window.ShowDialog() != true || window.Task is null)
         {
@@ -4768,16 +4335,6 @@ public partial class MainWindow : Window
         NavigateGroup(step: 1);
     }
 
-    private void RibbonCreateRitualButton_Click(object sender, RoutedEventArgs e)
-    {
-        DefineRitualFromCurrentGroupMenuItem_Click(sender, e);
-    }
-
-    private void RibbonManageRitualsButton_Click(object sender, RoutedEventArgs e)
-    {
-        AppMessageBox.Show(this, "Ritual management is currently available from the rituals menu entries. A dedicated manager panel can be added next.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
-    }
-
     private void RibbonGroupsDropDownButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button)
@@ -4839,89 +4396,6 @@ public partial class MainWindow : Window
         OpenRibbonContextMenu(button, menu);
     }
 
-    private void RibbonRitualsDropDownButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button button)
-        {
-            return;
-        }
-
-        var menu = CreateRibbonContextMenu();
-        var hasCurrentGroupRitual = TryGetCurrentGroupRitual(out _);
-
-        var defineItem = new MenuItem
-        {
-            Header = "Define From Current Group",
-            Style = (Style)Resources["AppMenuItemStyle"],
-            IsEnabled = HasSelectedGroupTasks()
-        };
-        defineItem.Click += DefineRitualFromCurrentGroupMenuItem_Click;
-        menu.Items.Add(defineItem);
-
-        var runItem = new MenuItem
-        {
-            Header = "Run Current Group Ritual",
-            Style = (Style)Resources["AppMenuItemStyle"],
-            IsEnabled = hasCurrentGroupRitual
-        };
-        runItem.Click += RibbonRunCurrentGroupRitualMenuItem_Click;
-        menu.Items.Add(runItem);
-
-        var editItem = new MenuItem
-        {
-            Header = "Edit Current Group Ritual",
-            Style = (Style)Resources["AppMenuItemStyle"],
-            IsEnabled = hasCurrentGroupRitual
-        };
-        editItem.Click += RibbonEditCurrentGroupRitualMenuItem_Click;
-        menu.Items.Add(editItem);
-
-        OpenRibbonContextMenu(button, menu);
-    }
-
-    private async void RibbonRunCurrentGroupRitualMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryGetCurrentGroupRitual(out var ritual))
-        {
-            AppMessageBox.Show(this, "No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        await ExecuteRitualAsync(ritual);
-    }
-
-    private void RibbonEditCurrentGroupRitualMenuItem_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryGetCurrentGroupRitual(out var ritual))
-        {
-            AppMessageBox.Show(this, "No ritual is defined for the current group.", "Rituals", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        EditRitualMenuEntry_Click(new MenuItem { Tag = ritual }, new RoutedEventArgs());
-    }
-
-    private bool TryGetCurrentGroupRitual(out RitualDefinition ritual)
-    {
-        ritual = new RitualDefinition();
-
-        if (string.IsNullOrWhiteSpace(_selectedGroupName))
-        {
-            return false;
-        }
-
-        var groupName = NormalizeGroupName(_selectedGroupName);
-        var defaultName = $"{groupName} Ritual";
-
-        ritual = _currentConfiguration.Rituals.FirstOrDefault(r =>
-                     string.Equals(r.Name, defaultName, StringComparison.OrdinalIgnoreCase))
-                 ?? _currentConfiguration.Rituals.FirstOrDefault(r =>
-                     r.Steps.Any(step => string.Equals(NormalizeGroupName(step.Group), groupName, StringComparison.OrdinalIgnoreCase)))
-                 ?? new RitualDefinition();
-
-        return !string.IsNullOrWhiteSpace(ritual.Name);
-    }
-
     private ContextMenu CreateRibbonContextMenu()
     {
         return new ContextMenu
@@ -4968,7 +4442,7 @@ public partial class MainWindow : Window
         try
         {
             var config = TaskConfiguration.Load(path);
-            AppendValidationEvent(action, path, true, $"Loaded {config.Tasks.Count} task(s) and {config.Rituals.Count} ritual(s).", outputTextBox);
+            AppendValidationEvent(action, path, true, $"Loaded {config.Tasks.Count} task(s).", outputTextBox);
             AppendBusinessRuleValidationWarnings(path, config, outputTextBox);
             return config;
         }
@@ -4986,7 +4460,7 @@ public partial class MainWindow : Window
         {
             TaskConfiguration.Save(path, config);
             var validatedConfig = TaskConfiguration.Load(path);
-            AppendValidationEvent(action, path, true, $"Validated {validatedConfig.Tasks.Count} task(s) and {validatedConfig.Rituals.Count} ritual(s).", outputTextBox);
+            AppendValidationEvent(action, path, true, $"Validated {validatedConfig.Tasks.Count} task(s).", outputTextBox);
             AppendBusinessRuleValidationWarnings(path, validatedConfig, outputTextBox);
             return validatedConfig;
         }
@@ -5120,6 +4594,18 @@ public partial class MainWindow : Window
         shareGroupItem.Click += (_, _) => ExportCurrentGroupToClipboard();
         menu.Items.Add(shareGroupItem);
 
+        var exportBackupItem = new MenuItem
+        {
+            Header = "Export Backup (Tasks)",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = _currentConfiguration.Tasks.Count > 0
+        };
+        exportBackupItem.Click += (_, _) => ExportConfigurationToClipboardAndOutput(
+            "Share Backup",
+            new TaskConfiguration { Tasks = _currentConfiguration.Tasks.Select(TaskIdentityClone).ToList() },
+            $"backup ({_currentConfiguration.Tasks.Count} task(s))");
+        menu.Items.Add(exportBackupItem);
+
         OpenRibbonContextMenu(anchorButton, menu);
     }
 
@@ -5133,8 +4619,7 @@ public partial class MainWindow : Window
 
         var payload = new TaskConfiguration
         {
-            Tasks = [task],
-            Rituals = []
+            Tasks = [task]
         };
 
         ExportConfigurationToClipboardAndOutput("Share Task", payload, $"task '{task.Name}'");
@@ -5154,11 +4639,62 @@ public partial class MainWindow : Window
 
         var payload = new TaskConfiguration
         {
-            Tasks = tasks,
-            Rituals = []
+            Tasks = tasks
         };
 
         ExportConfigurationToClipboardAndOutput("Share Group", payload, $"group '{_selectedGroupName}' ({tasks.Count} task(s))");
+    }
+
+    private void ExportCombinedBackupToFile()
+    {
+        if (_currentConfiguration.Tasks.Count == 0)
+        {
+            AppMessageBox.Show(this, "There are no tasks to export.", "Export Backup", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var saveDialog = new SaveFileDialog
+        {
+            Title = "Export Backup (Tasks)",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            FileName = $"tsky-backup-{DateTime.Now:yyyyMMdd-HHmmss}.json",
+            AddExtension = true,
+            DefaultExt = ".json",
+            OverwritePrompt = true
+        };
+
+        if (saveDialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        var tasks = _currentConfiguration.Tasks.Select(TaskIdentityClone).ToList();
+
+        var tabContext = CreateOutputTab("Export Backup");
+        var outputTextBox = tabContext.OutputTextBox;
+        SetTabRunning(tabContext);
+
+        try
+        {
+            var payload = new TaskConfiguration
+            {
+                Tasks = tasks
+            };
+
+            var json = _importExportService.SerializeConfiguration(payload);
+            File.WriteAllText(saveDialog.FileName, json);
+
+            AppendLog(outputTextBox, $"[Share] Exported combined backup to '{saveDialog.FileName}'.");
+            AppendLog(outputTextBox, $"[Share] Included {tasks.Count} task(s).");
+            SetTabStopped(tabContext, true);
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[Share] ExportCombinedBackupToFile failed");
+            AppendLog(outputTextBox, $"[Share] Export failed: {ex.Message}");
+            SetTabStopped(tabContext, false);
+            AppMessageBox.Show(this, $"Failed to export backup.{Environment.NewLine}{ex.Message}", "Export Backup", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void ExportConfigurationToClipboardAndOutput(string tabName, TaskConfiguration payload, string summary)
@@ -5231,7 +4767,7 @@ public partial class MainWindow : Window
 
         var openFileDialog = new OpenFileDialog
         {
-            Title = "Import Tasks Configuration",
+            Title = "Import Configuration",
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
             CheckFileExists = true,
             CheckPathExists = true,
@@ -5250,8 +4786,8 @@ public partial class MainWindow : Window
 
         try
         {
-            var importedConfig = LoadConfigurationWithValidation(importPath, "Read import file tasks.json", outputTextBox);
-            AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) and {importedConfig.Rituals.Count} ritual(s) from file.");
+            var importedConfig = LoadConfigurationWithValidation(importPath, "Read import file JSON", outputTextBox);
+            AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) from file.");
             ImportConfiguration(importedConfig, outputTextBox, tabContext, importPath);
         }
         catch (Exception ex)
@@ -5291,8 +4827,8 @@ public partial class MainWindow : Window
 
             try
             {
-                var importedConfig = LoadConfigurationWithValidation(tempInputPath, "Read clipboard tasks.json", outputTextBox);
-                AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) and {importedConfig.Rituals.Count} ritual(s) from clipboard.");
+                var importedConfig = LoadConfigurationWithValidation(tempInputPath, "Read clipboard JSON", outputTextBox);
+                AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) from clipboard.");
                 ImportConfiguration(importedConfig, outputTextBox, tabContext, "clipboard");
             }
             finally
@@ -5315,16 +4851,20 @@ public partial class MainWindow : Window
     {
         try
         {
+            var importedTasksOnly = new TaskConfiguration
+            {
+                Tasks = importedConfig.Tasks.Select(TaskIdentityClone).ToList()
+            };
+
             var mergeResult = _importExportService.MergeAndPersistImportedConfiguration(
                 _userProfileConfigPath,
-                importedConfig,
+                importedTasksOnly,
                 importSourceLabel);
 
-            var validatedMergedConfig = mergeResult.ValidatedMergedConfiguration;
             var validatedWrittenProfile = mergeResult.ValidatedWrittenUserProfileConfiguration;
 
             AppendLog(outputTextBox, $"[Import] Merged configuration validated and written to user profile: {_userProfileConfigPath}");
-            AppendLog(outputTextBox, $"[Import] Final merged result: {validatedWrittenProfile.Tasks.Count} task(s), {validatedWrittenProfile.Rituals.Count} ritual(s).");
+            AppendLog(outputTextBox, $"[Import] Final merged tasks result: {validatedWrittenProfile.Tasks.Count} task(s).");
 
             LoadTaskButtons();
             AppendLog(outputTextBox, "[Import] UI reloaded.");
@@ -5336,6 +4876,32 @@ public partial class MainWindow : Window
             AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
             SetTabStopped(tabContext, false);
         }
+    }
+
+    private static LauncherTask TaskIdentityClone(LauncherTask task)
+    {
+        return new LauncherTask
+        {
+            Name = task.Name,
+            Description = task.Description,
+            Group = task.Group,
+            CommandLine = task.CommandLine,
+            Runner = task.Runner,
+            Env = new Dictionary<string, string>(task.Env, StringComparer.OrdinalIgnoreCase),
+            WorkingDirectory = task.WorkingDirectory,
+            WaitForExit = task.WaitForExit,
+            RequiresElevation = task.RequiresElevation,
+            IgnoreExitCode = task.IgnoreExitCode,
+            TimeoutSeconds = task.TimeoutSeconds,
+            KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
+            MaxCapturedOutputChars = task.MaxCapturedOutputChars,
+            IsEnabled = task.IsEnabled,
+            ImportedFromFile = task.ImportedFromFile,
+            ImportedAtUtc = task.ImportedAtUtc,
+            Inputs = new Dictionary<string, string>(task.Inputs, StringComparer.OrdinalIgnoreCase),
+            InputBindings = new Dictionary<string, string>(task.InputBindings, StringComparer.OrdinalIgnoreCase),
+            Outputs = new Dictionary<string, string>(task.Outputs, StringComparer.OrdinalIgnoreCase)
+        };
     }
 
     private void TaskCard_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -5985,18 +5551,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var ritualsWithGroupSteps = _currentConfiguration.Rituals
-            .Where(ritual => ritual.Steps.Any(step =>
-                !string.IsNullOrWhiteSpace(step.Group)
-                && string.Equals(NormalizeGroupName(step.Group), selectedGroup, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
-
         var message = $"Delete group '{selectedGroup}' and {tasksInGroup.Count} task(s)?";
-        if (ritualsWithGroupSteps.Count > 0)
-        {
-            message += Environment.NewLine + Environment.NewLine
-                + $"This will also remove ritual steps that explicitly reference this group in {ritualsWithGroupSteps.Count} ritual(s).";
-        }
 
         var result = AppMessageBox.Show(
             this,
@@ -6012,18 +5567,6 @@ public partial class MainWindow : Window
 
         _currentConfiguration.Tasks = _currentConfiguration.Tasks
             .Where(task => !string.Equals(NormalizeGroupName(task.Group), selectedGroup, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        foreach (var ritual in _currentConfiguration.Rituals)
-        {
-            ritual.Steps = ritual.Steps
-                .Where(step => string.IsNullOrWhiteSpace(step.Group)
-                    || !string.Equals(NormalizeGroupName(step.Group), selectedGroup, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-
-        _currentConfiguration.Rituals = _currentConfiguration.Rituals
-            .Where(ritual => ritual.Steps.Count > 0)
             .ToList();
 
         _groupExpandedStates.Remove(selectedGroup);
@@ -6076,11 +5619,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private bool TryPersistConfiguration(string errorTitle, string errorPrefix)
+    private bool TryPersistConfiguration(
+        string errorTitle,
+        string errorPrefix)
     {
         try
         {
             SaveAndValidateConfiguration(_userProfileConfigPath, _currentConfiguration, "Write user profile tasks.json");
+
             LoadTaskButtons();
             return true;
         }
@@ -6190,7 +5736,8 @@ public partial class MainWindow : Window
         bool isReplay,
         string? replayFromEntryId = null,
         DataflowContext? dataflowContext = null,
-        string? chainStepLabel = null)
+        string? chainStepLabel = null,
+        CancellationToken externalCancellationToken = default)
     {
         var operationDetail = isReplay ? $"{task.Name}-replay" : task.Name;
         using var taskRunScope = DebugTraceLog.BeginOperation("task", operationDetail);
@@ -6202,11 +5749,18 @@ public partial class MainWindow : Window
         var resolved = DataflowPortResolver.Resolve(task, dataflowContext);
         var effectiveTask = resolved.ResolvedTask;
         var publishedOutputs = new Dictionary<string, string>(resolved.ResolvedOutputs, StringComparer.OrdinalIgnoreCase);
-        var historyEntry = StartHistoryEntry(effectiveTask, isReplay, replayFromEntryId);
+        var historyEntry = StartHistoryEntry(
+            effectiveTask,
+            isReplay,
+            replayFromEntryId);
         var capturedStandardOutput = string.Empty;
         var capturedStandardError = string.Empty;
         var taskStateKey = GetTaskStateKey(task);
         var taskCancellationSource = new CancellationTokenSource();
+        var linkedCancellationSource = externalCancellationToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(taskCancellationSource.Token, externalCancellationToken)
+            : null;
+        var effectiveCancellationToken = linkedCancellationSource?.Token ?? taskCancellationSource.Token;
         _taskExecutionCancellation[taskStateKey] = taskCancellationSource;
 
         if (!string.IsNullOrWhiteSpace(chainStepLabel))
@@ -6223,6 +5777,7 @@ public partial class MainWindow : Window
             SetTaskRunState(task, TaskRunState.Failed);
             CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
             UnregisterTaskCancellation(task);
+            linkedCancellationSource?.Dispose();
             return new TaskExecutionResult { Succeeded = false, ExitCode = null };
         }
 
@@ -6267,7 +5822,7 @@ public partial class MainWindow : Window
                         AppendStreamOutputLine(outputTextBox, isError ? "stderr" : "stdout", line);
                     }));
                 },
-                cancellationToken: taskCancellationSource.Token);
+                cancellationToken: effectiveCancellationToken);
 
             if (!string.IsNullOrWhiteSpace(executionResult.ConfigurationError))
             {
@@ -6398,6 +5953,7 @@ public partial class MainWindow : Window
         finally
         {
             UnregisterTaskCancellation(task);
+            linkedCancellationSource?.Dispose();
 
             if (sourceButton is not null)
             {
@@ -6489,9 +6045,15 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private TaskRunHistoryEntry StartHistoryEntry(LauncherTask task, bool isReplay, string? replayFromEntryId)
+    private TaskRunHistoryEntry StartHistoryEntry(
+        LauncherTask task,
+        bool isReplay,
+        string? replayFromEntryId)
     {
-        var entry = _runHistoryService.StartEntry(task, isReplay, replayFromEntryId);
+        var entry = _runHistoryService.StartEntry(
+            task,
+            isReplay,
+            replayFromEntryId);
         RefreshHistoryView();
         return entry;
     }

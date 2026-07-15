@@ -6,7 +6,7 @@ Add a Graph view as an alternative presentation of the existing selected-group t
 
 In Task view, the app continues to show the existing task cards. In Graph view, each visible task is shown as a node. The node label is the task name. The task description is exposed as the node tooltip.
 
-The graph is a view-mode change, not a new task execution model. Running tasks, editing tasks, deleting tasks, enabling/disabling tasks, history, rituals, import/export, dataflow resolution, group selection, output panes, keyboard behavior where applicable, and persistence behavior should continue to follow the existing app semantics.
+The graph is a view-mode change, not a new task execution model. Running tasks, editing tasks, deleting tasks, enabling/disabling tasks, history, import/export, dataflow resolution, group selection, output panes, keyboard behavior where applicable, and persistence behavior should continue to follow the existing app semantics.
 
 ## Goals
 
@@ -104,7 +104,7 @@ Viewport behavior:
 9. Node tooltips use task descriptions.
 10. Running a task from Graph mode uses the same execution path as running from Task mode.
 11. Editing, deleting, enabling/disabling, replaying, and running chains should preserve existing behavior.
-12. Import/export, rituals, output tabs, history, and dataflow resolution behavior remain unchanged.
+12. Import/export, output tabs, history, and dataflow resolution behavior remain unchanged.
 13. Returning to Task mode restores the existing card layout and connectors.
 14. The feature should not modify the task JSON schema in its initial version.
 
@@ -292,7 +292,7 @@ Graph rendering should fail gracefully:
 - Existing task-card rendering still works.
 - Existing dataflow connectors in Task view still work.
 - Existing drag/reorder behavior in Task view still works.
-- Existing import/export, rituals, replay, and history behavior is unchanged.
+- Existing import/export, replay, and history behavior is unchanged.
 
 ## Acceptance Criteria
 

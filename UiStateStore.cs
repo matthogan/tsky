@@ -24,6 +24,10 @@ public sealed class UiState
     public List<string> FavoriteGroups { get; set; } = [];
 
     public List<string> NonFavoriteGroupsOrder { get; set; } = [];
+
+    public double AddTaskDialogWidth { get; set; } = 760;
+
+    public double AddTaskDialogHeight { get; set; } = 860;
 }
 
 public static class UiStateStore

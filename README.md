@@ -3,7 +3,7 @@
 <img src="hero.png" alt="tsky hero" width="720" />
 
 Tsky is a Windows desktop task launcher built with .NET 8 WPF.
-It supports grouped tasks, chain execution, rituals, dataflow ports/connectors, history replay, and import/share workflows.
+It supports grouped tasks, chain execution, dataflow ports/connectors, history replay, and import/share workflows.
 
 ## Prerequisites
 
@@ -47,7 +47,6 @@ Each task supports:
 Top-level configuration supports:
 
 - `groups`
-- `rituals`
 
 Legacy flat `tasks` format is also accepted and normalized into grouped form.
 
@@ -107,7 +106,7 @@ Example:
 
 ## UI Highlights
 
-- Ribbon actions for add/edit/enable-disable/delete/run-chain/groups/rituals/history/share/import.
+- Ribbon actions for add/edit/enable-disable/delete/run-chain/groups/history/share/import.
 - Share menu:
   - Share Task to clipboard
   - Share Group to clipboard
@@ -125,22 +124,11 @@ Example:
 - Connectors are rendered between output and input ports in the selected group.
 - Groups with dataflow wiring (`inputBindings` or `outputs`) are reorder-locked in the UI.
 
-## Rituals
+Disabled tasks are skipped in chains.
 
-Rituals are named step sequences:
+Schemas:
 
-- `rituals[].name`
-- `rituals[].description`
-- `rituals[].steps[]`
-
-Step fields:
-
-- `taskName`
-- optional `group`
-- optional `delayMs`
-- optional `continueOnError`
-
-Disabled tasks are skipped in chains and rituals.
+- Task schema: `docs/tasks.schema.json`
 
 ## Validation Logging
 
@@ -162,7 +150,7 @@ Validation results are written to the output pane so users can see pass/fail eve
   - Verify runner, quoting, and working directory.
   - Review stdout/stderr in Task Output.
 - Dataflow value missing:
-  - Ensure upstream task ran earlier in the same chain/ritual context.
+  - Ensure upstream task ran earlier in the same chain context.
   - Verify output names and binding references.
 
 ## Release Workflow

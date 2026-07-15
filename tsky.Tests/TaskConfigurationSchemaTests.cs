@@ -137,4 +137,58 @@ public sealed class TaskConfigurationSchemaTests
         Assert.False(valid);
         Assert.Contains("env", error, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Save_DoesNotPersistUnknownLegacyProperty_InTasksJson()
+    {
+      var tempPath = Path.Combine(Path.GetTempPath(), $"tsky-schema-legacy-save-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            var json = """
+            {
+              "schemaVersion": 1,
+              "groups": [
+                {
+                  "name": "General",
+                  "tasks": [
+                    {
+                      "name": "Example",
+                      "commandLine": "echo hi",
+                      "runner": "cmd"
+                    }
+                  ]
+                }
+              ],
+              "legacyItems": [
+                {
+                  "name": "Legacy Item",
+                  "steps": [
+                    {
+                      "taskName": "Example"
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+
+            File.WriteAllText(tempPath, json);
+            var loaded = TaskConfiguration.Load(tempPath);
+            TaskConfiguration.Save(tempPath, loaded);
+
+            var persisted = File.ReadAllText(tempPath);
+            using var document = JsonDocument.Parse(persisted);
+
+            Assert.True(document.RootElement.TryGetProperty("groups", out _));
+            Assert.False(document.RootElement.TryGetProperty("legacyItems", out _));
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+    }
 }

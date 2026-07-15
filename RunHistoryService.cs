@@ -20,7 +20,10 @@ public sealed class RunHistoryService
 
     public IReadOnlyList<TaskRunHistoryEntry> Entries => _entries;
 
-    public TaskRunHistoryEntry StartEntry(LauncherTask task, bool isReplay, string? replayFromRunId)
+    public TaskRunHistoryEntry StartEntry(
+        LauncherTask task,
+        bool isReplay,
+        string? replayFromRunId)
     {
         var entry = new TaskRunHistoryEntry
         {

@@ -721,15 +721,6 @@
                             </Button>
                         </StackPanel>
 
-                        <StackPanel Orientation="Horizontal" Margin="8,0,0,0">
-                            <Button x:Name="RibbonRitualsButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Width="82" Click="RibbonRitualsDropDownButton_Click">
-                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                                    <TextBlock Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
-                                    <TextBlock Text="Rituals ▼" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
-                                </StackPanel>
-                            </Button>
-                        </StackPanel>
-
                         <StackPanel Orientation="Horizontal" Margin="14,0,0,0">
                             <Button x:Name="RibbonHistoryButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonHistoryButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
@@ -798,7 +789,6 @@
                               Click="ViewOutputMenuItem_Click" />
                 </MenuItem>
                 <MenuItem x:Name="GroupsMenuItem" Header="Groups" Style="{StaticResource AppMenuItemStyle}" />
-                <MenuItem x:Name="RitualsMenuItem" Header="Rituals" Style="{StaticResource AppMenuItemStyle}" />
             </Menu>
         </Grid>
 
@@ -893,35 +883,6 @@
                     <StackPanel x:Name="GroupListPanel" />
                 </ScrollViewer>
 
-                <StackPanel Grid.Row="2" Margin="0,8,0,0">
-                    <Expander x:Name="SidebarRitualsExpander"
-                              Style="{StaticResource SidebarBottomSectionStyle}"
-                              IsExpanded="True"
-                              Expanded="SidebarRitualsExpander_Expanded"
-                              Collapsed="SidebarRitualsExpander_Collapsed">
-                        <Expander.Header>
-                            <DockPanel>
-                                <TextBlock x:Name="RitualsSectionChevronText"
-                                           Text="▼"
-                                           Foreground="#FF6E7681"
-                                           FontSize="9"
-                                           Margin="0,0,6,0"
-                                           VerticalAlignment="Center" />
-                                <TextBlock Text="RITUALS" Foreground="#FF8B949E" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                <TextBlock x:Name="SidebarRitualsCountText"
-                                           DockPanel.Dock="Right"
-                                           Text="(0)"
-                                           Foreground="#FFC9A74D"
-                                           FontSize="10"
-                                           Margin="8,0,0,0"
-                                           MinWidth="32"
-                                           TextAlignment="Right"
-                                           VerticalAlignment="Center" />
-                            </DockPanel>
-                        </Expander.Header>
-                        <StackPanel x:Name="SidebarRitualsListPanel" />
-                    </Expander>
-                </StackPanel>
             </Grid>
         </Border>
 

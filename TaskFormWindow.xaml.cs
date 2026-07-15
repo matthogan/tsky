@@ -1,5 +1,7 @@
 using Microsoft.Win32;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -7,14 +9,20 @@ namespace tsky;
 
 public partial class TaskFormWindow : Window
 {
-    public TaskFormWindow()
+    private const double DefaultDialogWidth = 760;
+    private const double DefaultDialogHeight = 860;
+
+    public TaskFormWindow(IEnumerable<string>? existingGroups = null, string? defaultGroupName = null)
     {
         InitializeComponent();
+        ApplyPersistedWindowSize();
+        InitializeGroupChoices(existingGroups, defaultGroupName);
         ApplyTheme();
 
         SourceInitialized += (_, _) => WindowThemeManager.ApplyTitleBarTheme(this, App.IsDarkThemeEnabled());
         App.ThemeChanged += OnThemeChanged;
         Closed += (_, _) => App.ThemeChanged -= OnThemeChanged;
+        Closed += TaskFormWindow_Closed;
     }
 
     public LauncherTask? Task { get; private set; }
@@ -26,7 +34,16 @@ public partial class TaskFormWindow : Window
 
     private void ApplyTheme()
     {
-        foreach (var textBox in new[] { NameTextBox, DescriptionTextBox, GroupTextBox, CommandLineTextBox, WorkingDirectoryTextBox, EnvVarsTextBox })
+        foreach (var textBox in new[]
+                 {
+                     NameTextBox,
+                     DescriptionTextBox,
+                     CommandLineTextBox,
+                     WorkingDirectoryTextBox,
+                     TimeoutSecondsTextBox,
+                     MaxCapturedOutputCharsTextBox,
+                     EnvVarsTextBox
+                 })
         {
             textBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
             textBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
@@ -36,6 +53,58 @@ public partial class TaskFormWindow : Window
         RunnerComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
         RunnerComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
         RunnerComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
+
+        GroupComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
+        GroupComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
+        GroupComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
+    }
+
+    private void InitializeGroupChoices(IEnumerable<string>? existingGroups, string? defaultGroupName)
+    {
+        var defaultGroup = string.IsNullOrWhiteSpace(defaultGroupName)
+            ? "General"
+            : defaultGroupName.Trim();
+
+        var sortedGroups = (existingGroups ?? [])
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        GroupComboBox.ItemsSource = sortedGroups;
+
+        var existingDefaultGroup = sortedGroups.FirstOrDefault(group =>
+            string.Equals(group, defaultGroup, StringComparison.OrdinalIgnoreCase));
+
+        if (existingDefaultGroup is not null)
+        {
+            GroupComboBox.SelectedItem = existingDefaultGroup;
+            return;
+        }
+
+        GroupComboBox.Text = defaultGroup;
+    }
+
+    private void ApplyPersistedWindowSize()
+    {
+        var state = UiStateStore.Load();
+
+        Width = state.AddTaskDialogWidth >= MinWidth
+            ? state.AddTaskDialogWidth
+            : DefaultDialogWidth;
+
+        Height = state.AddTaskDialogHeight >= MinHeight
+            ? state.AddTaskDialogHeight
+            : DefaultDialogHeight;
+    }
+
+    private void TaskFormWindow_Closed(object? sender, EventArgs e)
+    {
+        var state = UiStateStore.Load();
+        state.AddTaskDialogWidth = Math.Max(MinWidth, Width);
+        state.AddTaskDialogHeight = Math.Max(MinHeight, Height);
+        UiStateStore.Save(state);
     }
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -54,10 +123,24 @@ public partial class TaskFormWindow : Window
             return;
         }
 
-        if (!TryParseEnvLines(EnvVarsTextBox.Text, out var envVars, out var envError))
+        if (!TryParseNameValueLines(EnvVarsTextBox.Text, "env var", out var envVars, out var envError))
         {
             AppMessageBox.Show(this, envError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
             EnvVarsTextBox.Focus();
+            return;
+        }
+
+        if (!TryParsePositiveInt(TimeoutSecondsTextBox.Text, "Timeout (sec)", out var timeoutSeconds, out var timeoutError))
+        {
+            AppMessageBox.Show(this, timeoutError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            TimeoutSecondsTextBox.Focus();
+            return;
+        }
+
+        if (!TryParsePositiveInt(MaxCapturedOutputCharsTextBox.Text, "Max Output Chars", out var maxCapturedOutputChars, out var outputCharsError))
+        {
+            AppMessageBox.Show(this, outputCharsError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MaxCapturedOutputCharsTextBox.Focus();
             return;
         }
 
@@ -67,21 +150,26 @@ public partial class TaskFormWindow : Window
         {
             Name = NameTextBox.Text.Trim(),
             Description = string.IsNullOrWhiteSpace(DescriptionTextBox.Text) ? null : DescriptionTextBox.Text.Trim(),
-            Group = string.IsNullOrWhiteSpace(GroupTextBox.Text) ? "General" : GroupTextBox.Text.Trim(),
+            Group = string.IsNullOrWhiteSpace(GroupComboBox.Text) ? "General" : GroupComboBox.Text.Trim(),
             Runner = runner,
             CommandLine = CommandLineTextBox.Text.Trim(),
             WorkingDirectory = WorkingDirectoryTextBox.Text.Trim(),
+            WaitForExit = WaitForExitCheckBox.IsChecked != false,
             RequiresElevation = RequiresElevationCheckBox.IsChecked == true,
             IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked == true,
+            TimeoutSeconds = timeoutSeconds,
+            KillProcessTreeOnCancel = KillProcessTreeOnCancelCheckBox.IsChecked != false,
+            MaxCapturedOutputChars = maxCapturedOutputChars,
+            IsEnabled = IsEnabledCheckBox.IsChecked != false,
             Env = envVars
         };
 
         DialogResult = true;
     }
 
-    private static bool TryParseEnvLines(string text, out Dictionary<string, string> envVars, out string error)
+    private static bool TryParseNameValueLines(string text, string entryTypeLabel, out Dictionary<string, string> values, out string error)
     {
-        envVars = [];
+        values = [];
         error = string.Empty;
 
         var lines = text.Replace("\r\n", "\n").Split('\n');
@@ -96,7 +184,7 @@ public partial class TaskFormWindow : Window
             var separatorIndex = line.IndexOf('=');
             if (separatorIndex <= 0)
             {
-                error = $"Invalid env var line: '{line}'. Use NAME=VALUE format.";
+                error = $"Invalid {entryTypeLabel} line: '{line}'. Use NAME=VALUE format.";
                 return false;
             }
 
@@ -105,11 +193,25 @@ public partial class TaskFormWindow : Window
 
             if (name.Length == 0)
             {
-                error = $"Invalid env var line: '{line}'. Name cannot be empty.";
+                error = $"Invalid {entryTypeLabel} line: '{line}'. Name cannot be empty.";
                 return false;
             }
 
-            envVars[name] = value;
+            values[name] = value;
+        }
+
+        return true;
+    }
+
+    private static bool TryParsePositiveInt(string text, string fieldName, out int value, out string error)
+    {
+        value = 0;
+        error = string.Empty;
+
+        if (!int.TryParse(text.Trim(), out value) || value <= 0)
+        {
+            error = $"{fieldName} must be a positive integer.";
+            return false;
         }
 
         return true;

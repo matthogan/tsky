@@ -10,7 +10,7 @@ No source code changes were made as part of this assessment. A local build could
 
 ## Executive Summary
 
-The application has a clear product direction and a useful set of task-launcher capabilities: grouped tasks, user/workspace configuration merging, rituals, dataflow ports, command history, import/share flows, and a GitHub release workflow. The codebase also has several good extraction points already, especially around configuration, process start info creation, dataflow resolution, identity handling, and persistent UI/history stores.
+The application has a clear product direction and a useful set of task-launcher capabilities: grouped tasks, user/workspace configuration merging, dataflow ports, command history, import/share flows, and a GitHub release workflow. The codebase also has several good extraction points already, especially around configuration, process start info creation, dataflow resolution, identity handling, and persistent UI/history stores.
 
 The main engineering risk is that most orchestration still lives in `MainWindow.xaml.cs`, which is over 6,000 lines and mixes UI rendering, command execution, persistence, validation, dataflow presentation, history management, import/export, task editing, keyboard navigation, and animation state. That makes the system harder to test, reason about, and safely extend.
 
@@ -20,7 +20,7 @@ The second major risk is lack of automated verification. The project currently h
 
 - The project is small enough to improve incrementally without a large migration.
 - `tsky.csproj` uses modern defaults: .NET 8, nullable reference types, implicit usings, deterministic builds, and WPF.
-- The domain model is explicit. `LauncherTask`, `RitualDefinition`, `TaskRunHistoryEntry`, and related types are easy to understand.
+- The domain model is explicit. `LauncherTask`, `TaskRunHistoryEntry`, and related types are easy to understand.
 - Configuration loading supports both legacy flat `tasks` and grouped `groups` formats, then normalizes into a single in-memory model.
 - `TaskProcessStartInfoFactory` is a good boundary for runner-specific process configuration.
 - `DataflowPortResolver` is already separated from WPF and is a strong candidate for unit tests.
@@ -59,11 +59,11 @@ Remaining scope for full recommendation completion:
 Recommended extraction order:
 
 - `TaskExecutionService`: run a `LauncherTask`, handle output capture, elevation, cancellation, exit-code policy, and published outputs.
-- `TaskCatalogService`: load, merge, save, reorder, add, edit, delete, enable/disable tasks and rituals.
+- `TaskCatalogService`: load, merge, save, reorder, add, edit, delete, and enable/disable tasks.
 - `RunHistoryService`: own history append, completion, trimming, replay snapshot conversion, and persistence.
 - `ImportExportService`: own clipboard/file import/export and merge rules.
 - `DataflowGraphService`: resolve bindings, validate graph order, compute connector models.
-- View models for groups, tasks, output tabs, history rows, port editor rows, and rituals.
+- View models for groups, tasks, output tabs, history rows, and port editor rows.
 
 Keep the first extraction narrow: move logic that already has few WPF dependencies, such as history and task execution, before attempting broader MVVM changes.
 
@@ -71,7 +71,7 @@ Keep the first extraction narrow: move logic that already has few WPF dependenci
 
 The highest-return tests do not require UI automation:
 
-- `TaskConfiguration`: legacy format normalization, grouped format round-trip, overlay precedence, duplicate task identity handling, ritual normalization, invalid JSON behavior.
+- `TaskConfiguration`: legacy format normalization, grouped format round-trip, overlay precedence, duplicate task identity handling, invalid JSON behavior.
 - `TaskIdentity`: case-insensitive group/name identity behavior.
 - `TaskProcessStartInfoFactory`: `exe`, `cmd`, `powershell`, quoted executable paths, working directory resolution, environment placeholder expansion, invalid runners.
 - `DataflowPortResolver`: input defaults, bindings, shared ports, task output references, runtime token deferral, unresolved placeholders.
@@ -89,7 +89,7 @@ Recommended changes:
 - Replace silent fallback with a result type carrying `Value`, `Succeeded`, `Error`, and `WasMissing`.
 - Treat missing files, empty files, invalid JSON, and semantically invalid configuration as distinct cases.
 - Keep backup/reset behavior explicit and visible to the user.
-- Add schema/business validation beyond deserialization: duplicate names, empty command lines, invalid runners, invalid bindings, duplicate output port names, impossible ritual references.
+- Add schema/business validation beyond deserialization: duplicate names, empty command lines, invalid runners, invalid bindings, duplicate output port names, and impossible references.
 
 ### 4. Use Atomic Persistence for User Data
 

@@ -139,6 +139,68 @@ public sealed class TaskConfigurationSchemaTests
     }
 
     [Fact]
+    public void TryValidateSchema_FailsForMissingCommandLineEnvironmentVariable()
+    {
+        var variableName = $"TSKY_MISSING_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(variableName, null);
+
+        var json = """
+        {
+          "schemaVersion": 1,
+          "groups": [
+            {
+              "name": "General",
+              "tasks": [
+                {
+                  "name": "Missing Env Var",
+                  "commandLine": "echo %__VAR__%",
+                  "runner": "cmd"
+                }
+              ]
+            }
+          ]
+        }
+        """.Replace("__VAR__", variableName, StringComparison.Ordinal);
+
+        var valid = TaskConfiguration.TryValidateSchema(json, out var error);
+
+        Assert.False(valid);
+        Assert.Contains(variableName, error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void TryValidateSchema_AllowsCommandLineEnvironmentVariableWhenProvidedInTaskEnv()
+    {
+        var variableName = $"TSKY_LOCAL_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(variableName, null);
+
+        var json = """
+        {
+          "schemaVersion": 1,
+          "groups": [
+            {
+              "name": "General",
+              "tasks": [
+                {
+                  "name": "Task Env Var",
+                  "commandLine": "echo %__VAR__%",
+                  "runner": "cmd",
+                  "env": {
+                    "__VAR__": "task-value"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+        """.Replace("__VAR__", variableName, StringComparison.Ordinal);
+
+        var valid = TaskConfiguration.TryValidateSchema(json, out var error);
+
+        Assert.True(valid, error);
+    }
+
+    [Fact]
     public void Save_DoesNotPersistUnknownLegacyProperty_InTasksJson()
     {
       var tempPath = Path.Combine(Path.GetTempPath(), $"tsky-schema-legacy-save-{Guid.NewGuid():N}.json");

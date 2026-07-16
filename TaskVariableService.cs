@@ -5,6 +5,7 @@ namespace tsky;
 public static class TaskVariableService
 {
     private static readonly Regex VariablePattern = new("\\$\\{([^{}:$\\s]+)\\}", RegexOptions.Compiled);
+    private static readonly Regex EnvironmentPlaceholderPattern = new("%([^%]+)%", RegexOptions.Compiled);
 
     public sealed class TaskVariableUsage
     {
@@ -128,13 +129,13 @@ public static class TaskVariableService
 
         foreach (var pair in dictionary)
         {
-            var key = Expand(pair.Key, groupVariables, unresolved);
+            var key = Expand(pair.Key, groupVariables, unresolved, expandEnvironmentPlaceholders: false);
             if (string.IsNullOrWhiteSpace(key))
             {
                 continue;
             }
 
-            expanded[key] = Expand(pair.Value, groupVariables, unresolved);
+            expanded[key] = Expand(pair.Value, groupVariables, unresolved, expandEnvironmentPlaceholders: true);
         }
 
         return expanded;
@@ -143,14 +144,15 @@ public static class TaskVariableService
     private static string Expand(
         string? value,
         IReadOnlyDictionary<string, string> groupVariables,
-        HashSet<string> unresolved)
+        HashSet<string> unresolved,
+        bool expandEnvironmentPlaceholders = true)
     {
         if (string.IsNullOrEmpty(value))
         {
             return value ?? string.Empty;
         }
 
-        return VariablePattern.Replace(value, match =>
+        var expanded = VariablePattern.Replace(value, match =>
         {
             var variableName = match.Groups[1].Value;
             if (groupVariables.TryGetValue(variableName, out var variableValue))
@@ -161,7 +163,7 @@ public static class TaskVariableService
                     return match.Value;
                 }
 
-                return variableValue ?? string.Empty;
+                return ExpandEnvironmentPlaceholders(variableValue ?? string.Empty);
             }
 
             if (IsDeferredDataflowOrRuntimeToken(variableName))
@@ -171,6 +173,30 @@ public static class TaskVariableService
 
             unresolved.Add(variableName);
             return match.Value;
+        });
+
+        return expandEnvironmentPlaceholders
+            ? ExpandEnvironmentPlaceholders(expanded)
+            : expanded;
+    }
+
+    private static string ExpandEnvironmentPlaceholders(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return value;
+        }
+
+        return EnvironmentPlaceholderPattern.Replace(value, match =>
+        {
+            var variableName = match.Groups[1].Value.Trim();
+            if (string.IsNullOrWhiteSpace(variableName))
+            {
+                return match.Value;
+            }
+
+            var resolved = Environment.GetEnvironmentVariable(variableName);
+            return resolved ?? string.Empty;
         });
     }
 

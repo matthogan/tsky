@@ -3,12 +3,17 @@ using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace tsky;
 
 public sealed class TaskConfiguration
 {
     public const int CurrentSchemaVersion = 1;
+    private static readonly string AppDataTskyDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "tsky");
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -142,9 +147,18 @@ public sealed class TaskConfiguration
             return;
         }
 
-        var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        var backupPath = $"{path}.{timestamp}.bak";
+        Directory.CreateDirectory(AppDataTskyDirectory);
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
+        var token = BuildPathToken(path);
+        var backupPath = Path.Combine(AppDataTskyDirectory, $"tasks.{token}.{timestamp}.bak");
         File.Copy(path, backupPath, overwrite: false);
+    }
+
+    private static string BuildPathToken(string path)
+    {
+        var normalizedPath = Path.GetFullPath(path).ToUpperInvariant();
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath));
+        return Convert.ToHexString(hash)[..10].ToLowerInvariant();
     }
 
     public static void Save(string path, TaskConfiguration config)
@@ -390,7 +404,51 @@ public sealed class TaskConfiguration
             return false;
         }
 
+        if (!TryValidateCommandLineEnvironmentVariables(task, out error))
+        {
+            return false;
+        }
+
         return true;
+    }
+
+    private static bool TryValidateCommandLineEnvironmentVariables(JsonElement task, out string error)
+    {
+        error = string.Empty;
+
+        if (!TryGetPropertyIgnoreCase(task, "commandLine", out var commandLineElement)
+            || commandLineElement.ValueKind is JsonValueKind.Null)
+        {
+            return true;
+        }
+
+        var commandLine = commandLineElement.GetString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            return true;
+        }
+
+        var environmentOverrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (TryGetPropertyIgnoreCase(task, "env", out var envElement)
+            && envElement.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var pair in envElement.EnumerateObject())
+            {
+                if (!string.IsNullOrWhiteSpace(pair.Name))
+                {
+                    environmentOverrides[pair.Name.Trim()] = pair.Value.GetString() ?? string.Empty;
+                }
+            }
+        }
+
+        var missingVariables = TaskProcessStartInfoFactory.GetMissingEnvironmentPlaceholders(commandLine, environmentOverrides.Keys);
+        if (missingVariables.Count == 0)
+        {
+            return true;
+        }
+
+        error = $"commandLine references undefined environment variable(s): {string.Join(", ", missingVariables.Select(name => "%" + name + "%"))}.";
+        return false;
     }
 
     private static bool TryValidateStringProperty(JsonElement obj, string propertyName, out string error, bool allowNull = false)

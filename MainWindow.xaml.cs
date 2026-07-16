@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private bool _preferGroupDeleteContext;
     private int? _selectedTaskIndex;
     private string? _copiedTaskJson;
+    private CopiedGroupPayload? _copiedGroupPayload;
     private readonly List<int> _visibleTaskIndexes = [];
     private readonly Dictionary<string, OutputGroupPanelContext> _groupOutputPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupExpandedStates = new(StringComparer.OrdinalIgnoreCase);
@@ -215,6 +216,15 @@ public partial class MainWindow : Window
         public required Brush ForegroundBrush { get; init; }
 
         public required FontFamily FontFamily { get; init; }
+    }
+
+    private sealed class CopiedGroupPayload
+    {
+        public required string SourceGroupName { get; init; }
+
+        public required Dictionary<string, string> Variables { get; init; }
+
+        public required List<LauncherTask> Tasks { get; init; }
     }
 
     private sealed class TaskExecutionResult
@@ -814,6 +824,7 @@ public partial class MainWindow : Window
             };
 
             headerButton.Click += GroupHeaderButton_Click;
+            headerButton.PreviewMouseRightButtonUp += GroupHeaderButton_PreviewMouseRightButtonUp;
 
             var headerLayout = new DockPanel();
 
@@ -2943,6 +2954,60 @@ public partial class MainWindow : Window
     {
         var menu = CreateTaskContextMenu(taskIndex);
         OpenContextMenuAtButton(menu, anchorButton);
+    }
+
+    private void GroupHeaderButton_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Button headerButton || headerButton.Tag is not string groupName)
+        {
+            return;
+        }
+
+        var normalizedGroupName = NormalizeGroupName(groupName);
+        _selectedGroupName = normalizedGroupName;
+        DebugTraceLog.Write($"[GroupContextMenu] Open request for group '{normalizedGroupName}' at pointer.");
+
+        var menu = CreateGroupHeaderContextMenu(normalizedGroupName);
+        OpenContextMenuAtPointer(menu, headerButton);
+        e.Handled = true;
+    }
+
+    private ContextMenu CreateGroupHeaderContextMenu(string groupName)
+    {
+        var menu = CreateRibbonContextMenu();
+
+        var copyItem = new MenuItem
+        {
+            Header = "Copy Group",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        copyItem.Click += (_, _) => CopyGroup(groupName);
+
+        var pasteItem = new MenuItem
+        {
+            Header = "Paste Group",
+            IsEnabled = _copiedGroupPayload is not null,
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        pasteItem.Click += (_, _) => PasteCopiedGroup();
+
+        var deleteItem = new MenuItem
+        {
+            Header = "Delete Group",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        deleteItem.Click += (_, _) =>
+        {
+            _selectedGroupName = NormalizeGroupName(groupName);
+            DebugTraceLog.Write($"[GroupContextMenu] Delete requested for group '{_selectedGroupName}'.");
+            TryDeleteSelectedGroup();
+        };
+
+        menu.Items.Add(copyItem);
+        menu.Items.Add(pasteItem);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(deleteItem);
+        return menu;
     }
 
     private void OpenTaskRightClickContextMenu(FrameworkElement anchorElement, int taskIndex)
@@ -5830,6 +5895,138 @@ public partial class MainWindow : Window
     {
         return !string.IsNullOrWhiteSpace(_copiedTaskJson)
             && !string.IsNullOrWhiteSpace(_selectedGroupName);
+    }
+
+    private void CopyGroup(string sourceGroupName)
+    {
+        var normalizedSourceGroup = NormalizeGroupName(sourceGroupName);
+        var sourceTasks = _currentConfiguration.Tasks
+            .Where(task => string.Equals(NormalizeGroupName(task.Group), normalizedSourceGroup, StringComparison.OrdinalIgnoreCase))
+            .Select(CloneTask)
+            .ToList();
+        var variables = CloneStringDictionary(GetGroupVariablesForGroup(normalizedSourceGroup));
+
+        _copiedGroupPayload = new CopiedGroupPayload
+        {
+            SourceGroupName = normalizedSourceGroup,
+            Variables = variables,
+            Tasks = sourceTasks
+        };
+
+        DebugTraceLog.Write($"[GroupCopy] Copied group '{normalizedSourceGroup}' with {sourceTasks.Count} task(s) and {variables.Count} variable(s).");
+    }
+
+    private bool PasteCopiedGroup()
+    {
+        if (_copiedGroupPayload is null)
+        {
+            DebugTraceLog.Write("[GroupPaste] Paste blocked because no copied group payload exists.");
+            AppMessageBox.Show(this, "Copy a group first, then paste it.", "Paste Group", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        var existingGroupNames = GetGroupNames().ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var suggestedGroupName = BuildSuggestedGroupCopyName(_copiedGroupPayload.SourceGroupName, existingGroupNames);
+        DebugTraceLog.Write($"[GroupPaste] Prompting for target name. Source='{_copiedGroupPayload.SourceGroupName}', suggested='{suggestedGroupName}', existingGroups={existingGroupNames.Count}.");
+        var prompt = new GroupNamePromptWindow(existingGroupNames, suggestedGroupName)
+        {
+            Owner = this
+        };
+
+        if (prompt.ShowDialog() != true)
+        {
+            DebugTraceLog.Write($"[GroupPaste] User cancelled paste for source '{_copiedGroupPayload.SourceGroupName}'.");
+            return false;
+        }
+
+        var newGroupName = NormalizeGroupName(prompt.GroupName);
+
+        if (existingGroupNames.Contains(newGroupName))
+        {
+            DebugTraceLog.Write($"[GroupPaste] Validation failed after prompt. Target group '{newGroupName}' already exists.");
+            AppMessageBox.Show(this, $"A group named '{newGroupName}' already exists.", "Paste Group", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        var groupDefinition = GetOrCreateGroupDefinition(newGroupName);
+        groupDefinition.Variables = CloneStringDictionary(_copiedGroupPayload.Variables);
+        var addedTaskCount = 0;
+
+        foreach (var sourceTask in _copiedGroupPayload.Tasks)
+        {
+            var clonedTask = CloneTask(sourceTask);
+            clonedTask.Group = newGroupName;
+            _currentConfiguration.Tasks.Add(clonedTask);
+            addedTaskCount++;
+        }
+
+        _selectedGroupName = newGroupName;
+        DebugTraceLog.Write($"[GroupPaste] Creating group '{newGroupName}' from '{_copiedGroupPayload.SourceGroupName}' with {addedTaskCount} task(s) and {groupDefinition.Variables.Count} variable(s).");
+        SaveTasksAndRefresh("Paste Group");
+        DebugTraceLog.Write($"[GroupPaste] Persisted pasted group '{newGroupName}'.");
+        return true;
+    }
+
+    private static string BuildSuggestedGroupCopyName(string sourceGroupName, ISet<string> existingGroupNames)
+    {
+        var baseName = $"{NormalizeGroupName(sourceGroupName)} Copy";
+        var candidate = baseName;
+        var suffix = 2;
+
+        while (existingGroupNames.Contains(candidate))
+        {
+            candidate = $"{baseName} ({suffix})";
+            suffix++;
+        }
+
+        return candidate;
+    }
+
+    private static Dictionary<string, string> CloneStringDictionary(IReadOnlyDictionary<string, string>? source)
+    {
+        var clone = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (source is null)
+        {
+            return clone;
+        }
+
+        foreach (var pair in source)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key))
+            {
+                continue;
+            }
+
+            clone[pair.Key] = pair.Value ?? string.Empty;
+        }
+
+        return clone;
+    }
+
+    private static LauncherTask CloneTask(LauncherTask source)
+    {
+        return new LauncherTask
+        {
+            Name = source.Name,
+            Description = source.Description,
+            Group = NormalizeGroupName(source.Group),
+            CommandLine = source.CommandLine,
+            Runner = source.Runner,
+            Env = CloneStringDictionary(source.Env),
+            WorkingDirectory = source.WorkingDirectory,
+            WaitForExit = source.WaitForExit,
+            RequiresElevation = source.RequiresElevation,
+            IgnoreExitCode = source.IgnoreExitCode,
+            TimeoutSeconds = source.TimeoutSeconds,
+            KillProcessTreeOnCancel = source.KillProcessTreeOnCancel,
+            MaxCapturedOutputChars = source.MaxCapturedOutputChars,
+            IsEnabled = source.IsEnabled,
+            ImportedFromFile = source.ImportedFromFile,
+            ImportedAtUtc = source.ImportedAtUtc,
+            Inputs = CloneStringDictionary(source.Inputs),
+            InputBindings = CloneStringDictionary(source.InputBindings),
+            Outputs = CloneStringDictionary(source.Outputs)
+        };
     }
 
     private bool PasteTaskIntoSelectedGroup()

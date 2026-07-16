@@ -6,6 +6,8 @@ namespace tsky;
 
 internal static class TaskProcessStartInfoFactory
 {
+    private static readonly Regex EnvironmentPlaceholderRegex = new("%([^%]+)%", RegexOptions.Compiled);
+
     public static bool TryBuild(LauncherTask task, out ProcessStartInfo processStartInfo, out string error)
     {
         processStartInfo = new ProcessStartInfo
@@ -19,11 +21,22 @@ internal static class TaskProcessStartInfoFactory
 
         error = string.Empty;
         var runner = NormalizeRunner(task.Runner);
+        if (!ApplyTaskEnvironmentVariables(task, processStartInfo, out error))
+        {
+            return false;
+        }
+
+        var commandLine = task.CommandLine ?? string.Empty;
+        if (!TryExpandEnvironmentPlaceholders(commandLine, processStartInfo.Environment, out var expandedCommandLine, out var missingCommandLineVariables))
+        {
+            error = $"commandLine references undefined environment variable(s): {string.Join(", ", missingCommandLineVariables.Select(name => "%" + name + "%"))}.";
+            return false;
+        }
 
         switch (runner)
         {
             case "exe":
-                if (!TrySplitExecutableCommand(task.CommandLine, out var fileName, out var arguments))
+                if (!TrySplitExecutableCommand(expandedCommandLine, out var fileName, out var arguments))
                 {
                     error = "For runner 'exe', commandLine must include an executable path or command.";
                     return false;
@@ -44,7 +57,7 @@ internal static class TaskProcessStartInfoFactory
 
             case "cmd":
                 processStartInfo.FileName = "cmd.exe";
-                processStartInfo.Arguments = $"/c \"{task.CommandLine}\"";
+                processStartInfo.Arguments = $"/c \"{expandedCommandLine}\"";
                 break;
 
             case "powershell":
@@ -52,17 +65,12 @@ internal static class TaskProcessStartInfoFactory
                 processStartInfo.ArgumentList.Add("-ExecutionPolicy");
                 processStartInfo.ArgumentList.Add("Bypass");
                 processStartInfo.ArgumentList.Add("-Command");
-                processStartInfo.ArgumentList.Add(task.CommandLine);
+                processStartInfo.ArgumentList.Add(expandedCommandLine);
                 break;
 
             default:
                 error = "Runner must be one of: exe, cmd, powershell.";
                 return false;
-        }
-
-        if (!ApplyTaskEnvironmentVariables(task, processStartInfo, out error))
-        {
-            return false;
         }
 
         if (!ApplyTaskWorkingDirectory(task, processStartInfo, out error))
@@ -173,7 +181,7 @@ internal static class TaskProcessStartInfoFactory
 
     private static string ExpandEnvironmentPlaceholders(string value, IDictionary<string, string?> environment)
     {
-        return Regex.Replace(value, "%([^%]+)%", match =>
+        return EnvironmentPlaceholderRegex.Replace(value, match =>
         {
             var variableName = match.Groups[1].Value;
 
@@ -185,6 +193,62 @@ internal static class TaskProcessStartInfoFactory
             var machineValue = Environment.GetEnvironmentVariable(variableName);
             return machineValue ?? string.Empty;
         });
+    }
+
+    internal static IReadOnlyList<string> GetMissingEnvironmentPlaceholders(string value, IEnumerable<string>? overrideVariableNames = null)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        var overrideNameSet = overrideVariableNames is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(overrideVariableNames.Where(name => !string.IsNullOrWhiteSpace(name)), StringComparer.OrdinalIgnoreCase);
+
+        var missing = new List<string>();
+        foreach (Match match in EnvironmentPlaceholderRegex.Matches(value))
+        {
+            var variableName = match.Groups[1].Value.Trim();
+            if (string.IsNullOrWhiteSpace(variableName))
+            {
+                continue;
+            }
+
+            if (overrideNameSet.Contains(variableName))
+            {
+                continue;
+            }
+
+            if (Environment.GetEnvironmentVariable(variableName) is not null)
+            {
+                continue;
+            }
+
+            if (!missing.Contains(variableName, StringComparer.OrdinalIgnoreCase))
+            {
+                missing.Add(variableName);
+            }
+        }
+
+        return missing;
+    }
+
+    private static bool TryExpandEnvironmentPlaceholders(
+        string value,
+        IDictionary<string, string?> environment,
+        out string expanded,
+        out IReadOnlyList<string> missingVariables)
+    {
+        missingVariables = GetMissingEnvironmentPlaceholders(value, environment.Keys);
+        if (missingVariables.Count > 0)
+        {
+            expanded = string.Empty;
+            return false;
+        }
+
+        expanded = ExpandEnvironmentPlaceholders(value, environment);
+        return true;
     }
 
     private static bool TrySplitExecutableCommand(string commandLine, out string fileName, out string arguments)

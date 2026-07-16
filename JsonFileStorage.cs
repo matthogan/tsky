@@ -1,6 +1,8 @@
 using System.IO;
 using System.Text.Json;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace tsky;
 
@@ -9,7 +11,11 @@ internal static class JsonFileStorage
     private const int LockAcquireTimeoutMs = 5000;
     private const int LockRetryDelayMs = 50;
     private const int MaxBackupFilesPerTarget = 5;
+    private const string TasksFileName = "tasks.json";
     private static readonly ConcurrentDictionary<string, FileStream> ActiveLockStreams = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly string AppDataTskyDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "tsky");
 
     public static T LoadOrDefault<T>(string path, JsonSerializerOptions options) where T : new()
     {
@@ -168,6 +174,13 @@ internal static class JsonFileStorage
 
     private static string CreateTimestampedBackupPath(string targetPath)
     {
+        if (IsTasksJsonTarget(targetPath))
+        {
+            Directory.CreateDirectory(AppDataTskyDirectory);
+            var token = BuildPathToken(targetPath);
+            return Path.Combine(AppDataTskyDirectory, $"tasks.{token}.{DateTime.UtcNow:yyyyMMddHHmmssfff}.bak");
+        }
+
         return $"{targetPath}.{DateTime.UtcNow:yyyyMMddHHmmssfff}.bak";
     }
 
@@ -185,14 +198,16 @@ internal static class JsonFileStorage
 
     private static void TrimBackupHistory(string targetPath)
     {
-        var directory = Path.GetDirectoryName(targetPath);
+        var isTasksJson = IsTasksJsonTarget(targetPath);
+        var directory = isTasksJson ? AppDataTskyDirectory : Path.GetDirectoryName(targetPath);
         if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
         {
             return;
         }
 
-        var fileName = Path.GetFileName(targetPath);
-        var backupPattern = $"{fileName}.*.bak";
+        var backupPattern = isTasksJson
+            ? $"tasks.{BuildPathToken(targetPath)}.*.bak"
+            : $"{Path.GetFileName(targetPath)}.*.bak";
 
         var backups = Directory.GetFiles(directory, backupPattern)
             .Select(path => new FileInfo(path))
@@ -211,6 +226,18 @@ internal static class JsonFileStorage
                 // Best-effort cleanup; stale backups are non-fatal.
             }
         }
+    }
+
+    private static bool IsTasksJsonTarget(string targetPath)
+    {
+        return string.Equals(Path.GetFileName(targetPath), TasksFileName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildPathToken(string targetPath)
+    {
+        var normalizedPath = Path.GetFullPath(targetPath).ToUpperInvariant();
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedPath));
+        return Convert.ToHexString(hash)[..10].ToLowerInvariant();
     }
 
     private sealed class LockHandle : IDisposable

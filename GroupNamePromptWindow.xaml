@@ -1,0 +1,104 @@
+<Window x:Class="tsky.GroupNamePromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Paste Group"
+        Width="480"
+        MinWidth="420"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{DynamicResource AppBackgroundBrush}"
+        FontFamily="{DynamicResource AppUiFontFamily}"
+        Foreground="{DynamicResource PrimaryTextBrush}">
+    <Window.Resources>
+        <Style x:Key="DialogButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource TabHeaderHoverBackgroundBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.6" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PrimaryDialogButtonStyle" TargetType="Button" BasedOn="{StaticResource DialogButtonStyle}">
+            <Setter Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   FontSize="14"
+                   FontWeight="SemiBold"
+                   Text="Create copied group" />
+
+        <TextBlock Grid.Row="1"
+                   Margin="0,8,0,8"
+                   Text="Enter a unique group name:" />
+
+        <TextBox x:Name="GroupNameTextBox"
+                 Grid.Row="2"
+                 MinHeight="34"
+                 Padding="8,6"
+                 Background="{DynamicResource PanelBackgroundBrush}"
+                 Foreground="{DynamicResource PrimaryTextBrush}"
+                 BorderBrush="{DynamicResource InputBorderBrush}" />
+
+        <TextBlock x:Name="ValidationTextBlock"
+                   Grid.Row="3"
+                   Margin="0,6,0,0"
+                   Foreground="#FFE57373"
+                   Visibility="Collapsed" />
+
+        <StackPanel Grid.Row="4"
+                    Margin="0,14,0,0"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button x:Name="CancelButton"
+                    Width="100"
+                    Height="34"
+                    Margin="0,0,8,0"
+                    Content="Cancel"
+                    Style="{StaticResource DialogButtonStyle}"
+                    Click="CancelButton_Click" />
+            <Button x:Name="OkButton"
+                    Width="100"
+                    Height="34"
+                    Content="OK"
+                    Style="{StaticResource PrimaryDialogButtonStyle}"
+                    Click="OkButton_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

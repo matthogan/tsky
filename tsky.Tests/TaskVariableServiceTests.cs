@@ -115,4 +115,44 @@ public sealed class TaskVariableServiceTests
         Assert.False(missing.IsDefined);
         Assert.False(missing.HasValue);
     }
+
+    [Fact]
+    public void ApplyGroupVariables_ExpandsWindowsEnvironmentVariablesInVariableAndInputValues()
+    {
+        var variableName = $"TSKY_VAR_{Guid.NewGuid():N}";
+        const string variableValue = "ENV_OK";
+        var previousValue = Environment.GetEnvironmentVariable(variableName);
+
+        try
+        {
+            Environment.SetEnvironmentVariable(variableName, variableValue);
+
+            var task = new LauncherTask
+            {
+                Name = "Build",
+                Group = "General",
+                Runner = "cmd",
+                CommandLine = "echo ${valueFromGroupVar}",
+                Inputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["inputPath"] = "%" + variableName + "%\\input"
+                }
+            };
+
+            var variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["valueFromGroupVar"] = "%" + variableName + "%"
+            };
+
+            var expanded = TaskVariableService.ApplyGroupVariables(task, variables, out var unresolved);
+
+            Assert.Equal($"echo {variableValue}", expanded.CommandLine);
+            Assert.Equal($"{variableValue}\\input", expanded.Inputs["inputPath"]);
+            Assert.Empty(unresolved);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variableName, previousValue);
+        }
+    }
 }

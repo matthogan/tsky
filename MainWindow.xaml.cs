@@ -166,6 +166,8 @@ public partial class MainWindow : Window
     {
         public required Grid RootGrid { get; init; }
 
+        public required ScrollViewer RunListScrollViewer { get; init; }
+
         public required StackPanel RunListPanel { get; init; }
 
         public required TextBlock EmptyListText { get; init; }
@@ -318,7 +320,11 @@ public partial class MainWindow : Window
         Color.FromRgb(0xA6, 0xE8, 0xFF),
         Color.FromRgb(0xB6, 0xD6, 0xFF),
         Color.FromRgb(0x97, 0xF0, 0xFF),
-        Color.FromRgb(0xB8, 0xE6, 0xFF)
+        Color.FromRgb(0xB8, 0xE6, 0xFF),
+        Color.FromRgb(0xFF, 0xE5, 0x8A),
+        Color.FromRgb(0xFF, 0xD1, 0x77),
+        Color.FromRgb(0xFF, 0xB8, 0x66),
+        Color.FromRgb(0xFF, 0xA1, 0x54)
     ];
 
     public MainWindow()
@@ -5509,6 +5515,11 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (TryHandleOutputPaneNavigationKey(e))
+        {
+            return;
+        }
+
         if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
         {
             if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
@@ -5663,6 +5674,98 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private bool TryHandleOutputPaneNavigationKey(KeyEventArgs e)
+    {
+        var focusedRun = FindFocusedOutputTabContext();
+        if (focusedRun is null)
+        {
+            return false;
+        }
+
+        return TryHandleOutputNavigationKey(focusedRun.HostOutputPanel, e);
+    }
+
+    private static bool TryHandleOutputNavigationKey(OutputGroupPanelContext panel, KeyEventArgs e)
+    {
+        var scrollViewer = panel.RunListScrollViewer;
+
+        if (Keyboard.Modifiers == ModifierKeys.None)
+        {
+            switch (e.Key)
+            {
+                case Key.Up:
+                    scrollViewer.ScrollToVerticalOffset(Math.Max(0, scrollViewer.VerticalOffset - 24));
+                    e.Handled = true;
+                    return true;
+                case Key.Down:
+                    scrollViewer.ScrollToVerticalOffset(Math.Min(scrollViewer.ScrollableHeight, scrollViewer.VerticalOffset + 24));
+                    e.Handled = true;
+                    return true;
+                case Key.PageUp:
+                    scrollViewer.PageUp();
+                    e.Handled = true;
+                    return true;
+                case Key.PageDown:
+                    scrollViewer.PageDown();
+                    e.Handled = true;
+                    return true;
+            }
+        }
+
+        if (Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            if (e.Key == Key.End)
+            {
+                scrollViewer.ScrollToBottom();
+                e.Handled = true;
+                return true;
+            }
+
+            if (e.Key == Key.Home)
+            {
+                scrollViewer.ScrollToTop();
+                e.Handled = true;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private TaskTabContext? FindFocusedOutputTabContext()
+    {
+        foreach (var panel in _groupOutputPanels.Values)
+        {
+            foreach (var run in panel.Runs)
+            {
+                if (run.OutputTextBox.IsKeyboardFocusWithin)
+                {
+                    return run;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private bool TryGetOutputTabContext(RichTextBox outputTextBox, out TaskTabContext tabContext)
+    {
+        foreach (var panel in _groupOutputPanels.Values)
+        {
+            foreach (var run in panel.Runs)
+            {
+                if (ReferenceEquals(run.OutputTextBox, outputTextBox))
+                {
+                    tabContext = run;
+                    return true;
+                }
+            }
+        }
+
+        tabContext = null!;
+        return false;
+    }
+
     private bool IsSidebarPaneFocused()
     {
         return SidebarPaneBorder?.IsKeyboardFocusWithin == true
@@ -5764,13 +5867,17 @@ public partial class MainWindow : Window
                 MessageBoxButton.OKCancel,
                 MessageBoxImage.Warning);
 
-            if (overwriteResult != MessageBoxResult.OK)
+            if (overwriteResult == MessageBoxResult.OK)
             {
-                return false;
+                _currentConfiguration.Tasks[existingIndex] = pastedTask;
+                _selectedTaskIndex = existingIndex;
             }
-
-            _currentConfiguration.Tasks[existingIndex] = pastedTask;
-            _selectedTaskIndex = existingIndex;
+            else
+            {
+                pastedTask.Name = BuildUniqueTaskCopyName(targetGroup, pastedTask.Name);
+                _currentConfiguration.Tasks.Add(pastedTask);
+                _selectedTaskIndex = _currentConfiguration.Tasks.Count - 1;
+            }
         }
         else
         {
@@ -5781,6 +5888,26 @@ public partial class MainWindow : Window
         _selectedGroupName = targetGroup;
         SaveTasksAndRefresh("Paste Task");
         return true;
+    }
+
+    private string BuildUniqueTaskCopyName(string groupName, string originalName)
+    {
+        var baseName = string.IsNullOrWhiteSpace(originalName)
+            ? "Task"
+            : originalName.Trim();
+
+        var candidate = $"{baseName} (2)";
+        var suffix = 2;
+
+        while (_currentConfiguration.Tasks.Any(task =>
+                   string.Equals(NormalizeGroupName(task.Group), groupName, StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(task.Name?.Trim(), candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            suffix++;
+            candidate = $"{baseName} ({suffix})";
+        }
+
+        return candidate;
     }
 
     private void SelectNextVisibleTask(int step)
@@ -6843,6 +6970,7 @@ public partial class MainWindow : Window
         var panelContext = new OutputGroupPanelContext
         {
             RootGrid = outputRoot,
+            RunListScrollViewer = listScroll,
             RunListPanel = runListPanel,
             EmptyListText = emptyListText
         };
@@ -7019,6 +7147,7 @@ public partial class MainWindow : Window
 
         textBox.Loaded += (_, _) => UpdateOutputDocumentPageWidth(textBox);
         textBox.SizeChanged += (_, _) => UpdateOutputDocumentPageWidth(textBox);
+        textBox.PreviewKeyDown += OutputTextBox_PreviewKeyDown;
 
         var contextMenu = new ContextMenu();
         var copyItem = new MenuItem { Header = "Copy" };
@@ -7033,6 +7162,21 @@ public partial class MainWindow : Window
         textBox.ContextMenu = contextMenu;
 
         return textBox;
+    }
+
+    private void OutputTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not RichTextBox outputTextBox)
+        {
+            return;
+        }
+
+        if (!TryGetOutputTabContext(outputTextBox, out var tabContext))
+        {
+            return;
+        }
+
+        TryHandleOutputNavigationKey(tabContext.HostOutputPanel, e);
     }
 
     private static void UpdateOutputDocumentPageWidth(RichTextBox textBox)

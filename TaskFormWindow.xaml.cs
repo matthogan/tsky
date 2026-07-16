@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 
 namespace tsky;
 
@@ -23,6 +24,7 @@ public partial class TaskFormWindow : Window
         App.ThemeChanged += OnThemeChanged;
         Closed += (_, _) => App.ThemeChanged -= OnThemeChanged;
         Closed += TaskFormWindow_Closed;
+        PreviewKeyDown += TaskFormWindow_PreviewKeyDown;
     }
 
     public LauncherTask? Task { get; private set; }
@@ -220,6 +222,17 @@ public partial class TaskFormWindow : Window
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
         DialogResult = false;
+    }
+
+    private void TaskFormWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+        {
+            return;
+        }
+
+        DialogResult = false;
+        e.Handled = true;
     }
 
     private void BrowseCommandButton_Click(object sender, RoutedEventArgs e)

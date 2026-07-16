@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 
 namespace tsky;
 
@@ -13,6 +14,7 @@ public partial class TaskEditorWindow : Window
         SourceInitialized += (_, _) => WindowThemeManager.ApplyTitleBarTheme(this, App.IsDarkThemeEnabled());
         App.ThemeChanged += OnThemeChanged;
         Closed += (_, _) => App.ThemeChanged -= OnThemeChanged;
+        PreviewKeyDown += TaskEditorWindow_PreviewKeyDown;
 
         TaskDefinitionTextBox.Text = taskJson;
         TaskDefinitionTextBox.Select(0, 0);
@@ -41,5 +43,16 @@ public partial class TaskEditorWindow : Window
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
         DialogResult = false;
+    }
+
+    private void TaskEditorWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+        {
+            return;
+        }
+
+        DialogResult = false;
+        e.Handled = true;
     }
 }

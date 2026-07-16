@@ -62,6 +62,8 @@ internal sealed class DataflowResolutionResult
     public Dictionary<string, string> ResolvedOutputs { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
     public List<string> TraceLines { get; init; } = [];
+
+    public List<string> UnresolvedPlaceholders { get; init; } = [];
 }
 
 internal static class DataflowPortResolver
@@ -71,7 +73,8 @@ internal static class DataflowPortResolver
     public static DataflowResolutionResult Resolve(LauncherTask task, DataflowContext? context)
     {
         var trace = new List<string>();
-        var resolvedInputs = ResolveInputs(task, context, trace);
+        var unresolvedPlaceholders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var resolvedInputs = ResolveInputs(task, context, trace, unresolvedPlaceholders);
 
         var resolvedTask = new LauncherTask
         {
@@ -85,26 +88,31 @@ internal static class DataflowPortResolver
             TimeoutSeconds = task.TimeoutSeconds,
             KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = task.MaxCapturedOutputChars,
-            CommandLine = ResolveValue(task.CommandLine, resolvedInputs, context, trace, "commandLine"),
-            WorkingDirectory = ResolveValue(task.WorkingDirectory, resolvedInputs, context, trace, "workingDirectory"),
-            Env = ResolveEnvironment(task.Env, resolvedInputs, context, trace),
+            CommandLine = ResolveValue(task.CommandLine, resolvedInputs, context, trace, unresolvedPlaceholders, "commandLine"),
+            WorkingDirectory = ResolveValue(task.WorkingDirectory, resolvedInputs, context, trace, unresolvedPlaceholders, "workingDirectory"),
+            Env = ResolveEnvironment(task.Env, resolvedInputs, context, trace, unresolvedPlaceholders),
             Inputs = new Dictionary<string, string>(resolvedInputs, StringComparer.OrdinalIgnoreCase),
             InputBindings = new Dictionary<string, string>(task.InputBindings, StringComparer.OrdinalIgnoreCase),
             Outputs = new Dictionary<string, string>(task.Outputs, StringComparer.OrdinalIgnoreCase)
         };
 
-        var resolvedOutputs = ResolveOutputs(task, resolvedInputs, context, trace);
+        var resolvedOutputs = ResolveOutputs(task, resolvedInputs, context, trace, unresolvedPlaceholders);
 
         return new DataflowResolutionResult
         {
             ResolvedTask = resolvedTask,
             ResolvedInputs = resolvedInputs,
             ResolvedOutputs = resolvedOutputs,
-            TraceLines = trace
+            TraceLines = trace,
+            UnresolvedPlaceholders = unresolvedPlaceholders.OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToList()
         };
     }
 
-    private static Dictionary<string, string> ResolveInputs(LauncherTask task, DataflowContext? context, List<string> trace)
+    private static Dictionary<string, string> ResolveInputs(
+        LauncherTask task,
+        DataflowContext? context,
+        List<string> trace,
+        HashSet<string> unresolvedPlaceholders)
     {
         var resolvedInputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -116,7 +124,7 @@ internal static class DataflowPortResolver
             }
 
             var inputName = pair.Key.Trim();
-            var resolvedValue = ResolveValue(pair.Value ?? string.Empty, resolvedInputs, context, trace, $"input default '{inputName}'");
+            var resolvedValue = ResolveValue(pair.Value ?? string.Empty, resolvedInputs, context, trace, unresolvedPlaceholders, $"input default '{inputName}'");
             resolvedInputs[inputName] = resolvedValue;
             trace.Add($"Input '{inputName}' default -> '{resolvedValue}'");
         }
@@ -155,7 +163,8 @@ internal static class DataflowPortResolver
         IReadOnlyDictionary<string, string> env,
         IReadOnlyDictionary<string, string> resolvedInputs,
         DataflowContext? context,
-        List<string> trace)
+        List<string> trace,
+        HashSet<string> unresolvedPlaceholders)
     {
         var resolvedEnv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -167,7 +176,7 @@ internal static class DataflowPortResolver
             }
 
             var key = pair.Key.Trim();
-            var resolvedValue = ResolveValue(pair.Value ?? string.Empty, resolvedInputs, context, trace, $"env '{key}'");
+            var resolvedValue = ResolveValue(pair.Value ?? string.Empty, resolvedInputs, context, trace, unresolvedPlaceholders, $"env '{key}'");
             resolvedEnv[key] = resolvedValue;
         }
 
@@ -178,7 +187,8 @@ internal static class DataflowPortResolver
         LauncherTask task,
         IReadOnlyDictionary<string, string> resolvedInputs,
         DataflowContext? context,
-        List<string> trace)
+        List<string> trace,
+        HashSet<string> unresolvedPlaceholders)
     {
         var resolvedOutputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -190,7 +200,7 @@ internal static class DataflowPortResolver
             }
 
             var outputName = pair.Key.Trim();
-            var resolvedValue = ResolveValue(pair.Value ?? string.Empty, resolvedInputs, context, trace, $"output '{outputName}'");
+            var resolvedValue = ResolveValue(pair.Value ?? string.Empty, resolvedInputs, context, trace, unresolvedPlaceholders, $"output '{outputName}'");
             resolvedOutputs[outputName] = resolvedValue;
             trace.Add($"Output '{outputName}' -> '{resolvedValue}'");
         }
@@ -203,6 +213,7 @@ internal static class DataflowPortResolver
         IReadOnlyDictionary<string, string> resolvedInputs,
         DataflowContext? context,
         List<string> trace,
+        HashSet<string> unresolvedPlaceholders,
         string location)
     {
         if (string.IsNullOrEmpty(value))
@@ -230,6 +241,7 @@ internal static class DataflowPortResolver
             }
 
             trace.Add($"Unresolved ${token} in {location}; replaced with empty string.");
+            unresolvedPlaceholders.Add($"${token} ({location})");
             didReplace = true;
             return string.Empty;
         });

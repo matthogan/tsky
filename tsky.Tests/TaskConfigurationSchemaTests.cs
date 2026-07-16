@@ -191,4 +191,175 @@ public sealed class TaskConfigurationSchemaTests
             }
         }
     }
+
+        [Fact]
+        public void PasteIntoGroup_CopyPayload_RewritesGroupAndPersistsToTargetGroup()
+        {
+          var tempPath = Path.Combine(Path.GetTempPath(), $"tsky-paste-group-{Guid.NewGuid():N}.json");
+
+          try
+          {
+            var sourceTask = new LauncherTask
+            {
+              Name = "Build Service",
+              Group = "Source Group",
+              Runner = "cmd",
+              CommandLine = "echo build",
+              Description = "original task description",
+              WorkingDirectory = "C:\\repo"
+            };
+
+            var copiedJson = TaskConfiguration.SerializeTask(sourceTask);
+            var canDeserialize = TaskConfiguration.TryDeserializeTask(copiedJson, out var pastedTask, out var parseError);
+
+            Assert.True(canDeserialize, parseError);
+
+            pastedTask.Group = "Target Group";
+
+            var config = new TaskConfiguration
+            {
+              Tasks = [pastedTask]
+            };
+
+            TaskConfiguration.Save(tempPath, config);
+            var reloaded = TaskConfiguration.Load(tempPath);
+
+            var persistedTask = Assert.Single(reloaded.Tasks);
+            Assert.Equal("Build Service", persistedTask.Name);
+            Assert.Equal("Target Group", persistedTask.Group);
+            Assert.Equal("cmd", persistedTask.Runner);
+            Assert.Equal("echo build", persistedTask.CommandLine);
+            Assert.Equal("original task description", persistedTask.Description);
+            Assert.Equal("C:\\repo", persistedTask.WorkingDirectory);
+            Assert.False(string.Equals("Source Group", persistedTask.Group, StringComparison.OrdinalIgnoreCase));
+          }
+          finally
+          {
+            if (File.Exists(tempPath))
+            {
+              File.Delete(tempPath);
+            }
+          }
+        }
+
+        [Fact]
+        public void SaveAndLoad_PersistsGroupVariablesAlongsideTasks()
+        {
+          var tempPath = Path.Combine(Path.GetTempPath(), $"tsky-group-vars-{Guid.NewGuid():N}.json");
+
+          try
+          {
+            var config = new TaskConfiguration
+            {
+              Tasks =
+              [
+                new LauncherTask
+                {
+                  Name = "Build",
+                  Group = "BuildGroup",
+                  Runner = "cmd",
+                  CommandLine = "echo ${projectName}"
+                }
+              ],
+              Groups =
+              [
+                new LauncherTaskGroup
+                {
+                  Name = "BuildGroup",
+                  Variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                  {
+                    ["projectName"] = "tsky",
+                    ["configuration"] = "Debug"
+                  }
+                }
+              ]
+            };
+
+            TaskConfiguration.Save(tempPath, config);
+            var loaded = TaskConfiguration.Load(tempPath);
+
+            var loadedGroup = Assert.Single(loaded.Groups);
+            Assert.Equal("BuildGroup", loadedGroup.Name);
+            Assert.Equal("tsky", loadedGroup.Variables["projectName"]);
+            Assert.Equal("Debug", loadedGroup.Variables["configuration"]);
+          }
+          finally
+          {
+            if (File.Exists(tempPath))
+            {
+              File.Delete(tempPath);
+            }
+          }
+        }
+
+        [Fact]
+        public void TryValidateSchema_FailsForInvalidGroupVariableValueType()
+        {
+          var json = """
+          {
+            "schemaVersion": 1,
+            "groups": [
+            {
+              "name": "BuildGroup",
+              "variables": {
+              "projectName": 123
+              },
+              "tasks": [
+              {
+                "name": "Build",
+                "commandLine": "echo hi",
+                "runner": "cmd"
+              }
+              ]
+            }
+            ]
+          }
+          """;
+
+          var valid = TaskConfiguration.TryValidateSchema(json, out var error);
+
+          Assert.False(valid);
+          Assert.Contains("variables", error, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void SaveAndLoad_PreservesVariableOnlyGroups()
+        {
+          var tempPath = Path.Combine(Path.GetTempPath(), $"tsky-group-vars-only-{Guid.NewGuid():N}.json");
+
+          try
+          {
+            var config = new TaskConfiguration
+            {
+              Tasks = [],
+              Groups =
+              [
+                new LauncherTaskGroup
+                {
+                  Name = "TemplateGroup",
+                  Variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                  {
+                    ["projectName"] = "starter"
+                  },
+                  Tasks = []
+                }
+              ]
+            };
+
+            TaskConfiguration.Save(tempPath, config);
+            var reloaded = TaskConfiguration.Load(tempPath);
+
+            var group = Assert.Single(reloaded.Groups);
+            Assert.Equal("TemplateGroup", group.Name);
+            Assert.Equal("starter", group.Variables["projectName"]);
+            Assert.Empty(reloaded.Tasks);
+          }
+          finally
+          {
+            if (File.Exists(tempPath))
+            {
+              File.Delete(tempPath);
+            }
+          }
+        }
 }

@@ -31,7 +31,7 @@ public sealed class TaskExecutionServiceTests
         Assert.Equal(0, result.ExitCode);
         Assert.False(result.Succeeded);
         Assert.Equal(TaskExecutionOutcome.FailedNonZeroExit, result.Outcome);
-        Assert.Contains("PowerShell reported errors on stderr", result.FailureMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PowerShell produced stderr output", result.FailureMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Write-Error", result.StandardError, StringComparison.OrdinalIgnoreCase);
     }
 

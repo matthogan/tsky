@@ -55,6 +55,7 @@ public partial class MainWindow : Window
     private string? _selectedGroupName;
     private bool _preferGroupDeleteContext;
     private int? _selectedTaskIndex;
+    private string? _copiedTaskJson;
     private readonly List<int> _visibleTaskIndexes = [];
     private readonly Dictionary<string, OutputGroupPanelContext> _groupOutputPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupExpandedStates = new(StringComparer.OrdinalIgnoreCase);
@@ -90,6 +91,7 @@ public partial class MainWindow : Window
     private int _sidebarSpinnerFrameIndex;
     private bool _isHandlingBottomPanePortTabSelection;
     private bool _isSyncingBottomPaneToSelection;
+    private string? _variablesEditorGroupName;
     private bool _isGraphPanning;
     private Point _graphPanStartPoint;
     private double _graphPanStartHorizontalOffset;
@@ -341,6 +343,7 @@ public partial class MainWindow : Window
         _runHistory = TaskRunHistoryStore.Load();
         _runHistoryService = new RunHistoryService(_runHistory, MaxRunHistoryEntries);
         TaskScrollViewer.ScrollChanged += TaskScrollViewer_ScrollChanged;
+        TaskScrollViewer.MouseRightButtonUp += TaskScrollViewer_MouseRightButtonUp;
         TaskScrollViewer.SizeChanged += (_, _) =>
         {
             SyncTaskSurfaceToViewport();
@@ -360,6 +363,7 @@ public partial class MainWindow : Window
         TaskGraphCanvas.PreviewMouseMove += TaskGraphCanvas_PreviewMouseMove;
         TaskGraphCanvas.PreviewMouseLeftButtonUp += TaskGraphCanvas_PreviewMouseLeftButtonUp;
         TaskGraphCanvas.LostMouseCapture += TaskGraphCanvas_LostMouseCapture;
+        TaskWorkspaceSurface.MouseRightButtonUp += TaskWorkspaceSurface_MouseRightButtonUp;
         PreviewMouseLeftButtonUp += MainWindow_PreviewMouseLeftButtonUp;
         SizeChanged += (_, _) => ScheduleConnectorRefresh();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
@@ -1630,22 +1634,31 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_selectedTaskIndex.HasValue || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
-        {
-            return;
-        }
-
         try
         {
             _isHandlingBottomPanePortTabSelection = true;
 
             if (ReferenceEquals(BottomPaneTabControl.SelectedItem, InputPortsPaneTabItem))
             {
+                if (!_selectedTaskIndex.HasValue || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+                {
+                    return;
+                }
+
                 OpenInputPortsEditor(_selectedTaskIndex.Value);
             }
             else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPortsPaneTabItem))
             {
+                if (!_selectedTaskIndex.HasValue || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+                {
+                    return;
+                }
+
                 OpenOutputPortsEditor(_selectedTaskIndex.Value);
+            }
+            else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, VariablesPaneTabItem))
+            {
+                OpenVariablesEditor(selectTab: false);
             }
         }
         finally
@@ -1911,6 +1924,10 @@ public partial class MainWindow : Window
         {
             RenderGraphView();
             ApplyTaskCardSelectionVisuals();
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, VariablesPaneTabItem))
+            {
+                OpenVariablesEditor(selectTab: false);
+            }
             return;
         }
 
@@ -2065,6 +2082,23 @@ public partial class MainWindow : Window
             };
             bottomGlyphs.Children.Add(orderText);
 
+            var variableUsages = TaskVariableService.GetGroupVariableUsages(task, GetGroupVariablesForGroup(task.Group));
+            if (variableUsages.Count > 0)
+            {
+                bottomGlyphs.Children.Add(new TextBlock
+                {
+                    Text = "𝑥",
+                    FontFamily = new FontFamily("Cambria Math"),
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = foregroundBrush,
+                    Opacity = 0.9,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 10, 0),
+                    ToolTip = BuildTaskVariableUsageTooltip(variableUsages)
+                });
+            }
+
             if (importGlyph.Visibility == Visibility.Visible)
             {
                 importGlyph.Margin = new Thickness(0, 0, task.RequiresElevation ? 8 : 0, 0);
@@ -2149,6 +2183,7 @@ public partial class MainWindow : Window
             button.PreviewMouseLeftButtonDown += TaskCard_PreviewMouseLeftButtonDown;
             button.PreviewMouseMove += TaskCard_PreviewMouseMove;
             button.PreviewMouseLeftButtonUp += TaskCard_PreviewMouseLeftButtonUp;
+            button.PreviewMouseRightButtonUp += TaskCard_PreviewMouseRightButtonUp;
             menuButton.Click += TaskMenuButton_Click;
 
             var runningOverlay = CreateRunningOverlay();
@@ -2193,6 +2228,11 @@ public partial class MainWindow : Window
 
         ScheduleConnectorRefresh();
         ApplyTaskCardSelectionVisuals();
+
+        if (ReferenceEquals(BottomPaneTabControl.SelectedItem, VariablesPaneTabItem))
+        {
+            OpenVariablesEditor(selectTab: false);
+        }
     }
 
     private void ApplyTaskSurfaceModeVisibility()
@@ -2510,7 +2550,7 @@ public partial class MainWindow : Window
 
             _selectedTaskIndex = nodeTaskIndex;
             ApplyTaskCardSelectionVisuals();
-            OpenTaskContextMenu(nodeButton, nodeTaskIndex);
+            OpenTaskRightClickContextMenu(nodeButton, nodeTaskIndex);
             e.Handled = true;
         };
 
@@ -2896,29 +2936,52 @@ public partial class MainWindow : Window
     private void OpenTaskContextMenu(Button anchorButton, int taskIndex)
     {
         var menu = CreateTaskContextMenu(taskIndex);
-        anchorButton.ContextMenu = menu;
-        menu.PlacementTarget = anchorButton;
-        menu.IsOpen = true;
+        OpenContextMenuAtButton(menu, anchorButton);
+    }
+
+    private void OpenTaskRightClickContextMenu(FrameworkElement anchorElement, int taskIndex)
+    {
+        var menu = CreateTaskRightClickContextMenu(taskIndex);
+        OpenContextMenuAtPointer(menu, anchorElement);
     }
 
     private ContextMenu CreateTaskContextMenu(int taskIndex)
     {
-        var menu = new ContextMenu();
+        var menu = CreateRibbonContextMenu();
 
-        var editItem = new MenuItem { Header = "Edit" };
+        var editItem = new MenuItem { Header = "Edit", Style = (Style)Resources["AppMenuItemStyle"] };
         editItem.Click += (_, _) => EditTask(taskIndex);
 
         var toggleItem = new MenuItem
         {
-            Header = IsTaskEnabled(_currentConfiguration.Tasks[taskIndex]) ? "Disable" : "Enable"
+            Header = IsTaskEnabled(_currentConfiguration.Tasks[taskIndex]) ? "Disable" : "Enable",
+            Style = (Style)Resources["AppMenuItemStyle"]
         };
         toggleItem.Click += (_, _) => ToggleTaskEnabled(taskIndex);
+
+        var copyItem = new MenuItem
+        {
+            Header = "Copy",
+            InputGestureText = "Ctrl+C",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        copyItem.Click += (_, _) => CopyTask(taskIndex);
+
+        var pasteItem = new MenuItem
+        {
+            Header = "Paste",
+            InputGestureText = "Ctrl+V",
+            IsEnabled = CanPasteTaskIntoCurrentGroup(),
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        pasteItem.Click += (_, _) => PasteTaskIntoSelectedGroup();
 
         var replayEntry = GetLastSnapshotEntry(_currentConfiguration.Tasks[taskIndex]);
         var replayItem = new MenuItem
         {
             Header = "Replay Last Snapshot",
-            IsEnabled = replayEntry is not null
+            IsEnabled = replayEntry is not null,
+            Style = (Style)Resources["AppMenuItemStyle"]
         };
         replayItem.Click += async (_, _) =>
         {
@@ -2939,7 +3002,11 @@ public partial class MainWindow : Window
             await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: replayEntry.Id);
         };
 
-        var runChainItem = new MenuItem { Header = "Run Chain (Same Group)" };
+        var runChainItem = new MenuItem
+        {
+            Header = "Run Chain (Same Group)",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
         runChainItem.IsEnabled = _visibleTaskIndexes.Any(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
         runChainItem.Click += async (_, _) =>
         {
@@ -2952,15 +3019,163 @@ public partial class MainWindow : Window
             await RunTaskChainFromTaskAsync(taskIndex);
         };
 
-        var deleteItem = new MenuItem { Header = "Delete" };
+        var deleteItem = new MenuItem { Header = "Delete", Style = (Style)Resources["AppMenuItemStyle"] };
         deleteItem.Click += (_, _) => DeleteTask(taskIndex);
 
         menu.Items.Add(editItem);
         menu.Items.Add(toggleItem);
+        menu.Items.Add(copyItem);
+        menu.Items.Add(pasteItem);
+        menu.Items.Add(new Separator());
         menu.Items.Add(replayItem);
         menu.Items.Add(runChainItem);
+        menu.Items.Add(new Separator());
         menu.Items.Add(deleteItem);
         return menu;
+    }
+
+    private ContextMenu CreateMainViewContextMenu()
+    {
+        var menu = CreateRibbonContextMenu();
+        var hasSelectedTask = TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex);
+
+        var copyItem = new MenuItem
+        {
+            Header = "Copy",
+            InputGestureText = "Ctrl+C",
+            IsEnabled = hasSelectedTask,
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        copyItem.Click += (_, _) =>
+        {
+            if (hasSelectedTask)
+            {
+                CopyTask(selectedTaskIndex);
+            }
+        };
+
+        var pasteItem = new MenuItem
+        {
+            Header = "Paste",
+            InputGestureText = "Ctrl+V",
+            IsEnabled = CanPasteTaskIntoCurrentGroup(),
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+
+        menu.Items.Add(copyItem);
+        pasteItem.Click += (_, _) => PasteTaskIntoSelectedGroup();
+        menu.Items.Add(pasteItem);
+        return menu;
+    }
+
+    private ContextMenu CreateTaskRightClickContextMenu(int taskIndex)
+    {
+        var menu = CreateRibbonContextMenu();
+
+        var copyItem = new MenuItem
+        {
+            Header = "Copy",
+            InputGestureText = "Ctrl+C",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        copyItem.Click += (_, _) => CopyTask(taskIndex);
+
+        var pasteItem = new MenuItem
+        {
+            Header = "Paste",
+            InputGestureText = "Ctrl+V",
+            IsEnabled = CanPasteTaskIntoCurrentGroup(),
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        pasteItem.Click += (_, _) => PasteTaskIntoSelectedGroup();
+
+        menu.Items.Add(copyItem);
+        menu.Items.Add(pasteItem);
+        return menu;
+    }
+
+    private void OpenContextMenuAtButton(ContextMenu menu, FrameworkElement anchorElement)
+    {
+        try
+        {
+            anchorElement.ContextMenu = menu;
+            menu.PlacementTarget = anchorElement;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[ContextMenu] Failed to open context menu at button anchor");
+            AppMessageBox.Show(this, $"Could not open the menu.\n{ex.Message}", "Menu Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenContextMenuAtPointer(ContextMenu menu, FrameworkElement anchorElement)
+    {
+        try
+        {
+            anchorElement.ContextMenu = menu;
+            menu.PlacementTarget = anchorElement;
+            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+            menu.IsOpen = true;
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[ContextMenu] Failed to open context menu at mouse pointer");
+            AppMessageBox.Show(this, $"Could not open the menu.\n{ex.Message}", "Menu Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void TaskWorkspaceSurface_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement anchor)
+        {
+            return;
+        }
+
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Task && _visibleTaskIndexes.Count > 0)
+        {
+            _preferGroupDeleteContext = false;
+        }
+
+        var menu = CreateMainViewContextMenu();
+        OpenContextMenuAtPointer(menu, anchor);
+        e.Handled = true;
+    }
+
+    private void TaskScrollViewer_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.Handled || sender is not FrameworkElement anchor)
+        {
+            return;
+        }
+
+        var menu = CreateMainViewContextMenu();
+        OpenContextMenuAtPointer(menu, anchor);
+        e.Handled = true;
+    }
+
+    private void TaskCard_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Button button
+            || button.Parent is not Grid card
+            || card.Tag is not TaskCardVisual visual)
+        {
+            return;
+        }
+
+        _selectedTaskIndex = visual.TaskIndex;
+        ApplyTaskCardSelectionVisuals();
+
+        if (!IsValidTaskIndex(visual.TaskIndex))
+        {
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            e.Handled = true;
+            return;
+        }
+
+        OpenTaskRightClickContextMenu(button, visual.TaskIndex);
+        e.Handled = true;
     }
 
     private Button CreatePortEditorGlyphButton(bool isInput, int taskIndex)
@@ -3138,6 +3353,66 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OpenVariablesEditor(bool selectTab = true)
+    {
+        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            VariablesEditorTitleText.Text = "Variables - No Group";
+            VariablesRowsPanel.Children.Clear();
+            VariablesRowsPanel.Children.Add(CreateVariableRowControl(string.Empty, string.Empty));
+            _variablesEditorGroupName = null;
+
+            if (selectTab)
+            {
+                BottomPaneTabControl.SelectedItem = VariablesPaneTabItem;
+            }
+
+            return;
+        }
+
+        var groupName = NormalizeGroupName(_selectedGroupName);
+        _variablesEditorGroupName = groupName;
+        VariablesEditorTitleText.Text = $"Variables - {groupName}";
+        VariablesRowsPanel.Children.Clear();
+
+        var variables = GetGroupVariablesForGroup(groupName);
+        foreach (var pair in variables.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            VariablesRowsPanel.Children.Add(CreateVariableRowControl(pair.Key, pair.Value));
+        }
+
+        if (VariablesRowsPanel.Children.Count == 0)
+        {
+            VariablesRowsPanel.Children.Add(CreateVariableRowControl(string.Empty, string.Empty));
+        }
+
+        if (selectTab)
+        {
+            BottomPaneTabControl.SelectedItem = VariablesPaneTabItem;
+        }
+    }
+
+    private Grid CreateVariableRowControl(string name, string value)
+    {
+        var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2.2, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var nameBox = CreatePortEditorTextBox(name, "Variable name");
+        var valueBox = CreatePortEditorTextBox(value, "Variable value");
+        var removeButton = CreateRemovePortRowButton(() => VariablesRowsPanel.Children.Remove(row));
+
+        Grid.SetColumn(nameBox, 0);
+        Grid.SetColumn(valueBox, 1);
+        Grid.SetColumn(removeButton, 2);
+
+        row.Children.Add(nameBox);
+        row.Children.Add(valueBox);
+        row.Children.Add(removeButton);
+        return row;
+    }
+
     private Grid CreateInputPortRowControl(string name, string defaultValue, string bindingValue)
     {
         var row = new Grid { Margin = new Thickness(0, 0, 0, 6), Tag = new PortEditorRowMarker { IsInput = true } };
@@ -3236,6 +3511,11 @@ public partial class MainWindow : Window
         OutputPortsRowsPanel.Children.Add(CreateOutputPortRowControl(string.Empty, string.Empty));
     }
 
+    private void AddVariableRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        VariablesRowsPanel.Children.Add(CreateVariableRowControl(string.Empty, string.Empty));
+    }
+
     private void SaveInputPortsButton_Click(object sender, RoutedEventArgs e)
     {
         if (!_portEditorTaskIndex.HasValue || !TryGetTask(_portEditorTaskIndex.Value, out var task))
@@ -3277,6 +3557,102 @@ public partial class MainWindow : Window
         task.Outputs = outputs;
         SaveTasksAndRefresh("Save Output Ports");
         OpenOutputPortsEditor(_portEditorTaskIndex.Value);
+    }
+
+    private void SaveVariablesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_variablesEditorGroupName))
+        {
+            LogPortEditorError("Select a group before saving variables.");
+            return;
+        }
+
+        if (!TryCollectVariableRows(out var variables, out var error))
+        {
+            LogPortEditorError(error);
+            return;
+        }
+
+        var groupName = NormalizeGroupName(_variablesEditorGroupName);
+        var groupDefinition = GetOrCreateGroupDefinition(groupName);
+        groupDefinition.Variables = variables;
+        SaveTasksAndRefresh("Save Variables");
+        OpenVariablesEditor();
+    }
+
+    private bool TryCollectVariableRows(out Dictionary<string, string> variables, out string error)
+    {
+        variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        error = string.Empty;
+
+        foreach (var child in VariablesRowsPanel.Children)
+        {
+            if (child is not Grid row || row.Children.Count < 2)
+            {
+                continue;
+            }
+
+            var name = (row.Children[0] as TextBox)?.Text?.Trim() ?? string.Empty;
+            var value = (row.Children[1] as TextBox)?.Text ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                error = "Variable row has value but no variable name.";
+                return false;
+            }
+
+            if (variables.ContainsKey(name))
+            {
+                error = $"Duplicate variable name '{name}'.";
+                return false;
+            }
+
+            variables[name] = value;
+        }
+
+        return true;
+    }
+
+    private LauncherTaskGroup GetOrCreateGroupDefinition(string groupName)
+    {
+        var normalizedGroup = NormalizeGroupName(groupName);
+        var existing = _currentConfiguration.Groups.FirstOrDefault(group =>
+            string.Equals(NormalizeGroupName(group.Name), normalizedGroup, StringComparison.OrdinalIgnoreCase));
+
+        if (existing is not null)
+        {
+            existing.Variables ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            return existing;
+        }
+
+        var created = new LauncherTaskGroup
+        {
+            Name = normalizedGroup,
+            Variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            Tasks = []
+        };
+
+        _currentConfiguration.Groups.Add(created);
+        return created;
+    }
+
+    private Dictionary<string, string> GetGroupVariablesForGroup(string? groupName)
+    {
+        var normalizedGroup = NormalizeGroupName(groupName);
+        var variables = _currentConfiguration.Groups.FirstOrDefault(group =>
+            string.Equals(NormalizeGroupName(group.Name), normalizedGroup, StringComparison.OrdinalIgnoreCase))?.Variables;
+
+        if (variables is null)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return new Dictionary<string, string>(variables, StringComparer.OrdinalIgnoreCase);
     }
 
     private void LogPortEditorError(string message)
@@ -4398,18 +4774,30 @@ public partial class MainWindow : Window
 
     private ContextMenu CreateRibbonContextMenu()
     {
-        return new ContextMenu
+        var menu = new ContextMenu
         {
             Style = (Style)Resources["RibbonContextMenuStyle"],
             Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom
         };
+
+        menu.Resources[typeof(MenuItem)] = (Style)Resources["AppMenuItemStyle"];
+        menu.Resources[typeof(Separator)] = (Style)Resources["AppMenuSeparatorStyle"];
+        return menu;
     }
 
-    private static void OpenRibbonContextMenu(Button button, ContextMenu menu)
+    private void OpenRibbonContextMenu(Button button, ContextMenu menu)
     {
-        button.ContextMenu = menu;
-        menu.PlacementTarget = button;
-        menu.IsOpen = true;
+        try
+        {
+            button.ContextMenu = menu;
+            menu.PlacementTarget = button;
+            menu.IsOpen = true;
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[ContextMenu] Failed to open ribbon context menu");
+            AppMessageBox.Show(this, $"Could not open the menu.\n{ex.Message}", "Menu Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private void AppendValidationEvent(string action, string path, bool succeeded, string details, RichTextBox? outputTextBox = null)
@@ -4506,9 +4894,27 @@ public partial class MainWindow : Window
     private static List<string> GetBusinessRuleValidationWarnings(TaskConfiguration config)
     {
         var warnings = new List<string>();
+        var groupVariables = config.Groups
+            .Where(group => !string.IsNullOrWhiteSpace(group.Name))
+            .ToDictionary(
+                group => NormalizeGroupName(group.Name),
+                group => (IReadOnlyDictionary<string, string>)(group.Variables ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+                StringComparer.OrdinalIgnoreCase);
 
         foreach (var task in config.Tasks)
         {
+            var taskName = string.IsNullOrWhiteSpace(task.Name) ? "(unnamed)" : task.Name.Trim();
+            var groupName = NormalizeGroupName(task.Group);
+            var variables = groupVariables.TryGetValue(groupName, out var groupValues)
+                ? groupValues
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var unresolvedVariables = TaskVariableService.GetUnresolvedVariables(task, variables);
+            if (unresolvedVariables.Count > 0)
+            {
+                warnings.Add(
+                    $"Task '{taskName}' (group '{groupName}') contains unresolved variables: {string.Join(", ", unresolvedVariables.Select(name => "${" + name + "}"))}. Define them in group variables.");
+            }
+
             var runner = TaskProcessStartInfoFactory.NormalizeRunner(task.Runner);
             if (!string.Equals(runner, "exe", StringComparison.OrdinalIgnoreCase))
             {
@@ -4526,8 +4932,6 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            var taskName = string.IsNullOrWhiteSpace(task.Name) ? "(unnamed)" : task.Name.Trim();
-            var groupName = NormalizeGroupName(task.Group);
             warnings.Add(
                 $"Task '{taskName}' (group '{groupName}') uses runner 'exe' with script '{commandToken}'. Potential issue: .cmd/.bat scripts usually require runner 'cmd'. Suggested fix: set runner to 'cmd' or run via 'cmd /c \"{task.CommandLine}\"'.");
         }
@@ -5105,6 +5509,37 @@ public partial class MainWindow : Window
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
+            {
+                CopyTask(selectedTaskIndex);
+                e.Handled = true;
+            }
+
+            return;
+        }
+
+        if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            if (PasteTaskIntoSelectedGroup())
+            {
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
         {
             if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
@@ -5275,6 +5710,77 @@ public partial class MainWindow : Window
         }
 
         DeleteTask(taskIndex);
+    }
+
+    private void CopyTask(int taskIndex)
+    {
+        if (!TryGetTask(taskIndex, out var taskToCopy))
+        {
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _copiedTaskJson = TaskConfiguration.SerializeTask(taskToCopy);
+    }
+
+    private bool CanPasteTaskIntoCurrentGroup()
+    {
+        return !string.IsNullOrWhiteSpace(_copiedTaskJson)
+            && !string.IsNullOrWhiteSpace(_selectedGroupName);
+    }
+
+    private bool PasteTaskIntoSelectedGroup()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        {
+            AppMessageBox.Show(this, "Select a group before pasting a task.", "Paste Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_copiedTaskJson))
+        {
+            AppMessageBox.Show(this, "Copy a task first, then paste it into the target group.", "Paste Task", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (!TaskConfiguration.TryDeserializeTask(_copiedTaskJson, out var pastedTask, out var parseError))
+        {
+            AppMessageBox.Show(this, $"Could not paste task because the copied task data is invalid.\n\n{parseError}", "Paste Task", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        var targetGroup = NormalizeGroupName(_selectedGroupName);
+        pastedTask.Group = targetGroup;
+
+        var pastedTaskIdentityKey = GetTaskIdentityKey(pastedTask);
+        var existingIndex = _currentConfiguration.Tasks.FindIndex(task =>
+            string.Equals(GetTaskIdentityKey(task), pastedTaskIdentityKey, StringComparison.OrdinalIgnoreCase));
+
+        if (existingIndex >= 0)
+        {
+            var overwriteResult = AppMessageBox.Show(this,
+                $"A task named '{pastedTask.Name}' already exists in group '{targetGroup}'. Overwrite it?",
+                "Duplicate Task Name",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning);
+
+            if (overwriteResult != MessageBoxResult.OK)
+            {
+                return false;
+            }
+
+            _currentConfiguration.Tasks[existingIndex] = pastedTask;
+            _selectedTaskIndex = existingIndex;
+        }
+        else
+        {
+            _currentConfiguration.Tasks.Add(pastedTask);
+            _selectedTaskIndex = _currentConfiguration.Tasks.Count - 1;
+        }
+
+        _selectedGroupName = targetGroup;
+        SaveTasksAndRefresh("Paste Task");
+        return true;
     }
 
     private void SelectNextVisibleTask(int step)
@@ -5662,6 +6168,31 @@ public partial class MainWindow : Window
             : $"Imported from: {task.ImportedFromFile}{Environment.NewLine}Imported at: {importDateDisplay}";
     }
 
+    private static string BuildTaskVariableUsageTooltip(IReadOnlyList<TaskVariableService.TaskVariableUsage> usages)
+    {
+        if (usages.Count == 0)
+        {
+            return "No variables in use.";
+        }
+
+        var lines = new List<string>
+        {
+            "Variables in use:"
+        };
+
+        foreach (var usage in usages)
+        {
+            var valueDisplay = usage.IsResolved
+                ? usage.Value
+                : usage.IsDefined
+                    ? "<empty>"
+                    : "<unresolved>";
+            lines.Add($"- ${{{usage.Name}}} = {valueDisplay}");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
     private async void TaskButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: LauncherTask task } button)
@@ -5746,7 +6277,9 @@ public partial class MainWindow : Window
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
         SetTaskRunState(task, TaskRunState.Running);
-        var resolved = DataflowPortResolver.Resolve(task, dataflowContext);
+        var groupVariables = GetGroupVariablesForGroup(task.Group);
+        var groupExpandedTask = TaskVariableService.ApplyGroupVariables(task, groupVariables, out var unresolvedVariables);
+        var resolved = DataflowPortResolver.Resolve(groupExpandedTask, dataflowContext);
         var effectiveTask = resolved.ResolvedTask;
         var publishedOutputs = new Dictionary<string, string>(resolved.ResolvedOutputs, StringComparer.OrdinalIgnoreCase);
         var historyEntry = StartHistoryEntry(
@@ -5769,6 +6302,30 @@ public partial class MainWindow : Window
         }
 
         AppendDataflowTrace(outputTextBox, task.Name, resolved);
+
+        if (resolved.UnresolvedPlaceholders.Count > 0)
+        {
+            AppendLog(
+                outputTextBox,
+                $"[{task.Name}] Execution blocked: unresolved dataflow placeholders detected: {string.Join(", ", resolved.UnresolvedPlaceholders)}.");
+            SetTabStopped(tabContext, false);
+            SetTaskRunState(task, TaskRunState.Failed);
+            CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+            UnregisterTaskCancellation(task);
+            linkedCancellationSource?.Dispose();
+            return new TaskExecutionResult { Succeeded = false, ExitCode = null };
+        }
+
+        if (unresolvedVariables.Count > 0)
+        {
+            AppendLog(outputTextBox, $"[{task.Name}] Unresolved variables in group '{NormalizeGroupName(task.Group)}': {string.Join(", ", unresolvedVariables.Select(name => "${" + name + "}"))}.");
+            SetTabStopped(tabContext, false);
+            SetTaskRunState(task, TaskRunState.Failed);
+            CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+            UnregisterTaskCancellation(task);
+            linkedCancellationSource?.Dispose();
+            return new TaskExecutionResult { Succeeded = false, ExitCode = null };
+        }
 
         if (string.IsNullOrWhiteSpace(effectiveTask.CommandLine))
         {

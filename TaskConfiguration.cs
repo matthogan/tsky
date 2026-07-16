@@ -178,12 +178,14 @@ public sealed class TaskConfiguration
     private static TaskConfiguration FromFileModel(TaskConfigurationFileModel fileModel)
     {
         var tasks = new List<LauncherTask>();
+        var groupVariables = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
         if (fileModel.Groups is { Count: > 0 })
         {
             foreach (var group in fileModel.Groups)
             {
                 var groupName = string.IsNullOrWhiteSpace(group.Name) ? "General" : group.Name.Trim();
+                groupVariables[groupName] = NormalizeGroupVariables(group.Variables);
                 foreach (var task in group.Tasks ?? [])
                 {
                     NormalizeTask(task, groupName);
@@ -202,7 +204,7 @@ public sealed class TaskConfiguration
 
         tasks = MergeTasks([], tasks);
 
-        var normalizedGroups = BuildGroups(tasks);
+        var normalizedGroups = BuildGroups(tasks, groupVariables);
         return new TaskConfiguration
         {
             Tasks = tasks,
@@ -212,7 +214,14 @@ public sealed class TaskConfiguration
 
     private static TaskConfigurationFileModel ToFileModel(TaskConfiguration config)
     {
-        var groups = BuildGroups(config.Tasks);
+        var groupVariables = config.Groups
+            .Where(group => !string.IsNullOrWhiteSpace(group.Name))
+            .ToDictionary(
+                group => group.Name.Trim(),
+                group => NormalizeGroupVariables(group.Variables),
+                StringComparer.OrdinalIgnoreCase);
+
+        var groups = BuildGroups(config.Tasks, groupVariables);
         return new TaskConfigurationFileModel
         {
             SchemaVersion = CurrentSchemaVersion,
@@ -325,6 +334,11 @@ public sealed class TaskConfiguration
                 && groupTasks.ValueKind is not (JsonValueKind.Array or JsonValueKind.Null))
             {
                 error = "groups[].tasks must be an array when provided.";
+                return false;
+            }
+
+            if (!TryValidateStringDictionary(group, "variables", out error))
+            {
                 return false;
             }
 
@@ -498,7 +512,9 @@ public sealed class TaskConfiguration
         return false;
     }
 
-    private static List<LauncherTaskGroup> BuildGroups(IEnumerable<LauncherTask> tasks)
+    private static List<LauncherTaskGroup> BuildGroups(
+        IEnumerable<LauncherTask> tasks,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? groupVariables = null)
     {
         var grouped = new List<LauncherTaskGroup>();
         var lookup = new Dictionary<string, LauncherTaskGroup>(StringComparer.OrdinalIgnoreCase);
@@ -512,7 +528,10 @@ public sealed class TaskConfiguration
                 group = new LauncherTaskGroup
                 {
                     Name = groupName,
-                    Tasks = []
+                    Tasks = [],
+                    Variables = groupVariables is not null && groupVariables.TryGetValue(groupName, out var variables)
+                        ? NormalizeGroupVariables(variables)
+                        : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 };
 
                 lookup[groupName] = group;
@@ -522,7 +541,52 @@ public sealed class TaskConfiguration
             group.Tasks.Add(task);
         }
 
+        if (groupVariables is not null)
+        {
+            foreach (var pair in groupVariables)
+            {
+                var groupName = string.IsNullOrWhiteSpace(pair.Key) ? "General" : pair.Key.Trim();
+                if (lookup.ContainsKey(groupName))
+                {
+                    continue;
+                }
+
+                var group = new LauncherTaskGroup
+                {
+                    Name = groupName,
+                    Tasks = [],
+                    Variables = NormalizeGroupVariables(pair.Value)
+                };
+
+                lookup[groupName] = group;
+                grouped.Add(group);
+            }
+        }
+
         return grouped;
+    }
+
+    private static Dictionary<string, string> NormalizeGroupVariables(IReadOnlyDictionary<string, string>? variables)
+    {
+        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (variables is null)
+        {
+            return normalized;
+        }
+
+        foreach (var pair in variables)
+        {
+            var key = pair.Key?.Trim() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                continue;
+            }
+
+            normalized[key] = pair.Value ?? string.Empty;
+        }
+
+        return normalized;
     }
 
     private static void NormalizeTask(LauncherTask task, string fallbackGroupName)
@@ -555,12 +619,29 @@ public sealed class TaskConfiguration
     private static TaskConfiguration MergeConfigurations(TaskConfiguration baseConfig, TaskConfiguration overlayConfig)
     {
         var mergedTasks = MergeTasks(baseConfig.Tasks, overlayConfig.Tasks);
+        var mergedGroupVariables = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
+        AddGroupVariables(baseConfig.Groups);
+        AddGroupVariables(overlayConfig.Groups);
 
         return new TaskConfiguration
         {
             Tasks = mergedTasks,
-            Groups = BuildGroups(mergedTasks)
+            Groups = BuildGroups(mergedTasks, mergedGroupVariables)
         };
+
+        void AddGroupVariables(IReadOnlyList<LauncherTaskGroup> groups)
+        {
+            foreach (var group in groups)
+            {
+                if (string.IsNullOrWhiteSpace(group.Name))
+                {
+                    continue;
+                }
+
+                mergedGroupVariables[group.Name.Trim()] = NormalizeGroupVariables(group.Variables);
+            }
+        }
     }
 
     private static List<LauncherTask> MergeTasks(IReadOnlyList<LauncherTask> baseTasks, IReadOnlyList<LauncherTask> overlayTasks)
@@ -646,6 +727,8 @@ public sealed class TaskConfiguration
 public sealed class LauncherTaskGroup
 {
     public string Name { get; set; } = "General";
+
+    public Dictionary<string, string> Variables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public List<LauncherTask> Tasks { get; set; } = [];
 }

@@ -33,7 +33,7 @@ Each task supports:
 - `description`
 - `group`
 - `commandLine`
-- `runner` (`exe`, `cmd`, `powershell`)
+- `runner` (`exe`, `cmd`, `powershell`, `python`)
 - `waitForExit` (default `true`)
 - `ignoreExitCode` (default `false`)
 - `requiresElevation` (default `false`)
@@ -55,6 +55,7 @@ Legacy flat `tasks` format is also accepted and normalized into grouped form.
 - `exe`: direct process launch.
 - `cmd`: `cmd.exe /c "<commandLine>"`.
 - `powershell`: `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "<commandLine>"`.
+- `python`: `python.exe <commandLine>` (falls back to `py.exe` when available).
 
 Notes:
 

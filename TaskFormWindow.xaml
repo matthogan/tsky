@@ -316,6 +316,7 @@
                         <ComboBoxItem Content="exe" />
                         <ComboBoxItem Content="cmd" />
                         <ComboBoxItem Content="powershell" />
+                        <ComboBoxItem Content="python" />
                     </ComboBox>
 
                     <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Command Line" />

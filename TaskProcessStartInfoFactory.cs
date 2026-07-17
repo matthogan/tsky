@@ -68,8 +68,13 @@ internal static class TaskProcessStartInfoFactory
                 processStartInfo.ArgumentList.Add(expandedCommandLine);
                 break;
 
+            case "python":
+                processStartInfo.FileName = ResolvePythonExecutable();
+                processStartInfo.Arguments = expandedCommandLine;
+                break;
+
             default:
-                error = "Runner must be one of: exe, cmd, powershell.";
+                error = "Runner must be one of: exe, cmd, powershell, python.";
                 return false;
         }
 
@@ -83,7 +88,10 @@ internal static class TaskProcessStartInfoFactory
 
     public static string NormalizeRunner(string? runner)
     {
-        return string.IsNullOrWhiteSpace(runner) ? "exe" : runner.Trim().ToLowerInvariant();
+        var normalized = string.IsNullOrWhiteSpace(runner) ? "exe" : runner.Trim().ToLowerInvariant();
+
+        // Support py as a friendly alias for the python runner.
+        return normalized == "py" ? "python" : normalized;
     }
 
     private static string ResolvePowerShellExecutable()
@@ -95,6 +103,23 @@ internal static class TaskProcessStartInfoFactory
         }
 
         return "powershell.exe";
+    }
+
+    private static string ResolvePythonExecutable()
+    {
+        // Prefer python.exe for parity with existing shells, then fall back to the Windows launcher.
+        if (IsExecutableOnPath("python.exe"))
+        {
+            return "python.exe";
+        }
+
+        if (IsExecutableOnPath("py.exe"))
+        {
+            return "py.exe";
+        }
+
+        // Fall back to python.exe so startup errors remain clear in task output.
+        return "python.exe";
     }
 
     private static bool IsExecutableOnPath(string executableName)

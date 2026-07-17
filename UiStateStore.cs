@@ -25,6 +25,8 @@ public sealed class UiState
 
     public List<string> NonFavoriteGroupsOrder { get; set; } = [];
 
+    public string? SelectedGroupName { get; set; }
+
     public double AddTaskDialogWidth { get; set; } = 760;
 
     public double AddTaskDialogHeight { get; set; } = 860;

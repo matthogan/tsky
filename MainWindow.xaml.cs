@@ -691,6 +691,10 @@ public partial class MainWindow : Window
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        _uiState.SelectedGroupName = string.IsNullOrWhiteSpace(_selectedGroupName)
+            ? null
+            : NormalizeGroupName(_selectedGroupName);
+
         _uiState.HistoryListPaneRatio = _historyListPaneRatio;
 
         // Preserve dialog-specific persisted dimensions written during this app session.
@@ -772,9 +776,16 @@ public partial class MainWindow : Window
         var groupNames = GetGroupNames();
         GroupsHeaderCountText.Text = $"({groupNames.Count})";
         GroupsSummaryText.Text = $"{groupNames.Count} groups created";
-        if (string.IsNullOrWhiteSpace(_selectedGroupName) || !groupNames.Contains(_selectedGroupName, StringComparer.OrdinalIgnoreCase))
+        if (groupNames.Count == 0)
         {
-            _selectedGroupName = groupNames.FirstOrDefault();
+            _selectedGroupName = null;
+        }
+        else if (string.IsNullOrWhiteSpace(_selectedGroupName) || !groupNames.Contains(_selectedGroupName, StringComparer.OrdinalIgnoreCase))
+        {
+            var persistedSelection = NormalizeGroupName(_uiState.SelectedGroupName);
+            _selectedGroupName = groupNames.Contains(persistedSelection, StringComparer.OrdinalIgnoreCase)
+                ? groupNames.First(name => string.Equals(name, persistedSelection, StringComparison.OrdinalIgnoreCase))
+                : groupNames[0];
         }
 
         RebuildGroupsMenu(groupNames);

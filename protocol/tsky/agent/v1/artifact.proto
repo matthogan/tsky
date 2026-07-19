@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+import "tsky/agent/v1/errors.proto";
+
+// Artifacts and artifact upload lifecycle.
+
+enum ArtifactTransferState {
+  ARTIFACT_TRANSFER_STATE_UNSPECIFIED = 0;
+  ARTIFACT_TRANSFER_STATE_DECLARED = 1;
+  ARTIFACT_TRANSFER_STATE_GRANTED = 2;
+  ARTIFACT_TRANSFER_STATE_UPLOADING = 3;
+  ARTIFACT_TRANSFER_STATE_UPLOADED = 4;
+  ARTIFACT_TRANSFER_STATE_FAILED = 5;
+}
+
+message ArtifactReference {
+  string artifact_id = 1;
+  string name = 2;
+  string media_type = 3;
+  uint64 size_bytes = 4;
+  bytes sha256 = 5;
+}
+
+message ArtifactManifest {
+  string artifact_id = 1;
+  string run_id = 2;
+  string attempt_id = 3;
+  string step_id = 4;
+  string name = 5;
+  string relative_path = 6;
+  string media_type = 7;
+  uint64 size_bytes = 8;
+  bytes sha256 = 9;
+  string retention_class = 10;
+}
+
+message ArtifactUploadGrant {
+  string grant_id = 1;
+  string agent_id = 2;
+  string run_id = 3;
+  string attempt_id = 4;
+  string artifact_id = 5;
+  string upload_url = 6;
+  uint64 maximum_size_bytes = 7;
+  bytes expected_sha256 = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  map<string, string> required_headers = 10;
+}
+
+message ArtifactUploadCompleted {
+  string grant_id = 1;
+  string artifact_id = 2;
+  uint64 size_bytes = 3;
+  bytes sha256 = 4;
+  google.protobuf.Timestamp completed_at = 5;
+}
+
+message ArtifactUploadFailed {
+  string grant_id = 1;
+  string artifact_id = 2;
+  TapError error = 3;
+}
+
+message ArtifactUploadState {
+  string artifact_id = 1;
+  ArtifactTransferState state = 2;
+  uint64 uploaded_bytes = 3;
+  TapError error = 4;
+}

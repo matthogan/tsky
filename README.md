@@ -13,7 +13,7 @@ It supports grouped tasks, chain execution, dataflow ports/connectors, history r
 ## Run
 
 ```powershell
-dotnet run
+dotnet run --project .\src\Tsky.Desktop\Tsky.Desktop.csproj
 ```
 
 ## Configuration Files and Merge

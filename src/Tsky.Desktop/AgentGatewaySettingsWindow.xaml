@@ -1,0 +1,59 @@
+<Window x:Class="tsky.AgentGatewaySettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Gateway Listener Settings"
+        Width="680"
+        MinWidth="620"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{DynamicResource AppBackgroundBrush}"
+        FontFamily="{DynamicResource AppUiFontFamily}"
+        Foreground="{DynamicResource PrimaryTextBrush}">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" FontSize="15" FontWeight="SemiBold" Text="Gateway Listener" Margin="0,0,0,10" />
+
+        <CheckBox x:Name="EnableTlsCheckBox" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Content="Enable HTTPS listener (TLS)" Margin="0,0,0,10" />
+
+        <TextBlock Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,8" Text="Host" />
+        <TextBox x:Name="HostTextBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Height="32" Margin="0,0,0,8" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,8" Text="Port" />
+        <TextBox x:Name="PortTextBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Height="32" Margin="0,0,0,8" />
+
+        <TextBlock Grid.Row="4" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,8" Text="PFX certificate" />
+        <TextBox x:Name="CertPathTextBox" Grid.Row="4" Grid.Column="1" Height="32" Margin="0,0,8,8" />
+        <Button Grid.Row="4" Grid.Column="2" Width="34" Height="32" Content="…" Click="BrowseCertButton_Click" />
+
+        <TextBlock Grid.Row="5" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,8" Text="PFX password" />
+        <PasswordBox x:Name="CertPasswordBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Height="32" Margin="0,0,0,8" />
+
+        <CheckBox x:Name="DevFallbackCheckBox" Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="3" Content="Allow localhost HTTP fallback when TLS is disabled" Margin="0,0,0,10" />
+
+        <TextBlock Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="3" TextWrapping="Wrap" Foreground="{DynamicResource SecondaryTextBrush}"
+                   Text="When TLS is enabled, remote agents should trust the certificate chain or pinned thumbprint. Fallback keeps local development on http://localhost." Margin="0,0,0,12" />
+
+        <StackPanel Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Width="100" Height="34" Margin="0,0,8,0" Content="Cancel" Click="CancelButton_Click" />
+            <Button Width="100" Height="34" Content="Save" Click="SaveButton_Click" />
+        </StackPanel>
+    </Grid>
+</Window>

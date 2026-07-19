@@ -19,7 +19,7 @@ The second major risk is lack of automated verification. The project currently h
 ## Strengths
 
 - The project is small enough to improve incrementally without a large migration.
-- `tsky.csproj` uses modern defaults: .NET 8, nullable reference types, implicit usings, deterministic builds, and WPF.
+- `src/Tsky.Desktop/Tsky.Desktop.csproj` uses modern defaults: .NET 8, nullable reference types, implicit usings, deterministic builds, and WPF.
 - The domain model is explicit. `LauncherTask`, `TaskRunHistoryEntry`, and related types are easy to understand.
 - Configuration loading supports both legacy flat `tasks` and grouped `groups` formats, then normalizes into a single in-memory model.
 - `TaskProcessStartInfoFactory` is a good boundary for runner-specific process configuration.
@@ -194,8 +194,8 @@ Recommended path:
 The release workflow builds tagged releases, but there is no visible pull-request or main-branch CI workflow. Add a separate workflow that runs on pull requests and pushes:
 
 - `dotnet restore`
-- `dotnet build --configuration Release`
-- `dotnet test --configuration Release`
+- `dotnet build .\\Tsky.sln --configuration Release`
+- `dotnet test .\\Tsky.sln --configuration Release`
 - Optional formatting/analyzer checks once the codebase is ready
 
 For releases, consider adding:
@@ -242,5 +242,5 @@ Recommended sequence:
 ## Verification Notes
 
 - Static inspection completed.
-- `dotnet build tsky.csproj --no-restore` could not be run because `dotnet` was not installed or not on `PATH` in this environment.
+- `dotnet build .\\Tsky.sln --no-restore` could not be run because `dotnet` was not installed or not on `PATH` in this environment.
 - The repository had pre-existing modified and untracked files before this document was created. This assessment does not attempt to classify those changes.

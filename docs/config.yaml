@@ -1,0 +1,33 @@
+schemaVersion: 1
+controller:
+    url: http://localhost:7341
+    controllerId: ctl_801bbc237b40a8b3699231e7
+    tlsPinnedSha256: ""
+identity:
+    agentId: agt_364b110822f29dc6b2e71b80
+    keyId: key_65cf3f48066a234843ec6bf8
+    keyReference: file://C:\Users\admin\AppData\Local\tsky\Agents\AgentLocal\runtime\identity\agent-key.pem
+runtime:
+    root: C:\Users\admin\AppData\Local\tsky\Agents\AgentLocal\runtime
+    completedRunRetentionDays: 30
+    outputRetentionDays: 14
+    artifactRetentionDays: 7
+    warningFreeDiskBytes: 5368709120
+    criticalFreeDiskBytes: 1073741824
+execution:
+    maxConcurrentRuns: 1
+    defaultTimeoutSeconds: 3600
+    cancellationGraceSeconds: 10
+    maximumOutputBytesPerStream: 104857600
+    allowedExecutors:
+        - process.v1
+    allowedWorkingRoots:
+        - C:\Users\admin\AppData\Local\tsky\Agents\AgentLocal\runtime\work
+    allowShellExecutor: false
+connection:
+    heartbeatSeconds: 10
+    reconnectMinimumSeconds: 1
+    reconnectMaximumSeconds: 60
+logging:
+    level: debug
+    format: json

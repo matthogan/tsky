@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "tsky/agent/v1/common.proto";
+
+// Event and output acknowledgement cursors shared by session and reconciliation.
+
+message OutputAcknowledgement {
+  string step_id = 1;
+  OutputStream stream = 2;
+  uint64 highest_contiguous_sequence = 3;
+}
+
+message AttemptAcknowledgement {
+  string run_id = 1;
+  string attempt_id = 2;
+  uint64 highest_contiguous_event_sequence = 3;
+  repeated OutputAcknowledgement output_acknowledgements = 4;
+}
+
+message EventAcknowledgement {
+  repeated AttemptAcknowledgement attempts = 1;
+}

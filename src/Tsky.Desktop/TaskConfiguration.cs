@@ -193,6 +193,7 @@ public sealed class TaskConfiguration
     {
         var tasks = new List<LauncherTask>();
         var groupVariables = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var groupTargeting = new Dictionary<string, LauncherTaskGroup>(StringComparer.OrdinalIgnoreCase);
 
         if (fileModel.Groups is { Count: > 0 })
         {
@@ -200,6 +201,13 @@ public sealed class TaskConfiguration
             {
                 var groupName = string.IsNullOrWhiteSpace(group.Name) ? "General" : group.Name.Trim();
                 groupVariables[groupName] = NormalizeGroupVariables(group.Variables);
+                groupTargeting[groupName] = new LauncherTaskGroup
+                {
+                    Name = groupName,
+                    ExecutionTargetMode = NormalizeTargetMode(group.ExecutionTargetMode),
+                    TargetAgentId = string.IsNullOrWhiteSpace(group.TargetAgentId) ? null : group.TargetAgentId.Trim(),
+                    TargetPoolId = string.IsNullOrWhiteSpace(group.TargetPoolId) ? null : group.TargetPoolId.Trim()
+                };
                 foreach (var task in group.Tasks ?? [])
                 {
                     NormalizeTask(task, groupName);
@@ -218,7 +226,7 @@ public sealed class TaskConfiguration
 
         tasks = MergeTasks([], tasks);
 
-        var normalizedGroups = BuildGroups(tasks, groupVariables);
+        var normalizedGroups = BuildGroups(tasks, groupVariables, groupTargeting);
         return new TaskConfiguration
         {
             Tasks = tasks,
@@ -235,7 +243,20 @@ public sealed class TaskConfiguration
                 group => NormalizeGroupVariables(group.Variables),
                 StringComparer.OrdinalIgnoreCase);
 
-        var groups = BuildGroups(config.Tasks, groupVariables);
+        var groupTargeting = config.Groups
+            .Where(group => !string.IsNullOrWhiteSpace(group.Name))
+            .ToDictionary(
+                group => group.Name.Trim(),
+                group => new LauncherTaskGroup
+                {
+                    Name = group.Name.Trim(),
+                    ExecutionTargetMode = NormalizeTargetMode(group.ExecutionTargetMode),
+                    TargetAgentId = string.IsNullOrWhiteSpace(group.TargetAgentId) ? null : group.TargetAgentId.Trim(),
+                    TargetPoolId = string.IsNullOrWhiteSpace(group.TargetPoolId) ? null : group.TargetPoolId.Trim()
+                },
+                StringComparer.OrdinalIgnoreCase);
+
+        var groups = BuildGroups(config.Tasks, groupVariables, groupTargeting);
         return new TaskConfigurationFileModel
         {
             SchemaVersion = CurrentSchemaVersion,
@@ -384,6 +405,9 @@ public sealed class TaskConfiguration
         if (!TryValidateStringProperty(task, "name", out error)
             || !TryValidateStringProperty(task, "description", out error, allowNull: true)
             || !TryValidateStringProperty(task, "group", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "executionTargetMode", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "targetAgentId", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "targetPoolId", out error, allowNull: true)
             || !TryValidateStringProperty(task, "commandLine", out error)
             || !TryValidateStringProperty(task, "runner", out error)
             || !TryValidateStringProperty(task, "workingDirectory", out error)
@@ -572,7 +596,8 @@ public sealed class TaskConfiguration
 
     private static List<LauncherTaskGroup> BuildGroups(
         IEnumerable<LauncherTask> tasks,
-        IReadOnlyDictionary<string, Dictionary<string, string>>? groupVariables = null)
+        IReadOnlyDictionary<string, Dictionary<string, string>>? groupVariables = null,
+        IReadOnlyDictionary<string, LauncherTaskGroup>? groupTargeting = null)
     {
         var grouped = new List<LauncherTaskGroup>();
         var lookup = new Dictionary<string, LauncherTaskGroup>(StringComparer.OrdinalIgnoreCase);
@@ -586,6 +611,15 @@ public sealed class TaskConfiguration
                 group = new LauncherTaskGroup
                 {
                     Name = groupName,
+                    ExecutionTargetMode = groupTargeting is not null && groupTargeting.TryGetValue(groupName, out var groupDefaults)
+                        ? NormalizeTargetMode(groupDefaults.ExecutionTargetMode)
+                        : "local",
+                    TargetAgentId = groupTargeting is not null && groupTargeting.TryGetValue(groupName, out var targetAgentDefaults)
+                        ? targetAgentDefaults.TargetAgentId
+                        : null,
+                    TargetPoolId = groupTargeting is not null && groupTargeting.TryGetValue(groupName, out var targetPoolDefaults)
+                        ? targetPoolDefaults.TargetPoolId
+                        : null,
                     Tasks = [],
                     Variables = groupVariables is not null && groupVariables.TryGetValue(groupName, out var variables)
                         ? NormalizeGroupVariables(variables)
@@ -612,6 +646,15 @@ public sealed class TaskConfiguration
                 var group = new LauncherTaskGroup
                 {
                     Name = groupName,
+                    ExecutionTargetMode = groupTargeting is not null && groupTargeting.TryGetValue(groupName, out var groupDefaults)
+                        ? NormalizeTargetMode(groupDefaults.ExecutionTargetMode)
+                        : "local",
+                    TargetAgentId = groupTargeting is not null && groupTargeting.TryGetValue(groupName, out var targetAgentDefaults)
+                        ? targetAgentDefaults.TargetAgentId
+                        : null,
+                    TargetPoolId = groupTargeting is not null && groupTargeting.TryGetValue(groupName, out var targetPoolDefaults)
+                        ? targetPoolDefaults.TargetPoolId
+                        : null,
                     Tasks = [],
                     Variables = NormalizeGroupVariables(pair.Value)
                 };
@@ -651,10 +694,26 @@ public sealed class TaskConfiguration
     {
         task.Name = TaskIdentity.NormalizeTaskName(task.Name);
         task.Group = string.IsNullOrWhiteSpace(task.Group) ? fallbackGroupName : TaskIdentity.NormalizeGroupName(task.Group);
+        task.ExecutionTargetMode = NormalizeTargetMode(task.ExecutionTargetMode);
+        task.TargetAgentId = string.IsNullOrWhiteSpace(task.TargetAgentId) ? null : task.TargetAgentId.Trim();
+        task.TargetPoolId = string.IsNullOrWhiteSpace(task.TargetPoolId) ? null : task.TargetPoolId.Trim();
         task.Env ??= [];
         task.Inputs ??= [];
         task.InputBindings ??= [];
         task.Outputs ??= [];
+    }
+
+    private static string NormalizeTargetMode(string? mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            return "local";
+        }
+
+        var normalized = mode.Trim().ToLowerInvariant();
+        return normalized is "local" or "agent" or "pool" or "auto"
+            ? normalized
+            : "local";
     }
 
     private static TaskConfiguration LoadIfExists(string path)
@@ -682,10 +741,14 @@ public sealed class TaskConfiguration
         AddGroupVariables(baseConfig.Groups);
         AddGroupVariables(overlayConfig.Groups);
 
+        var mergedGroupTargeting = new Dictionary<string, LauncherTaskGroup>(StringComparer.OrdinalIgnoreCase);
+        AddGroupTargeting(baseConfig.Groups);
+        AddGroupTargeting(overlayConfig.Groups);
+
         return new TaskConfiguration
         {
             Tasks = mergedTasks,
-            Groups = BuildGroups(mergedTasks, mergedGroupVariables)
+            Groups = BuildGroups(mergedTasks, mergedGroupVariables, mergedGroupTargeting)
         };
 
         void AddGroupVariables(IReadOnlyList<LauncherTaskGroup> groups)
@@ -698,6 +761,25 @@ public sealed class TaskConfiguration
                 }
 
                 mergedGroupVariables[group.Name.Trim()] = NormalizeGroupVariables(group.Variables);
+            }
+        }
+
+        void AddGroupTargeting(IReadOnlyList<LauncherTaskGroup> groups)
+        {
+            foreach (var group in groups)
+            {
+                if (string.IsNullOrWhiteSpace(group.Name))
+                {
+                    continue;
+                }
+
+                mergedGroupTargeting[group.Name.Trim()] = new LauncherTaskGroup
+                {
+                    Name = group.Name.Trim(),
+                    ExecutionTargetMode = NormalizeTargetMode(group.ExecutionTargetMode),
+                    TargetAgentId = string.IsNullOrWhiteSpace(group.TargetAgentId) ? null : group.TargetAgentId.Trim(),
+                    TargetPoolId = string.IsNullOrWhiteSpace(group.TargetPoolId) ? null : group.TargetPoolId.Trim()
+                };
             }
         }
     }
@@ -786,6 +868,12 @@ public sealed class LauncherTaskGroup
 {
     public string Name { get; set; } = "General";
 
+    public string? ExecutionTargetMode { get; set; }
+
+    public string? TargetAgentId { get; set; }
+
+    public string? TargetPoolId { get; set; }
+
     public Dictionary<string, string> Variables { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public List<LauncherTask> Tasks { get; set; } = [];
@@ -807,6 +895,12 @@ public sealed class LauncherTask
     public string? Description { get; set; }
 
     public string? Group { get; set; }
+
+    public string ExecutionTargetMode { get; set; } = "local";
+
+    public string? TargetAgentId { get; set; }
+
+    public string? TargetPoolId { get; set; }
 
     public string CommandLine { get; set; } = string.Empty;
 

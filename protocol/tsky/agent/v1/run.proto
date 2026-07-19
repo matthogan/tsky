@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "tsky/agent/v1/artifact.proto";
+import "tsky/agent/v1/common.proto";
+import "tsky/agent/v1/errors.proto";
+
+// Runs, commands, inputs and outputs.
+
+enum DisconnectPolicy {
+  DISCONNECT_POLICY_UNSPECIFIED = 0;
+  DISCONNECT_POLICY_CONTINUE_AND_REPORT = 1;
+  DISCONNECT_POLICY_CANCEL_AFTER_GRACE_PERIOD = 2;
+  DISCONNECT_POLICY_CANCEL_IMMEDIATELY = 3;
+}
+
+enum RunAttemptState {
+  RUN_ATTEMPT_STATE_UNSPECIFIED = 0;
+  RUN_ATTEMPT_STATE_OFFERED = 1;
+  RUN_ATTEMPT_STATE_REJECTED = 2;
+  RUN_ATTEMPT_STATE_ACCEPTED = 3;
+  RUN_ATTEMPT_STATE_PREPARING = 4;
+  RUN_ATTEMPT_STATE_RUNNING = 5;
+  RUN_ATTEMPT_STATE_CANCELLING = 6;
+  RUN_ATTEMPT_STATE_CANCELLED = 7;
+  RUN_ATTEMPT_STATE_SUCCEEDED = 8;
+  RUN_ATTEMPT_STATE_FAILED = 9;
+  RUN_ATTEMPT_STATE_TIMED_OUT = 10;
+  RUN_ATTEMPT_STATE_INTERRUPTED = 11;
+}
+
+enum RunEventType {
+  RUN_EVENT_TYPE_UNSPECIFIED = 0;
+  RUN_EVENT_TYPE_ATTEMPT_STATE_CHANGED = 1;
+  RUN_EVENT_TYPE_STEP_STATE_CHANGED = 2;
+  RUN_EVENT_TYPE_PORT_VALUE_PRODUCED = 3;
+  RUN_EVENT_TYPE_ARTIFACT_DECLARED = 4;
+  RUN_EVENT_TYPE_ARTIFACT_UPLOAD_STATE_CHANGED = 5;
+  RUN_EVENT_TYPE_WARNING = 6;
+  RUN_EVENT_TYPE_DIAGNOSTIC = 7;
+}
+
+message RunOffer {
+  string offer_id = 1;
+  string run_id = 2;
+  string attempt_id = 3;
+  bytes plan_digest_sha256 = 4;
+  RunPlan plan = 5;
+  google.protobuf.Timestamp offer_expires_at = 6;
+  DisconnectPolicy disconnect_policy = 7;
+}
+
+message RunAccepted {
+  string offer_id = 1;
+  string run_id = 2;
+  string attempt_id = 3;
+  bytes plan_digest_sha256 = 4;
+  google.protobuf.Timestamp accepted_at = 5;
+}
+
+message RunRejected {
+  string offer_id = 1;
+  string run_id = 2;
+  string attempt_id = 3;
+  TapError error = 4;
+}
+
+message RunPlan {
+  uint32 schema_version = 1;
+  RunSource source = 2;
+  repeated RunStep steps = 3;
+  map<string, PortValue> initial_inputs = 4;
+  RunPolicy policy = 5;
+}
+
+message RunSource {
+  string kind = 1; // task, group, chain, graph, ritual
+  string source_id = 2;
+  uint64 revision = 3;
+  string ritual_run_id = 4;
+}
+
+message RunPolicy {
+  google.protobuf.Duration maximum_duration = 1;
+  DisconnectPolicy disconnect_policy = 2;
+  bool allow_shell_executors = 3;
+  uint64 maximum_output_bytes_per_stream = 4;
+  uint64 maximum_artifact_bytes = 5;
+  repeated string required_extensions = 6;
+}
+
+message RunStep {
+  string step_id = 1;
+  string source_task_id = 2;
+  string display_name = 3;
+  repeated string depends_on_step_ids = 4;
+  ExecutorCommand command = 5;
+  repeated DeclaredOutput declared_outputs = 6;
+  map<string, PortValue> inputs = 7;
+  google.protobuf.Duration timeout = 8;
+  bool continue_on_error = 9;
+}
+
+message ExecutorCommand {
+  string executor_id = 1;
+  string executor_version = 2;
+  google.protobuf.Struct parameters = 3;
+}
+
+message DeclaredOutput {
+  string output_id = 1;
+  string name = 2;
+  string kind = 3; // port, artifact, file, directory
+  string media_type = 4;
+  bool required = 5;
+}
+
+message PortValue {
+  oneof value {
+    string string_value = 1;
+    bool bool_value = 2;
+    sint64 integer_value = 3;
+    double floating_value = 4;
+    string decimal_value = 5;
+    google.protobuf.Timestamp timestamp_value = 6;
+    google.protobuf.Struct json_value = 7;
+    bytes bytes_value = 8;
+    ArtifactReference artifact_reference = 9;
+  }
+}
+
+message RunEvent {
+  string run_id = 1;
+  string attempt_id = 2;
+  string step_id = 3;
+  uint64 event_sequence = 4;
+  RunEventType type = 5;
+  RunAttemptState attempt_state = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+  google.protobuf.Struct detail = 8;
+}
+
+message RunOutput {
+  string run_id = 1;
+  string attempt_id = 2;
+  string step_id = 3;
+  OutputStream stream = 4;
+  uint64 output_sequence = 5;
+  bytes data = 6;
+  bool truncated = 7;
+}
+
+message ProducedPortValue {
+  string step_id = 1;
+  string port_id = 2;
+  PortValue value = 3;
+}
+
+message RunCompleted {
+  string run_id = 1;
+  string attempt_id = 2;
+  bytes plan_digest_sha256 = 3;
+  RunAttemptState terminal_state = 4;
+  int32 exit_code = 5;
+  bool has_exit_code = 6;
+  google.protobuf.Timestamp completed_at = 7;
+  TapError error = 8;
+  repeated ProducedPortValue produced_port_values = 9;
+  repeated ArtifactManifest artifacts = 10;
+  uint64 final_event_sequence = 11;
+}
+
+message CancelRun {
+  string run_id = 1;
+  string attempt_id = 2;
+  string reason = 3;
+  google.protobuf.Duration graceful_termination_period = 4;
+}
+
+message DrainRequest {
+  bool draining = 1;
+  string reason = 2;
+}

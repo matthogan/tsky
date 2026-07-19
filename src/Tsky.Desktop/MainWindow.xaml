@@ -708,7 +708,7 @@
                             <Button Style="{StaticResource RibbonAddCommandButtonStyle}" Click="RibbonAddTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
-                                    <TextBlock Text="Add" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                    <TextBlock x:Name="RibbonAddActionLabel" Text="Add" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
                         </StackPanel>
@@ -717,7 +717,7 @@
                             <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonEditTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
-                                    <TextBlock Text="Edit" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                    <TextBlock x:Name="RibbonEditActionLabel" Text="Edit" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
                             <Button x:Name="RibbonToggleTaskEnabledButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonToggleTaskEnabledButton_Click">
@@ -729,7 +729,7 @@
                             <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonDeleteTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
-                                    <TextBlock Text="Delete" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                    <TextBlock x:Name="RibbonDeleteActionLabel" Text="Delete" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
                         </StackPanel>
@@ -760,6 +760,16 @@
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE81E;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
                                     <TextBlock x:Name="RibbonTaskSurfaceToggleLabel" Text="Graph" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="RibbonGatewayListenerToggleButton"
+                                    Style="{StaticResource RibbonCommandHoverAccentStyle}"
+                                    Margin="8,0,0,0"
+                                    Click="RibbonGatewayListenerToggleButton_Click"
+                                    ToolTip="Toggle local agent listener">
+                                <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                    <TextBlock x:Name="RibbonGatewayListenerGlyphText" Text="👂" FontSize="16" HorizontalAlignment="Center" />
+                                    <TextBlock x:Name="RibbonGatewayListenerLabel" Text="Listener" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
                         </StackPanel>
@@ -841,67 +851,66 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <StackPanel Grid.Row="0">
-                    <Expander x:Name="SidebarGroupsExpander"
-                              Style="{StaticResource SidebarBottomSectionStyle}"
-                              IsExpanded="True"
-                              Expanded="SidebarGroupsExpander_Expanded"
-                              Collapsed="SidebarGroupsExpander_Collapsed">
-                        <Expander.Header>
-                            <DockPanel>
-                                <TextBlock x:Name="GroupsSectionChevronText"
-                                           Text="▼"
+                <Expander x:Name="SidebarGroupsExpander"
+                          Grid.Row="0"
+                          Style="{StaticResource SidebarBottomSectionStyle}"
+                          IsExpanded="True"
+                          Expanded="SidebarGroupsExpander_Expanded"
+                          Collapsed="SidebarGroupsExpander_Collapsed">
+                    <Expander.Header>
+                        <DockPanel>
+                            <TextBlock x:Name="GroupsSectionChevronText"
+                                       Text="▼"
+                                       Foreground="#FF6E7681"
+                                       FontSize="9"
+                                       Margin="0,0,6,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="GROUPS"
+                                       Foreground="#FF8B949E"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="GroupsHeaderCountText"
+                                       DockPanel.Dock="Right"
+                                       Text="(0)"
+                                       Foreground="#FFC9A74D"
+                                       FontSize="10"
+                                       Margin="8,0,0,0"
+                                       MinWidth="32"
+                                       TextAlignment="Right"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Expander.Header>
+
+                    <StackPanel x:Name="GroupsSectionContentPanel" Margin="0,4,0,0">
+                        <DockPanel Margin="0,0,0,8">
+                            <TextBlock x:Name="GroupsSummaryText"
+                                       Text="0 groups created"
+                                       Foreground="#FF8B949E"
+                                       FontSize="11"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+
+                        <Border Background="#FF151A1F" CornerRadius="14" Padding="8,4" MinHeight="30">
+                            <DockPanel LastChildFill="True">
+                                <TextBlock Text="🔍"
                                            Foreground="#FF6E7681"
-                                           FontSize="9"
                                            Margin="0,0,6,0"
                                            VerticalAlignment="Center" />
-                                <TextBlock Text="GROUPS"
-                                           Foreground="#FF8B949E"
-                                           FontSize="10"
-                                           FontWeight="SemiBold"
-                                           VerticalAlignment="Center" />
-                                <TextBlock x:Name="GroupsHeaderCountText"
-                                           DockPanel.Dock="Right"
-                                           Text="(0)"
-                                           Foreground="#FFC9A74D"
-                                           FontSize="10"
-                                           Margin="8,0,0,0"
-                                           MinWidth="32"
-                                           TextAlignment="Right"
-                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="GroupSearchTextBox"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="#FFB7C0C8"
+                                         CaretBrush="#FFB7C0C8"
+                                         Padding="0"
+                                         MinHeight="18"
+                                         VerticalContentAlignment="Center"
+                                         TextChanged="GroupSearchTextBox_TextChanged"
+                                         ToolTip="File, folder or project" />
                             </DockPanel>
-                        </Expander.Header>
-
-                        <StackPanel x:Name="GroupsSectionContentPanel" Margin="0,4,0,0">
-                            <DockPanel Margin="0,0,0,8">
-                                <TextBlock x:Name="GroupsSummaryText"
-                                           Text="0 groups created"
-                                           Foreground="#FF8B949E"
-                                           FontSize="11"
-                                           VerticalAlignment="Center" />
-                            </DockPanel>
-
-                            <Border Background="#FF151A1F" CornerRadius="14" Padding="8,4" MinHeight="30">
-                                <DockPanel LastChildFill="True">
-                                    <TextBlock Text="🔍"
-                                               Foreground="#FF6E7681"
-                                               Margin="0,0,6,0"
-                                               VerticalAlignment="Center" />
-                                    <TextBox x:Name="GroupSearchTextBox"
-                                             Background="Transparent"
-                                             BorderThickness="0"
-                                             Foreground="#FFB7C0C8"
-                                             CaretBrush="#FFB7C0C8"
-                                             Padding="0"
-                                             MinHeight="18"
-                                             VerticalContentAlignment="Center"
-                                             TextChanged="GroupSearchTextBox_TextChanged"
-                                             ToolTip="File, folder or project" />
-                                </DockPanel>
-                            </Border>
-                        </StackPanel>
-                    </Expander>
-                </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Expander>
 
                 <ScrollViewer x:Name="GroupsTreeScrollViewer"
                               Grid.Row="1"
@@ -910,6 +919,55 @@
                               HorizontalScrollBarVisibility="Disabled">
                     <StackPanel x:Name="GroupListPanel" />
                 </ScrollViewer>
+
+                <Expander x:Name="SidebarAgentsExpander"
+                          Grid.Row="2"
+                          Style="{StaticResource SidebarBottomSectionStyle}"
+                          IsExpanded="False"
+                          Margin="0,8,0,0"
+                          Expanded="SidebarAgentsExpander_Expanded"
+                          Collapsed="SidebarAgentsExpander_Collapsed">
+                    <Expander.Header>
+                        <DockPanel>
+                            <TextBlock x:Name="AgentsSectionChevronText"
+                                       Text="▶"
+                                       Foreground="#FF6E7681"
+                                       FontSize="9"
+                                       Margin="0,0,6,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="&#xE716;"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       Foreground="#FF8B949E"
+                                       FontSize="12"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="AGENTS"
+                                       Foreground="#FF8B949E"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="AgentsHeaderCountText"
+                                       DockPanel.Dock="Right"
+                                       Text="(0)"
+                                       Foreground="#FFC9A74D"
+                                       FontSize="10"
+                                       Margin="8,0,0,0"
+                                       MinWidth="32"
+                                       TextAlignment="Right"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Expander.Header>
+
+                    <Button x:Name="AgentsSidebarButton"
+                            Padding="8,7"
+                            HorizontalContentAlignment="Stretch"
+                            Background="Transparent"
+                            BorderBrush="Transparent"
+                            BorderThickness="0"
+                            Style="{StaticResource SidebarTreeGroupHeaderButtonStyle}"
+                            Click="AgentsSidebarButton_Click"
+                            Content="Open Agents View" />
+                </Expander>
 
             </Grid>
         </Border>
@@ -1136,6 +1194,250 @@
                                                          FontFamily="{DynamicResource AppMonoFontFamily}" />
                                             </Grid>
                                         </Border>
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem x:Name="AgentRuntimePaneTabItem" Header="Agent Runtime" Visibility="Collapsed">
+                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                            <Border Padding="10"
+                                    CornerRadius="0"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource PanelBorderBrush}"
+                                    BorderThickness="0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Text="Agent Runtime"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,8" />
+
+                                    <TextBlock x:Name="AgentRuntimeTitleText"
+                                               Grid.Row="1"
+                                               Text="Select an agent"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                               Margin="0,0,0,6" />
+
+                                    <TextBlock x:Name="AgentRuntimeMetaText"
+                                               Grid.Row="2"
+                                               Text=""
+                                               FontSize="11"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               Margin="0,0,0,10" />
+
+                                    <Grid Grid.Row="3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Active runs" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,12,8" />
+                                        <TextBlock x:Name="AgentRuntimeActiveRunsText" Grid.Row="0" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" Margin="0,0,0,8" />
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Session" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,12,8" />
+                                        <TextBlock x:Name="AgentRuntimeSessionText" Grid.Row="1" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" Margin="0,0,0,8" />
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Connectivity" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,12,8" />
+                                        <TextBlock x:Name="AgentRuntimeConnectivityText" Grid.Row="2" Grid.Column="1" Text="-" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" Margin="0,0,0,8" />
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Successful runs" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,12,8" />
+                                        <TextBlock x:Name="AgentRuntimeSuccessfulText" Grid.Row="3" Grid.Column="1" Text="Not currently tracked" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" Margin="0,0,0,8" />
+
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Failed runs" FontSize="11" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,12,0" />
+                                        <TextBlock x:Name="AgentRuntimeFailedText" Grid.Row="4" Grid.Column="1" Text="Not currently tracked" FontSize="11" Foreground="{DynamicResource PrimaryTextBrush}" />
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem x:Name="GatewaySettingsPaneTabItem" Header="Gateway Settings" Visibility="Collapsed">
+                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                            <Border Padding="10"
+                                    CornerRadius="0"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource PanelBorderBrush}"
+                                    BorderThickness="0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.ColumnSpan="2"
+                                               Text="Desktop Gateway"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,8" />
+
+                                    <TextBlock x:Name="GatewaySettingsSummaryText"
+                                               Grid.Row="1"
+                                               Grid.ColumnSpan="2"
+                                               Text=""
+                                               FontSize="11"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               Margin="0,0,0,6" />
+
+                                    <CheckBox x:Name="GatewayEnableTlsCheckBox"
+                                               Grid.Row="2"
+                                               Grid.ColumnSpan="2"
+                                               Content="Enable HTTPS listener (TLS)"
+                                               FontSize="11"
+                                               Checked="GatewaySettingsToggleChanged"
+                                               Unchecked="GatewaySettingsToggleChanged"
+                                               Margin="0,0,0,8" />
+
+                                    <TextBlock Grid.Row="3"
+                                               Grid.Column="0"
+                                               Text="Host"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               FontSize="11"
+                                               Margin="0,0,8,8" />
+                                    <TextBox x:Name="GatewayHostTextBox"
+                                               Grid.Row="3"
+                                               Grid.Column="1"
+                                               Height="30"
+                                               TextChanged="GatewaySettingsTextChanged"
+                                               Margin="0,0,0,8"
+                                               Background="{DynamicResource PanelBackgroundBrush}"
+                                               Foreground="{DynamicResource PrimaryTextBrush}"
+                                               BorderBrush="{DynamicResource PanelBorderBrush}" />
+
+                                    <TextBlock Grid.Row="4"
+                                               Grid.Column="0"
+                                               Text="Port"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               FontSize="11"
+                                               Margin="0,0,8,8" />
+                                    <TextBox x:Name="GatewayPortTextBox"
+                                             Grid.Row="4"
+                                             Grid.Column="1"
+                                             Height="30"
+                                             TextChanged="GatewaySettingsTextChanged"
+                                             Margin="0,0,0,8"
+                                             Background="{DynamicResource PanelBackgroundBrush}"
+                                             Foreground="{DynamicResource PrimaryTextBrush}"
+                                             BorderBrush="{DynamicResource PanelBorderBrush}" />
+
+                                    <TextBlock Grid.Row="5"
+                                               Grid.Column="0"
+                                               Text="PFX certificate"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               FontSize="11"
+                                               Margin="0,0,8,8" />
+                                    <Grid Grid.Row="5" Grid.Column="1" Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBox x:Name="GatewayCertPathTextBox"
+                                                 Grid.Column="0"
+                                                 Height="30"
+                                                 TextChanged="GatewaySettingsTextChanged"
+                                                 Background="{DynamicResource PanelBackgroundBrush}"
+                                                 Foreground="{DynamicResource PrimaryTextBrush}"
+                                                 BorderBrush="{DynamicResource PanelBorderBrush}" />
+
+                                        <Button x:Name="GatewayBrowseCertButton"
+                                                Grid.Column="1"
+                                                Content="Browse..."
+                                                Style="{StaticResource HistoryActionButtonStyle}"
+                                                Margin="8,0,0,0"
+                                                Click="GatewayBrowseCertButton_Click" />
+                                    </Grid>
+
+                                    <TextBlock Grid.Row="6"
+                                               Grid.Column="0"
+                                               Text="PFX password"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               FontSize="11"
+                                               Margin="0,0,8,8" />
+                                    <PasswordBox x:Name="GatewayCertPasswordBox"
+                                                 Grid.Row="6"
+                                                 Grid.Column="1"
+                                                 Height="30"
+                                                 Padding="8,0,8,0"
+                                                 VerticalContentAlignment="Center"
+                                                 PasswordChanged="GatewaySettingsPasswordChanged"
+                                                 Margin="0,0,0,8"
+                                                 Background="{DynamicResource PanelBackgroundBrush}"
+                                                 Foreground="{DynamicResource PrimaryTextBrush}"
+                                                 BorderBrush="{DynamicResource PanelBorderBrush}" />
+
+                                    <CheckBox x:Name="GatewayDevFallbackCheckBox"
+                                              Grid.Row="7"
+                                              Grid.ColumnSpan="2"
+                                              Content="Allow localhost HTTP fallback for development"
+                                              FontSize="11"
+                                              Checked="GatewaySettingsToggleChanged"
+                                              Unchecked="GatewaySettingsToggleChanged"
+                                              Margin="0,0,0,8" />
+
+                                    <TextBlock x:Name="GatewaySettingsStatusText"
+                                               Grid.Row="8"
+                                               Grid.ColumnSpan="2"
+                                               Text=""
+                                               FontSize="11"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,10" />
+
+                                    <Grid Grid.Row="9" Grid.ColumnSpan="2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock x:Name="GatewaySettingsValidationText"
+                                                   Grid.Column="0"
+                                                   Text=""
+                                                   FontSize="11"
+                                                   Foreground="#FFE16A6A"
+                                                   TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,12,0" />
+
+                                        <Button x:Name="ApplyGatewaySettingsFromTabButton"
+                                                Grid.Column="1"
+                                                Content="Save and Apply"
+                                                Style="{StaticResource HistoryActionButtonStyle}"
+                                                Margin="0"
+                                                MinWidth="128"
+                                                IsEnabled="False"
+                                                Click="ApplyGatewaySettingsFromTabButton_Click" />
                                     </Grid>
                                 </Grid>
                             </Border>

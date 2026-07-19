@@ -42,7 +42,7 @@ jobs:
         run: dotnet restore
 
       - name: Build
-        run: dotnet build .\tsky.csproj --configuration Release --no-restore
+        run: dotnet build .\Tsky.sln --configuration Release --no-restore
 
       - name: Test
         run: dotnet test .\tsky.Tests\tsky.Tests.csproj --configuration Release --no-build

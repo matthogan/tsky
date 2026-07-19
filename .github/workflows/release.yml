@@ -59,7 +59,7 @@ jobs:
       - name: Publish (${{ matrix.runtime }})
         shell: pwsh
         run: |
-          dotnet publish .\tsky.csproj `
+          dotnet publish .\src\Tsky.Desktop\Tsky.Desktop.csproj `
             -c Release `
             -r ${{ matrix.runtime }} `
             --self-contained false `

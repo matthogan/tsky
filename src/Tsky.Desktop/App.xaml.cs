@@ -1,6 +1,7 @@
 ﻿using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Media;
+using System.Threading.Tasks;
 
 namespace tsky;
 
@@ -15,15 +16,44 @@ public partial class App : System.Windows.Application
 	{
 		base.OnStartup(e);
 
+		DispatcherUnhandledException += App_DispatcherUnhandledException;
+		AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+		TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+		DebugTraceLog.Write("App", "Global exception handlers attached.");
+
 		ApplySystemThemeResources();
 		SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 	}
 
 	protected override void OnExit(ExitEventArgs e)
 	{
+		DispatcherUnhandledException -= App_DispatcherUnhandledException;
+		AppDomain.CurrentDomain.UnhandledException -= CurrentDomain_UnhandledException;
+		TaskScheduler.UnobservedTaskException -= TaskScheduler_UnobservedTaskException;
 		SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
 		JsonFileStorage.ReleaseAllLocks();
 		base.OnExit(e);
+	}
+
+	private static void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+	{
+		DebugTraceLog.Write(e.Exception, "Unhandled dispatcher exception");
+	}
+
+	private static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+	{
+		if (e.ExceptionObject is Exception ex)
+		{
+			DebugTraceLog.Write(ex, $"Unhandled AppDomain exception (IsTerminating={e.IsTerminating})");
+			return;
+		}
+
+		DebugTraceLog.Write("App", $"Unhandled AppDomain exception object (IsTerminating={e.IsTerminating}): {e.ExceptionObject}");
+	}
+
+	private static void TaskScheduler_UnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
+	{
+		DebugTraceLog.Write(e.Exception, "Unobserved task exception");
 	}
 
 	private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)

@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "google/protobuf/duration.proto";
+import "tsky/agent/v1/common.proto";
+
+// Agent description, health, capabilities and capacity.
+
+enum AgentAvailability {
+  AGENT_AVAILABILITY_UNSPECIFIED = 0;
+  AGENT_AVAILABILITY_IDLE = 1;
+  AGENT_AVAILABILITY_BUSY = 2;
+  AGENT_AVAILABILITY_DRAINING = 3;
+  AGENT_AVAILABILITY_DEGRADED = 4;
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_HEALTHY = 1;
+  HEALTH_STATE_WARNING = 2;
+  HEALTH_STATE_CRITICAL = 3;
+}
+
+message AgentHealth {
+  HealthState state = 1;
+  repeated HealthIssue issues = 2;
+}
+
+message HealthIssue {
+  string code = 1;
+  string message = 2;
+  map<string, string> detail = 3;
+}
+
+message Capacity {
+  uint32 active_runs = 1;
+  uint32 maximum_runs = 2;
+  double cpu_percent = 3;
+  uint64 memory_used_bytes = 4;
+  uint64 memory_total_bytes = 5;
+  uint64 runtime_disk_free_bytes = 6;
+}
+
+message AgentSnapshot {
+  string agent_id = 1;
+  string hostname = 2;
+  string operating_system = 3;
+  string operating_system_version = 4;
+  string architecture = 5;
+  string implementation_name = 6;
+  string implementation_version = 7;
+  AgentAvailability availability = 8;
+  Capacity capacity = 9;
+  AgentHealth health = 10;
+  google.protobuf.Duration uptime = 11;
+}
+
+message AgentHeartbeat {
+  uint64 heartbeat_sequence = 1;
+  google.protobuf.Duration uptime = 2;
+  Capacity capacity = 3;
+  bool draining = 4;
+  AgentHealth health = 5;
+}
+
+message CapabilityReport {
+  string agent_id = 1;
+  string implementation_name = 2;
+  string implementation_version = 3;
+  repeated ProtocolBinding bindings = 4;
+  repeated ExecutorCapability executors = 5;
+  repeated string features = 6;
+  map<string, string> labels = 7;
+  Capacity capacity = 8;
+  repeated ExtensionSupport extensions = 9;
+}
+
+message ExecutorCapability {
+  string executor_id = 1;
+  string executor_version = 2;
+  repeated string platforms = 3;
+  map<string, string> properties = 4;
+}

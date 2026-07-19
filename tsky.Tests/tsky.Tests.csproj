@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\tsky.csproj" />
+    <ProjectReference Include="..\src\Tsky.Desktop\Tsky.Desktop.csproj" />
   </ItemGroup>
 
 </Project>

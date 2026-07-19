@@ -2,8 +2,12 @@ using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -71,6 +75,7 @@ public partial class MainWindow : Window
     private readonly List<string> _nonFavoriteGroupsOrder = [];
     private readonly Dictionary<string, List<TextBlock>> _sidebarTaskStateGlyphs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
+    private readonly Dictionary<string, Grid> _agentCardsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, GraphNodeVisual> _graphNodesByIndex = [];
     private readonly Dictionary<string, TaskRunningOverlayVisual> _taskRunningOverlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ConnectorVisual> _connectorVisuals = [];
@@ -81,6 +86,16 @@ public partial class MainWindow : Window
     private readonly TaskCatalogService _taskCatalogService = new();
     private readonly ImportExportService _importExportService = new();
     private readonly DataflowGraphService _dataflowGraphService = new();
+    private readonly AgentRegistryService _agentRegistryService = new();
+    private readonly AgentGatewaySettingsService _agentGatewaySettingsService = new();
+    private AgentRegistry _agentRegistry = new();
+    private AgentGatewaySettings _agentGatewaySettings = new();
+    private readonly AgentGatewayHost _agentGatewayHost;
+    private readonly RemoteControlPlaneService _remoteControlPlaneService;
+    private readonly Dictionary<string, RemoteAttemptHandle> _taskRemoteAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DispatcherTimer _agentStatusRefreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private bool _isAgentViewSelected;
+    private string? _selectedAgentId;
     private bool _isReplayingHistoryBatch;
     private bool _isHistoryDetailsVisible = true;
     private double _historyListPaneRatio = DefaultHistoryListPaneRatio;
@@ -101,7 +116,15 @@ public partial class MainWindow : Window
     private Point _graphPointerDownPoint;
     private bool _graphPointerWasDrag;
     private bool _graphPointerActive;
+    private CancellationTokenSource? _gatewayValidationCts;
+    private bool _isGatewayToggleInProgress;
     private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
+    private static readonly Brush RibbonListenerOnBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x1F, 0x6F, 0x43));
+    private static readonly Brush RibbonListenerOnBorderBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0xA3, 0x63));
+    private static readonly Brush RibbonListenerOffBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x68, 0x2A, 0x2A));
+    private static readonly Brush RibbonListenerOffBorderBrush = new SolidColorBrush(Color.FromRgb(0xA8, 0x3A, 0x3A));
+    private static readonly Brush RibbonListenerPendingBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x8A, 0x5A, 0x00));
+    private static readonly Brush RibbonListenerPendingBorderBrush = new SolidColorBrush(Color.FromRgb(0xD9, 0x8F, 0x00));
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] SidebarRunningFrames = ["◐", "◓", "◑", "◒"];
     private const double GraphDragThreshold = 6;
@@ -142,6 +165,12 @@ public partial class MainWindow : Window
     {
         Task,
         Graph
+    }
+
+    private enum MainSurfaceKind
+    {
+        Tasks,
+        Agents
     }
 
     private sealed class TaskTabContext
@@ -243,6 +272,15 @@ public partial class MainWindow : Window
         public required Storyboard PulseStoryboard { get; init; }
     }
 
+    private sealed class RemoteAttemptHandle
+    {
+        public required string AgentId { get; init; }
+
+        public required string RunId { get; init; }
+
+        public required string AttemptId { get; init; }
+    }
+
     private sealed class ConnectorVisual
     {
         public required System.Windows.Shapes.Path PrimaryPath { get; init; }
@@ -280,6 +318,13 @@ public partial class MainWindow : Window
         public required string Name { get; init; }
 
         public required TaskRunState State { get; init; }
+    }
+
+    private sealed class AgentCardVisual
+    {
+        public required string AgentId { get; init; }
+
+        public required Border SelectionBorder { get; init; }
     }
 
     private sealed class PortEditorRow
@@ -341,10 +386,15 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        _agentGatewaySettings = _agentGatewaySettingsService.Load();
+        _agentGatewayHost = new AgentGatewayHost(_agentRegistryService, _agentGatewaySettings, _ => Dispatcher.Invoke(HandleAgentRuntimeEvent));
+        _remoteControlPlaneService = new RemoteControlPlaneService(_agentGatewayHost, _agentRegistryService);
+
         _currentDirectoryConfigPath = TaskConfiguration.GetCurrentDirectoryConfigPath();
         _userProfileConfigPath = TaskConfiguration.GetUserProfileConfigPath();
         _sidebarStatusTimer.Tick += SidebarStatusTimer_Tick;
         _graphRenderDebounceTimer.Tick += GraphRenderDebounceTimer_Tick;
+        _agentStatusRefreshTimer.Tick += AgentStatusRefreshTimer_Tick;
         CommandBindings.Add(new CommandBinding(ToggleHistoryCommand, ToggleHistoryCommand_Executed, ToggleViewCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(ToggleOutputCommand, ToggleOutputCommand_Executed, ToggleViewCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(NextGroupCommand, NextGroupCommand_Executed, NavigateGroupCommand_CanExecute));
@@ -383,6 +433,9 @@ public partial class MainWindow : Window
         PreviewMouseLeftButtonUp += MainWindow_PreviewMouseLeftButtonUp;
         SizeChanged += (_, _) => ScheduleConnectorRefresh();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
+        AddHandler(ButtonBase.ClickEvent, new RoutedEventHandler(LogButtonAction), true);
+        AddHandler(MenuItem.ClickEvent, new RoutedEventHandler(LogMenuAction), true);
+        CommandManager.AddPreviewExecutedHandler(this, CommandManager_PreviewExecuted);
 
         _uiState = UiStateStore.Load();
         LoadGroupOrderingFromUiState();
@@ -391,6 +444,10 @@ public partial class MainWindow : Window
 
         TaskConfiguration.EnsureValidFileOrReset(_userProfileConfigPath);
         LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json");
+        _agentRegistry = _agentRegistryService.Load();
+
+        UpdateGatewayListenerToggleUi();
+        _agentStatusRefreshTimer.Start();
 
         LoadTaskButtons();
         UpdateTaskSurfaceToggleUi();
@@ -562,7 +619,434 @@ public partial class MainWindow : Window
         App.ThemeChanged -= OnThemeChanged;
         _sidebarStatusTimer.Stop();
         _graphRenderDebounceTimer.Stop();
+        _agentStatusRefreshTimer.Stop();
+        CommandManager.RemovePreviewExecutedHandler(this, CommandManager_PreviewExecuted);
+        _ = _agentGatewayHost.StopAsync();
         PersistUiState();
+    }
+
+    private void LogButtonAction(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not FrameworkElement source)
+        {
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(source.Name) ? "(unnamed)" : source.Name;
+        var text = ExtractActionText(source);
+        DebugTraceLog.Write("UIAction", $"Button click: name={name}, text={text}");
+    }
+
+    private void LogMenuAction(object sender, RoutedEventArgs e)
+    {
+        if (e.OriginalSource is not MenuItem menuItem)
+        {
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(menuItem.Name) ? "(unnamed)" : menuItem.Name;
+        var header = menuItem.Header?.ToString() ?? string.Empty;
+        DebugTraceLog.Write("UIAction", $"Menu click: name={name}, header={header}");
+    }
+
+    private void CommandManager_PreviewExecuted(object sender, ExecutedRoutedEventArgs e)
+    {
+        var commandName = e.Command switch
+        {
+            RoutedUICommand ui when !string.IsNullOrWhiteSpace(ui.Name) => ui.Name,
+            RoutedCommand routed when !string.IsNullOrWhiteSpace(routed.Name) => routed.Name,
+            _ => e.Command?.GetType().Name ?? "(unknown)"
+        };
+
+        DebugTraceLog.Write("UIAction", $"Command executed: {commandName}");
+    }
+
+    private static string ExtractActionText(FrameworkElement element)
+    {
+        return element switch
+        {
+            Button button when button.Content is string text => text,
+            Button button when button.Content is TextBlock textBlock => textBlock.Text,
+            MenuItem menuItem => menuItem.Header?.ToString() ?? string.Empty,
+            _ => string.Empty
+        };
+    }
+
+    private void AgentStatusRefreshTimer_Tick(object? sender, EventArgs e)
+    {
+        HandleAgentRuntimeEvent();
+    }
+
+    private void HandleAgentRuntimeEvent()
+    {
+        var latest = _agentRegistryService.Load();
+        if (!HaveAgentRowsChanged(_agentRegistry, latest))
+        {
+            return;
+        }
+
+        _agentRegistry = latest;
+        AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
+
+        if (_isAgentViewSelected)
+        {
+            RenderAgentsView();
+            UpdateSelectedAgentRuntimePanel();
+            UpdateRibbonTaskActionState();
+        }
+    }
+
+    private static bool HaveAgentRowsChanged(AgentRegistry current, AgentRegistry next)
+    {
+        if (current.Agents.Count != next.Agents.Count)
+        {
+            return true;
+        }
+
+        var orderedCurrent = current.Agents.OrderBy(agent => agent.AgentId, StringComparer.OrdinalIgnoreCase).ToList();
+        var orderedNext = next.Agents.OrderBy(agent => agent.AgentId, StringComparer.OrdinalIgnoreCase).ToList();
+        for (var index = 0; index < orderedCurrent.Count; index++)
+        {
+            var left = orderedCurrent[index];
+            var right = orderedNext[index];
+            if (!string.Equals(left.AgentId, right.AgentId, StringComparison.OrdinalIgnoreCase)
+                || left.State != right.State
+                || left.ActiveRuns != right.ActiveRuns
+                || left.SuccessfulRuns != right.SuccessfulRuns
+                || left.FailedRuns != right.FailedRuns
+                || left.MaximumConcurrentRuns != right.MaximumConcurrentRuns
+                || !string.Equals(left.LastSeenSummary, right.LastSeenSummary, StringComparison.Ordinal)
+                || !string.Equals(left.ImplementationVersion, right.ImplementationVersion, StringComparison.Ordinal)
+                || !string.Equals(left.Hostname, right.Hostname, StringComparison.Ordinal)
+                || left.LastSeenAtUtc != right.LastSeenAtUtc)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void TryStartAgentGateway()
+    {
+        _ = StartAgentGatewayAsync().GetAwaiter().GetResult();
+    }
+
+    private void TryStopAgentGateway(bool requestDrain)
+    {
+        _ = StopAgentGatewayAsync(requestDrain).GetAwaiter().GetResult();
+    }
+
+    private async Task<bool> StartAgentGatewayAsync()
+    {
+        try
+        {
+            _agentGatewayHost.ApplySettings(_agentGatewaySettings);
+            await _agentGatewayHost.StartAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[AgentGateway] Failed to start local agent gateway");
+            AppMessageBox.Show(this,
+                "The local agent gateway could not start. Remote agent enrolment and live status are unavailable.\n\n"
+                + ex.Message,
+                "Agent Gateway",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+        finally
+        {
+            UpdateGatewayListenerToggleUi();
+        }
+    }
+
+    private async Task<bool> StopAgentGatewayAsync(bool requestDrain)
+    {
+        try
+        {
+            if (requestDrain && HasConnectedAgents())
+            {
+                await Task.Run(() => _agentGatewayHost.RequestDrainingFromAll(true));
+            }
+
+            using var shutdownCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await _agentGatewayHost.StopAsync(shutdownCts.Token);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[AgentGateway] Failed to stop local agent gateway");
+            AppMessageBox.Show(
+                this,
+                "The local agent gateway could not be stopped.\n\n" + ex.Message,
+                "Agent Gateway",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+        finally
+        {
+            UpdateGatewayListenerToggleUi();
+        }
+    }
+
+    private async void RibbonGatewayListenerToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isGatewayToggleInProgress)
+        {
+            return;
+        }
+
+        _isGatewayToggleInProgress = true;
+        UpdateGatewayListenerToggleUi();
+
+        try
+        {
+            if (_agentGatewayHost.IsRunning)
+            {
+                await StopAgentGatewayAsync(requestDrain: true);
+            }
+            else
+            {
+                await StartAgentGatewayAsync();
+            }
+        }
+        finally
+        {
+            _isGatewayToggleInProgress = false;
+            UpdateGatewayListenerToggleUi();
+        }
+    }
+
+    private void UpdateGatewayListenerToggleUi()
+    {
+        if (RibbonGatewayListenerToggleButton is null || RibbonGatewayListenerGlyphText is null || RibbonGatewayListenerLabel is null)
+        {
+            return;
+        }
+
+        RibbonGatewayListenerLabel.Text = "Listener";
+        RibbonGatewayListenerToggleButton.IsEnabled = !_isGatewayToggleInProgress;
+
+        if (_isGatewayToggleInProgress)
+        {
+            RibbonGatewayListenerGlyphText.Text = "⌛";
+            RibbonGatewayListenerToggleButton.Background = RibbonListenerPendingBackgroundBrush;
+            RibbonGatewayListenerToggleButton.BorderBrush = RibbonListenerPendingBorderBrush;
+            RibbonGatewayListenerToggleButton.ToolTip = "Listener operation in progress";
+            return;
+        }
+
+        if (_agentGatewayHost.IsRunning)
+        {
+            RibbonGatewayListenerGlyphText.Text = "👂";
+            RibbonGatewayListenerToggleButton.Background = RibbonListenerOnBackgroundBrush;
+            RibbonGatewayListenerToggleButton.BorderBrush = RibbonListenerOnBorderBrush;
+            RibbonGatewayListenerToggleButton.ToolTip = "Stop local agent listener";
+            return;
+        }
+
+        RibbonGatewayListenerGlyphText.Text = "🔇";
+        RibbonGatewayListenerToggleButton.Background = RibbonListenerOffBackgroundBrush;
+        RibbonGatewayListenerToggleButton.BorderBrush = RibbonListenerOffBorderBrush;
+        RibbonGatewayListenerToggleButton.ToolTip = "Start local agent listener";
+    }
+
+    private bool HasConnectedAgents()
+    {
+        var latest = _agentRegistryService.Load();
+        return latest.Agents.Any(agent =>
+            !string.IsNullOrWhiteSpace(agent.SessionId)
+            || IsConnectedState(agent.State));
+    }
+
+    private void OpenGatewaySettings()
+    {
+        if (!_isAgentViewSelected)
+        {
+            SelectAgentsView();
+        }
+
+        ApplyBottomPaneTabsForViewMode();
+        BottomPaneTabControl.SelectedItem = GatewaySettingsPaneTabItem;
+        UpdateGatewaySettingsPanel();
+    }
+
+    private async void ApplyGatewaySettingsFromTabButton_Click(object sender, RoutedEventArgs e)
+    {
+        var settings = ReadGatewaySettingsDraftFromTab();
+
+        if (AreGatewaySettingsEquivalent(_agentGatewaySettings, settings))
+        {
+            UpdateGatewaySettingsApplyButtonState();
+            return;
+        }
+
+        _gatewayValidationCts?.Cancel();
+        _gatewayValidationCts?.Dispose();
+        _gatewayValidationCts = new CancellationTokenSource();
+        var validationToken = _gatewayValidationCts.Token;
+
+        ApplyGatewaySettingsFromTabButton.IsEnabled = false;
+        GatewaySettingsValidationText.Text = "Validating settings...";
+
+        bool isValid;
+        string validationError;
+        try
+        {
+            (isValid, validationError) = await ValidateGatewaySettingsAsync(settings, validationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        if (validationToken.IsCancellationRequested)
+        {
+            return;
+        }
+
+        if (!isValid)
+        {
+            GatewaySettingsValidationText.Text = validationError;
+            ApplyGatewaySettingsFromTabButton.IsEnabled = true;
+            return;
+        }
+
+        GatewaySettingsValidationText.Text = string.Empty;
+
+        _agentGatewaySettings = settings;
+        _agentGatewaySettingsService.Save(_agentGatewaySettings);
+        UpdateGatewaySettingsPanel();
+
+        try
+        {
+            var stopped = await StopAgentGatewayAsync(requestDrain: false);
+            if (!stopped)
+            {
+                return;
+            }
+
+            var started = await StartAgentGatewayAsync();
+            if (!started)
+            {
+                return;
+            }
+
+            AppMessageBox.Show(
+                this,
+                "Gateway listener settings saved and applied.",
+                "Agent Gateway",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[AgentGateway] Failed to apply listener settings");
+            AppMessageBox.Show(
+                this,
+                "Failed to apply listener settings.\n\n" + ex.Message,
+                "Agent Gateway",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        finally
+        {
+            UpdateGatewayListenerToggleUi();
+        }
+    }
+
+    private static bool AreGatewaySettingsEquivalent(AgentGatewaySettings left, AgentGatewaySettings right)
+    {
+        var leftHost = string.IsNullOrWhiteSpace(left.BindHost) ? "localhost" : left.BindHost.Trim();
+        var rightHost = string.IsNullOrWhiteSpace(right.BindHost) ? "localhost" : right.BindHost.Trim();
+
+        var leftPort = left.Port <= 0 ? AgentGatewayHost.DefaultPort : left.Port;
+        var rightPort = right.Port <= 0 ? AgentGatewayHost.DefaultPort : right.Port;
+
+        var leftCertPath = string.IsNullOrWhiteSpace(left.CertificatePath) ? null : left.CertificatePath.Trim();
+        var rightCertPath = string.IsNullOrWhiteSpace(right.CertificatePath) ? null : right.CertificatePath.Trim();
+
+        var leftCertPassword = string.IsNullOrWhiteSpace(left.CertificatePassword) ? null : left.CertificatePassword;
+        var rightCertPassword = string.IsNullOrWhiteSpace(right.CertificatePassword) ? null : right.CertificatePassword;
+
+        return left.EnableTlsListener == right.EnableTlsListener
+            && string.Equals(leftHost, rightHost, StringComparison.OrdinalIgnoreCase)
+            && leftPort == rightPort
+            && string.Equals(leftCertPath, rightCertPath, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(leftCertPassword, rightCertPassword, StringComparison.Ordinal)
+            && left.IsDevLoopbackFallbackEnabled == right.IsDevLoopbackFallbackEnabled;
+    }
+
+    private void GatewayBrowseCertButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Select PFX Certificate",
+            Filter = "PFX certificate (*.pfx)|*.pfx|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+
+        var existingPath = GatewayCertPathTextBox.Text?.Trim();
+        if (!string.IsNullOrWhiteSpace(existingPath))
+        {
+            try
+            {
+                var fullPath = System.IO.Path.GetFullPath(existingPath);
+                var directory = System.IO.Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                {
+                    dialog.InitialDirectory = directory;
+                }
+
+                var fileName = System.IO.Path.GetFileName(fullPath);
+                if (!string.IsNullOrWhiteSpace(fileName))
+                {
+                    dialog.FileName = fileName;
+                }
+            }
+            catch
+            {
+                // Keep default file dialog location if current value is not a valid path.
+            }
+        }
+
+        if (dialog.ShowDialog(this) == true)
+        {
+            GatewayCertPathTextBox.Text = dialog.FileName;
+            UpdateGatewaySettingsApplyButtonState();
+        }
+    }
+
+    private void GatewaySettingsTextChanged(object sender, TextChangedEventArgs e)
+    {
+        UpdateGatewaySettingsApplyButtonState();
+    }
+
+    private void GatewaySettingsPasswordChanged(object sender, RoutedEventArgs e)
+    {
+        UpdateGatewaySettingsApplyButtonState();
+    }
+
+    private void GatewaySettingsToggleChanged(object sender, RoutedEventArgs e)
+    {
+        UpdateGatewaySettingsApplyButtonState();
+    }
+
+    private void RequestAgentReconciliation()
+    {
+        var count = _remoteControlPlaneService.RequestReconciliationAll();
+        AppMessageBox.Show(
+            this,
+            count > 0
+                ? $"Requested reconciliation from {count} active agent session(s)."
+                : "No active agent sessions are connected.",
+            "Reconciliation",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void SidebarStatusTimer_Tick(object? sender, EventArgs e)
@@ -776,6 +1260,8 @@ public partial class MainWindow : Window
         var groupNames = GetGroupNames();
         GroupsHeaderCountText.Text = $"({groupNames.Count})";
         GroupsSummaryText.Text = $"{groupNames.Count} groups created";
+        AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
+        UpdateAgentsSidebarVisual();
         if (groupNames.Count == 0)
         {
             _selectedGroupName = null;
@@ -790,6 +1276,14 @@ public partial class MainWindow : Window
 
         RebuildGroupsMenu(groupNames);
         RebuildGroupNavigator(GetGroupSidebarItems(groupNames));
+        if (_isAgentViewSelected)
+        {
+            RenderAgentsView();
+            ApplyGroupViewState();
+            UpdateRibbonTaskActionState();
+            return;
+        }
+
         if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
         {
             RequestGraphRender("loadTaskButtons");
@@ -1025,6 +1519,395 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SidebarAgentsExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (AgentsSectionChevronText is not null)
+        {
+            AgentsSectionChevronText.Text = "▼";
+        }
+    }
+
+    private void SidebarAgentsExpander_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (AgentsSectionChevronText is not null)
+        {
+            AgentsSectionChevronText.Text = "▶";
+        }
+    }
+
+    private void AgentsSidebarButton_Click(object sender, RoutedEventArgs e)
+    {
+        SelectAgentsView();
+    }
+
+    private void SelectAgentsView()
+    {
+        if (SidebarAgentsExpander is not null && !SidebarAgentsExpander.IsExpanded)
+        {
+            SidebarAgentsExpander.IsExpanded = true;
+        }
+
+        _isAgentViewSelected = true;
+        _preferGroupDeleteContext = false;
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+        RenderAgentsView();
+        ApplyGroupViewState();
+        ApplyBottomPaneTabsForViewMode();
+        UpdateSelectedAgentRuntimePanel();
+        UpdateAgentsSidebarVisual();
+        UpdateRibbonTaskActionState();
+    }
+
+    private void SelectTasksView()
+    {
+        if (!_isAgentViewSelected)
+        {
+            return;
+        }
+
+        _isAgentViewSelected = false;
+        ApplyBottomPaneTabsForViewMode();
+        UpdateAgentsSidebarVisual();
+    }
+
+    private void UpdateAgentsSidebarVisual()
+    {
+        if (AgentsSidebarButton is null)
+        {
+            return;
+        }
+
+        AgentsSidebarButton.Background = _isAgentViewSelected
+            ? new SolidColorBrush(Color.FromRgb(0x11, 0x15, 0x1A))
+            : Brushes.Transparent;
+    }
+
+    private void RenderAgentsView()
+    {
+        TaskPanel.Children.Clear();
+        TaskGraphCanvas.Children.Clear();
+        TaskGraphEdgeOverlay.Children.Clear();
+        TaskConnectorOverlay.Children.Clear();
+        _taskCardsByIndex.Clear();
+        _agentCardsById.Clear();
+        _graphNodesByIndex.Clear();
+        _taskRunningOverlays.Clear();
+        _visibleTaskIndexes.Clear();
+        _selectedTaskIndex = null;
+        TaskPanel.AllowDrop = false;
+        SyncTaskSurfaceToViewport();
+        ApplyTaskSurfaceModeVisibility();
+
+        GroupTitleText.Text = "Agents";
+        GroupMetaText.Text = $"{_agentRegistry.Agents.Count} registered definition(s)";
+        EmptyStateText.Text = "No agents are configured. Use Add to create a pending enrolment.";
+        EmptyStateText.Visibility = _agentRegistry.Agents.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (_agentRegistry.Agents.Count == 0)
+        {
+            _selectedAgentId = null;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_selectedAgentId)
+            || !_agentRegistry.Agents.Any(agent => string.Equals(agent.AgentId, _selectedAgentId, StringComparison.OrdinalIgnoreCase)))
+        {
+            _selectedAgentId = _agentRegistry.Agents[0].AgentId;
+        }
+
+        var orderedAgents = _agentRegistry.Agents
+            .OrderBy(agent => agent.EffectiveDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        for (var index = 0; index < orderedAgents.Count; index++)
+        {
+            TaskPanel.Children.Add(CreateAgentCard(orderedAgents[index], PastelPalette[index % PastelPalette.Length]));
+        }
+
+        ApplyAgentCardSelectionVisuals();
+        UpdateSelectedAgentRuntimePanel();
+    }
+
+    private Grid CreateAgentCard(AgentDefinition agent, Color cardColor)
+    {
+        var foregroundBrush = GetReadableTextBrush(cardColor);
+        var cardFontFamily = TryFindResource("CardUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
+        var card = new Grid
+        {
+            Width = 195,
+            Height = 195,
+            Margin = new Thickness(0, 0, 21, 21)
+        };
+
+        var selectionBorder = new Border
+        {
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            IsHitTestVisible = false
+        };
+        selectionBorder.SetResourceReference(Border.BorderBrushProperty, "ConnectorFocusedBrush");
+
+        var body = new Grid();
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = agent.EffectiveDisplayName,
+            FontWeight = FontWeights.Bold,
+            FontFamily = cardFontFamily,
+            FontSize = 16,
+            Foreground = foregroundBrush,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxHeight = 44
+        };
+
+        var titleBar = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(28, 18, 30, 42)),
+            Padding = new Thickness(10, 8, 42, 8),
+            Child = title
+        };
+        Grid.SetRow(titleBar, 0);
+
+        var status = new TextBlock
+        {
+            Text = BuildAgentStatusText(agent),
+            FontFamily = cardFontFamily,
+            FontSize = 12.5,
+            Foreground = foregroundBrush,
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.92,
+            MaxHeight = 92
+        };
+        var statusContainer = new Border
+        {
+            Padding = new Thickness(12, 10, 12, 10),
+            Child = status
+        };
+        Grid.SetRow(statusContainer, 1);
+
+        var footer = new TextBlock
+        {
+            Text = BuildAgentFooterGlyphText(agent),
+            FontFamily = cardFontFamily,
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = foregroundBrush,
+            Opacity = 0.86,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(10, 0, 42, 8),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetRow(footer, 2);
+
+        body.Children.Add(titleBar);
+        body.Children.Add(statusContainer);
+        body.Children.Add(footer);
+
+        var button = new Button
+        {
+            Content = body,
+            Tag = agent.AgentId,
+            Style = (Style)Resources["TaskCardButtonStyle"],
+            Background = new SolidColorBrush(cardColor),
+            Foreground = foregroundBrush,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch
+        };
+        button.Click += AgentCardButton_Click;
+        button.PreviewMouseRightButtonUp += AgentCardButton_PreviewMouseRightButtonUp;
+
+        var menuButton = new Button
+        {
+            Content = "⋮",
+            Tag = agent.AgentId,
+            Style = (Style)Resources["TaskMenuButtonStyle"],
+            Background = new SolidColorBrush(cardColor),
+            BorderBrush = new SolidColorBrush(cardColor),
+            Foreground = foregroundBrush
+        };
+        menuButton.Click += AgentMenuButton_Click;
+
+        card.Tag = new AgentCardVisual
+        {
+            AgentId = agent.AgentId,
+            SelectionBorder = selectionBorder
+        };
+        card.Children.Add(button);
+        card.Children.Add(selectionBorder);
+        card.Children.Add(menuButton);
+        _agentCardsById[agent.AgentId] = card;
+        return card;
+    }
+
+    private static string BuildAgentStatusText(AgentDefinition agent)
+    {
+        var state = agent.State.ToString().ToLowerInvariant();
+        var pendingText = agent.State is AgentDefinitionState.Pending or AgentDefinitionState.Enrolling
+            ? agent.EnrolmentTokenExpiresAtUtc is { } expiresAt
+                ? $"Token expires {expiresAt.ToLocalTime():g}"
+                : "No active enrolment token"
+            : null;
+
+        var causeDetail = string.IsNullOrWhiteSpace(agent.LastStateReasonCode)
+            ? null
+            : string.IsNullOrWhiteSpace(agent.LastStateReasonMessage)
+                ? $"cause: {agent.LastStateReasonCode}"
+                : $"cause: {agent.LastStateReasonCode} ({agent.LastStateReasonMessage})";
+        var protocolDetail = string.IsNullOrWhiteSpace(agent.ProtocolMismatchDetail)
+            ? null
+            : $"protocol: {agent.ProtocolMismatchDetail}";
+
+        var liveTarget = string.IsNullOrWhiteSpace(agent.Hostname)
+            ? "host n/a"
+            : agent.Hostname;
+        var version = string.IsNullOrWhiteSpace(agent.ImplementationVersion)
+            ? "version n/a"
+            : $"v{agent.ImplementationVersion}";
+
+        var lines = new List<string>
+        {
+            state,
+            $"{liveTarget} · {version}",
+            $"runs: {agent.ActiveRuns}/{agent.MaximumConcurrentRuns}"
+        };
+
+        if (!string.IsNullOrWhiteSpace(pendingText))
+        {
+            lines.Insert(1, pendingText);
+        }
+
+        if (!string.IsNullOrWhiteSpace(causeDetail))
+        {
+            lines.Add(causeDetail);
+        }
+
+        if (!string.IsNullOrWhiteSpace(protocolDetail))
+        {
+            lines.Add(protocolDetail);
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static string BuildAgentFooterGlyphText(AgentDefinition agent)
+    {
+        var connected = IsConnectedState(agent.State);
+        var sessionActive = connected || !string.IsNullOrWhiteSpace(agent.SessionId);
+        var connectivityGlyph = connected ? "●" : "○";
+        var connectivityLabel = connected ? "online" : "offline";
+        var sessionGlyph = sessionActive ? "◉" : "◌";
+        var sessionLabel = sessionActive ? "active" : "inactive";
+        return $"{connectivityGlyph} {connectivityLabel}  {sessionGlyph} session {sessionLabel}";
+    }
+
+    private static bool IsConnectedState(AgentDefinitionState state)
+    {
+        return state is AgentDefinitionState.Online
+            or AgentDefinitionState.Busy
+            or AgentDefinitionState.Draining
+            or AgentDefinitionState.Degraded
+            or AgentDefinitionState.Incompatible;
+    }
+
+    private void AgentCardButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string agentId })
+        {
+            return;
+        }
+
+        _selectedAgentId = agentId;
+        ApplyAgentCardSelectionVisuals();
+        UpdateSelectedAgentRuntimePanel();
+    }
+
+    private void AgentCardButton_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Button { Tag: string agentId } button)
+        {
+            return;
+        }
+
+        _selectedAgentId = agentId;
+        ApplyAgentCardSelectionVisuals();
+        UpdateSelectedAgentRuntimePanel();
+        OpenContextMenuAtPointer(CreateAgentContextMenu(agentId), button);
+        e.Handled = true;
+    }
+
+    private void AgentMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string agentId } button)
+        {
+            return;
+        }
+
+        _selectedAgentId = agentId;
+        ApplyAgentCardSelectionVisuals();
+        UpdateSelectedAgentRuntimePanel();
+        OpenContextMenuAtButton(CreateAgentContextMenu(agentId), button);
+    }
+
+    private ContextMenu CreateAgentContextMenu(string agentId)
+    {
+        var menu = CreateRibbonContextMenu();
+        var agent = FindAgent(agentId);
+
+        var editItem = new MenuItem { Header = "Edit", Style = (Style)Resources["AppMenuItemStyle"], IsEnabled = agent is not null };
+        editItem.Click += (_, _) => EditAgent(agentId);
+
+        var newTokenItem = new MenuItem { Header = "Generate Enrolment Command", Style = (Style)Resources["AppMenuItemStyle"], IsEnabled = agent is not null };
+        newTokenItem.Click += (_, _) => RegenerateAgentEnrolment(agentId);
+
+        var disableItem = new MenuItem
+        {
+            Header = "Disable Agent",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = agent is not null && agent.State != AgentDefinitionState.Disabled
+        };
+        disableItem.Click += (_, _) => DisableAgent(agentId);
+
+        var revokeItem = new MenuItem
+        {
+            Header = "Revoke Agent",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = agent is not null && agent.State != AgentDefinitionState.Revoked
+        };
+        revokeItem.Click += (_, _) => RevokeAgent(agentId);
+
+        var deleteItem = new MenuItem { Header = "Delete", Style = (Style)Resources["AppMenuItemStyle"], IsEnabled = agent is not null };
+        deleteItem.Click += (_, _) => DeleteAgent(agentId);
+
+        menu.Items.Add(editItem);
+        menu.Items.Add(newTokenItem);
+        menu.Items.Add(disableItem);
+        menu.Items.Add(revokeItem);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(deleteItem);
+        return menu;
+    }
+
+    private void ApplyAgentCardSelectionVisuals()
+    {
+        foreach (var card in _agentCardsById.Values)
+        {
+            if (card.Tag is not AgentCardVisual visual)
+            {
+                continue;
+            }
+
+            visual.SelectionBorder.BorderThickness =
+                string.Equals(visual.AgentId, _selectedAgentId, StringComparison.OrdinalIgnoreCase)
+                    ? new Thickness(2)
+                    : new Thickness(0);
+        }
+    }
+
     private void SidebarTaskRowButton_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: SidebarTaskSelectionTarget target })
@@ -1181,6 +2064,7 @@ public partial class MainWindow : Window
 
     private void SelectGroup(string groupName)
     {
+        SelectTasksView();
         DebugTraceLog.Write($"[Group] SelectGroup requested='{groupName}', previous='{_selectedGroupName ?? "(none)"}'");
         _selectedGroupName = groupName;
         var groupNames = GetGroupNames();
@@ -1415,6 +2299,252 @@ public partial class MainWindow : Window
         ApplyHistoryVisibility(historyVisible);
         ApplyOutputVisibility(groupKey, outputVisible);
         UpdateViewMenuState(sidebarVisible, historyVisible, outputVisible);
+        ApplyBottomPaneTabsForViewMode();
+    }
+
+    private void ApplyBottomPaneTabsForViewMode()
+    {
+        if (BottomPaneTabControl is null)
+        {
+            return;
+        }
+
+        var inAgentView = _isAgentViewSelected;
+        InputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
+        OutputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
+        VariablesPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
+        AgentRuntimePaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
+        GatewaySettingsPaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
+
+        UpdateGatewaySettingsPanel();
+
+        if (inAgentView)
+        {
+            if (!ReferenceEquals(BottomPaneTabControl.SelectedItem, AgentRuntimePaneTabItem)
+                && !ReferenceEquals(BottomPaneTabControl.SelectedItem, GatewaySettingsPaneTabItem))
+            {
+                BottomPaneTabControl.SelectedItem = AgentRuntimePaneTabItem;
+            }
+            return;
+        }
+
+        if (ReferenceEquals(BottomPaneTabControl.SelectedItem, AgentRuntimePaneTabItem)
+            || ReferenceEquals(BottomPaneTabControl.SelectedItem, GatewaySettingsPaneTabItem))
+        {
+            BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
+        }
+    }
+
+    private void UpdateSelectedAgentRuntimePanel()
+    {
+        if (!_isAgentViewSelected)
+        {
+            return;
+        }
+
+        var selectedAgent = _agentRegistry.Agents.FirstOrDefault(agent =>
+            string.Equals(agent.AgentId, _selectedAgentId, StringComparison.OrdinalIgnoreCase));
+
+        if (selectedAgent is null)
+        {
+            AgentRuntimeTitleText.Text = "Select an agent";
+            AgentRuntimeMetaText.Text = string.Empty;
+            AgentRuntimeActiveRunsText.Text = "-";
+            AgentRuntimeSessionText.Text = "-";
+            AgentRuntimeConnectivityText.Text = "-";
+            AgentRuntimeSuccessfulText.Text = "-";
+            AgentRuntimeFailedText.Text = "-";
+            return;
+        }
+
+        var connected = IsConnectedState(selectedAgent.State);
+        var sessionActive = connected || !string.IsNullOrWhiteSpace(selectedAgent.SessionId);
+
+        AgentRuntimeTitleText.Text = selectedAgent.EffectiveDisplayName;
+        AgentRuntimeMetaText.Text = $"{selectedAgent.AgentId} · {(selectedAgent.ImplementationVersion is { Length: > 0 } ? "v" + selectedAgent.ImplementationVersion : "version n/a")}";
+        AgentRuntimeActiveRunsText.Text = $"{selectedAgent.ActiveRuns}/{selectedAgent.MaximumConcurrentRuns}";
+        AgentRuntimeSessionText.Text = sessionActive ? "Active" : "Inactive";
+        AgentRuntimeConnectivityText.Text = connected ? "Online" : "Offline";
+        AgentRuntimeSuccessfulText.Text = selectedAgent.SuccessfulRuns.ToString(CultureInfo.InvariantCulture);
+        AgentRuntimeFailedText.Text = selectedAgent.FailedRuns.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void UpdateGatewaySettingsPanel()
+    {
+        if (GatewaySettingsSummaryText is null)
+        {
+            return;
+        }
+
+        GatewayEnableTlsCheckBox.IsChecked = _agentGatewaySettings.EnableTlsListener;
+        GatewayHostTextBox.Text = string.IsNullOrWhiteSpace(_agentGatewaySettings.BindHost) ? "localhost" : _agentGatewaySettings.BindHost;
+        GatewayPortTextBox.Text = (_agentGatewaySettings.Port <= 0 ? AgentGatewayHost.DefaultPort : _agentGatewaySettings.Port).ToString(CultureInfo.InvariantCulture);
+        GatewayCertPathTextBox.Text = _agentGatewaySettings.CertificatePath ?? string.Empty;
+        GatewayCertPasswordBox.Password = _agentGatewaySettings.CertificatePassword ?? string.Empty;
+        GatewayDevFallbackCheckBox.IsChecked = _agentGatewaySettings.IsDevLoopbackFallbackEnabled;
+
+        var scheme = _agentGatewaySettings.EnableTlsListener ? "https" : "http";
+        var host = string.IsNullOrWhiteSpace(_agentGatewaySettings.BindHost) ? "localhost" : _agentGatewaySettings.BindHost;
+        var port = _agentGatewaySettings.Port <= 0 ? AgentGatewayHost.DefaultPort : _agentGatewaySettings.Port;
+        GatewaySettingsSummaryText.Text = $"Controller endpoint advertised to agents: {scheme}://{host}:{port}";
+
+        if (_agentGatewaySettings.EnableTlsListener)
+        {
+            var certState = string.IsNullOrWhiteSpace(_agentGatewaySettings.CertificatePath)
+                ? "Certificate path: not configured"
+                : $"Certificate path: {_agentGatewaySettings.CertificatePath}";
+            var fallback = _agentGatewaySettings.IsDevLoopbackFallbackEnabled
+                ? "HTTP loopback fallback: enabled"
+                : "HTTP loopback fallback: disabled";
+            GatewaySettingsStatusText.Text = certState + "\n" + fallback;
+            UpdateGatewaySettingsApplyButtonState();
+            return;
+        }
+
+        GatewaySettingsStatusText.Text = "Traffic is not TLS-encrypted. Enable TLS listener and configure a PFX certificate for encrypted transport.";
+        UpdateGatewaySettingsApplyButtonState();
+    }
+
+    private void UpdateGatewaySettingsApplyButtonState()
+    {
+        if (ApplyGatewaySettingsFromTabButton is null || GatewaySettingsValidationText is null)
+        {
+            return;
+        }
+
+        var pendingSettings = ReadGatewaySettingsDraftFromTab();
+        var hasChanges = !AreGatewaySettingsEquivalent(_agentGatewaySettings, pendingSettings);
+
+        // Keep typing/toggling responsive by validating only when Save and Apply is clicked.
+        GatewaySettingsValidationText.Text = string.Empty;
+        ApplyGatewaySettingsFromTabButton.IsEnabled = hasChanges;
+    }
+
+    private AgentGatewaySettings ReadGatewaySettingsDraftFromTab()
+    {
+        var host = string.IsNullOrWhiteSpace(GatewayHostTextBox.Text)
+            ? "localhost"
+            : GatewayHostTextBox.Text.Trim();
+
+        var port = int.TryParse(GatewayPortTextBox.Text.Trim(), out var parsedPort)
+            ? parsedPort
+            : _agentGatewaySettings.Port;
+
+        var certPath = string.IsNullOrWhiteSpace(GatewayCertPathTextBox.Text)
+            ? null
+            : GatewayCertPathTextBox.Text.Trim();
+
+        var certPassword = string.IsNullOrWhiteSpace(GatewayCertPasswordBox.Password)
+            ? null
+            : GatewayCertPasswordBox.Password;
+
+        return new AgentGatewaySettings
+        {
+            EnableTlsListener = GatewayEnableTlsCheckBox.IsChecked == true,
+            BindHost = host,
+            Port = port,
+            CertificatePath = certPath,
+            CertificatePassword = certPassword,
+            IsDevLoopbackFallbackEnabled = GatewayDevFallbackCheckBox.IsChecked == true
+        };
+    }
+
+    private static bool TryValidateGatewaySettings(AgentGatewaySettings settings, out string errorMessage)
+    {
+        errorMessage = string.Empty;
+
+        if (settings.Port <= 0 || settings.Port > 65535)
+        {
+            errorMessage = "Port must be between 1 and 65535.";
+            return false;
+        }
+
+        var host = string.IsNullOrWhiteSpace(settings.BindHost) ? "localhost" : settings.BindHost.Trim();
+        if (!TryValidateGatewayHost(host, out errorMessage))
+        {
+            return false;
+        }
+
+        if (!settings.EnableTlsListener)
+        {
+            return true;
+        }
+
+        var certPath = string.IsNullOrWhiteSpace(settings.CertificatePath)
+            ? null
+            : settings.CertificatePath.Trim();
+
+        if (string.IsNullOrWhiteSpace(certPath))
+        {
+            errorMessage = "TLS is enabled. Select a PFX certificate file.";
+            return false;
+        }
+
+        if (!File.Exists(certPath))
+        {
+            errorMessage = "PFX certificate file does not exist.";
+            return false;
+        }
+
+        try
+        {
+            _ = new X509Certificate2(certPath, settings.CertificatePassword);
+        }
+        catch
+        {
+            errorMessage = "Unable to load the certificate with the provided password.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static Task<(bool IsValid, string ErrorMessage)> ValidateGatewaySettingsAsync(AgentGatewaySettings settings, CancellationToken cancellationToken)
+    {
+        return Task.Run(() =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var isValid = TryValidateGatewaySettings(settings, out var errorMessage);
+            cancellationToken.ThrowIfCancellationRequested();
+            return (isValid, errorMessage);
+        }, cancellationToken);
+    }
+
+    private static bool TryValidateGatewayHost(string host, out string errorMessage)
+    {
+        errorMessage = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            errorMessage = "Host is required.";
+            return false;
+        }
+
+        if (host is "localhost" or "*" or "+" or "0.0.0.0" or "::" or "[::]")
+        {
+            return true;
+        }
+
+        if (IPAddress.TryParse(host, out _))
+        {
+            return true;
+        }
+
+        try
+        {
+            var resolved = Dns.GetHostAddresses(host);
+            if (resolved.Length > 0)
+            {
+                return true;
+            }
+        }
+        catch
+        {
+            // handled below
+        }
+
+        errorMessage = "Host name could not be resolved.";
+        return false;
     }
 
     private void ApplySidebarVisibility(bool isVisible)
@@ -2265,7 +3395,7 @@ public partial class MainWindow : Window
 
     private void ApplyTaskSurfaceModeVisibility()
     {
-        var isTaskMode = _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
+        var isTaskMode = _isAgentViewSelected || _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
 
         if (isTaskMode)
         {
@@ -3118,6 +4248,70 @@ public partial class MainWindow : Window
 
     private ContextMenu CreateMainViewContextMenu()
     {
+        if (_isAgentViewSelected)
+        {
+            var agentMenu = CreateRibbonContextMenu();
+            var selectedAgent = string.IsNullOrWhiteSpace(_selectedAgentId) ? null : FindAgent(_selectedAgentId);
+            var addItem = new MenuItem { Header = "Add Agent", Style = (Style)Resources["AppMenuItemStyle"] };
+            addItem.Click += (_, _) => AddAgent();
+
+            var editItem = new MenuItem
+            {
+                Header = "Edit Agent",
+                IsEnabled = !string.IsNullOrWhiteSpace(_selectedAgentId),
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            editItem.Click += (_, _) => TryEditSelectedAgent();
+
+            var deleteItem = new MenuItem
+            {
+                Header = "Delete Agent",
+                IsEnabled = !string.IsNullOrWhiteSpace(_selectedAgentId),
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            deleteItem.Click += (_, _) => TryDeleteSelectedAgent();
+
+            var disableItem = new MenuItem
+            {
+                Header = "Disable Agent",
+                IsEnabled = selectedAgent is not null && selectedAgent.State != AgentDefinitionState.Disabled,
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            disableItem.Click += (_, _) => TryDisableSelectedAgent();
+
+            var revokeItem = new MenuItem
+            {
+                Header = "Revoke Agent",
+                IsEnabled = selectedAgent is not null && selectedAgent.State != AgentDefinitionState.Revoked,
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            revokeItem.Click += (_, _) => TryRevokeSelectedAgent();
+
+            var reconcileItem = new MenuItem
+            {
+                Header = "Request Reconciliation",
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            reconcileItem.Click += (_, _) => RequestAgentReconciliation();
+
+            var gatewaySettingsItem = new MenuItem
+            {
+                Header = "Gateway Listener Settings",
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            gatewaySettingsItem.Click += (_, _) => OpenGatewaySettings();
+
+            agentMenu.Items.Add(addItem);
+            agentMenu.Items.Add(editItem);
+            agentMenu.Items.Add(disableItem);
+            agentMenu.Items.Add(revokeItem);
+            agentMenu.Items.Add(reconcileItem);
+            agentMenu.Items.Add(gatewaySettingsItem);
+            agentMenu.Items.Add(new Separator());
+            agentMenu.Items.Add(deleteItem);
+            return agentMenu;
+        }
+
         var menu = CreateRibbonContextMenu();
         var hasSelectedTask = TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex);
 
@@ -4629,9 +5823,80 @@ public partial class MainWindow : Window
         return TaskIdentity.BuildKey(groupName, taskName);
     }
 
+    private ExecutionTargetSelection ResolveExecutionTargetSelection(LauncherTask task)
+    {
+        var mode = (task.ExecutionTargetMode ?? "local").Trim().ToLowerInvariant();
+        var selection = new ExecutionTargetSelection();
+
+        if (mode == "agent")
+        {
+            selection.Mode = ExecutionTargetMode.SpecificAgent;
+            selection.AgentId = task.TargetAgentId;
+            return selection;
+        }
+
+        if (mode == "pool")
+        {
+            selection.Mode = ExecutionTargetMode.AgentPool;
+            selection.PoolId = task.TargetPoolId;
+            return selection;
+        }
+
+        if (mode == "auto")
+        {
+            selection.Mode = ExecutionTargetMode.Automatic;
+            return selection;
+        }
+
+        var normalizedGroup = NormalizeGroupName(task.Group);
+        var group = _currentConfiguration.Groups.FirstOrDefault(candidate =>
+            string.Equals(NormalizeGroupName(candidate.Name), normalizedGroup, StringComparison.OrdinalIgnoreCase));
+        if (group is not null)
+        {
+            var groupMode = (group.ExecutionTargetMode ?? "local").Trim().ToLowerInvariant();
+            if (groupMode == "agent")
+            {
+                selection.Mode = ExecutionTargetMode.SpecificAgent;
+                selection.AgentId = group.TargetAgentId;
+                return selection;
+            }
+
+            if (groupMode == "pool")
+            {
+                selection.Mode = ExecutionTargetMode.AgentPool;
+                selection.PoolId = group.TargetPoolId;
+                return selection;
+            }
+
+            if (groupMode == "auto")
+            {
+                selection.Mode = ExecutionTargetMode.Automatic;
+                return selection;
+            }
+        }
+
+        return selection;
+    }
+
     private bool TryCancelTaskExecution(LauncherTask task, out string message)
     {
         var stateKey = GetTaskStateKey(task);
+
+        if (_taskRemoteAttempts.TryGetValue(stateKey, out var remoteAttempt))
+        {
+            var cancelled = _remoteControlPlaneService.TryCancel(
+                remoteAttempt.AgentId,
+                remoteAttempt.RunId,
+                remoteAttempt.AttemptId,
+                out message);
+            if (cancelled)
+            {
+                _taskRemoteAttempts.Remove(stateKey);
+            }
+
+            return cancelled;
+        }
+
         if (!_taskExecutionCancellation.TryGetValue(stateKey, out var cancellationSource))
         {
             message = "Task was not cancellable at this stage.";
@@ -4684,6 +5949,12 @@ public partial class MainWindow : Window
 
     private void AddTaskButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isAgentViewSelected)
+        {
+            AddAgent();
+            return;
+        }
+
         var groupNames = GetGroupNames()
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -4734,13 +6005,233 @@ public partial class MainWindow : Window
         AddTaskButton_Click(sender, e);
     }
 
+    private void AddAgent()
+    {
+        var draft = _agentRegistryService.CreateDraft();
+        var window = new AgentDefinitionWindow(draft, isNew: true) { Owner = this };
+        if (window.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var result = _agentRegistryService.AddOrUpdate(_agentRegistry, window.Agent, window.RegenerateEnrolmentToken);
+        _selectedAgentId = result.Agent.AgentId;
+        _agentRegistry = _agentRegistryService.Load();
+        RenderAgentsView();
+        AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
+        if (result.EnrolmentSecret is not null)
+        {
+            ShowEnrolmentCommand(result.Agent, result.EnrolmentSecret);
+        }
+    }
+
+    private void TryEditSelectedAgent()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedAgentId))
+        {
+            AppMessageBox.Show(this, "No agent is selected.", "Edit Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        EditAgent(_selectedAgentId);
+    }
+
+    private void EditAgent(string agentId)
+    {
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            AppMessageBox.Show(this, "The selected agent is no longer available.", "Edit Agent", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var window = new AgentDefinitionWindow(agent, isNew: false) { Owner = this };
+        if (window.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var result = _agentRegistryService.AddOrUpdate(_agentRegistry, window.Agent, window.RegenerateEnrolmentToken);
+        _selectedAgentId = result.Agent.AgentId;
+        _agentRegistry = _agentRegistryService.Load();
+        RenderAgentsView();
+        if (result.EnrolmentSecret is not null)
+        {
+            ShowEnrolmentCommand(result.Agent, result.EnrolmentSecret);
+        }
+    }
+
+    private void TryDeleteSelectedAgent()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedAgentId))
+        {
+            AppMessageBox.Show(this, "No agent is selected.", "Delete Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        DeleteAgent(_selectedAgentId);
+    }
+
+    private void DeleteAgent(string agentId)
+    {
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            AppMessageBox.Show(this, "The selected agent is no longer available.", "Delete Agent", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = AppMessageBox.Show(
+            this,
+            $"Delete agent '{agent.EffectiveDisplayName}'?",
+            "Delete Agent",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        _agentRegistryService.Delete(_agentRegistry, agentId);
+        _agentRegistry = _agentRegistryService.Load();
+        _selectedAgentId = _agentRegistry.Agents.FirstOrDefault()?.AgentId;
+        AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
+        RenderAgentsView();
+    }
+
+    private void TryDisableSelectedAgent()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedAgentId))
+        {
+            AppMessageBox.Show(this, "No agent is selected.", "Disable Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        DisableAgent(_selectedAgentId);
+    }
+
+    private void DisableAgent(string agentId)
+    {
+        SetAgentAdministrativeState(
+            agentId,
+            AgentDefinitionState.Disabled,
+            "Disable Agent",
+            "Disable");
+    }
+
+    private void TryRevokeSelectedAgent()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedAgentId))
+        {
+            AppMessageBox.Show(this, "No agent is selected.", "Revoke Agent", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        RevokeAgent(_selectedAgentId);
+    }
+
+    private void RevokeAgent(string agentId)
+    {
+        SetAgentAdministrativeState(
+            agentId,
+            AgentDefinitionState.Revoked,
+            "Revoke Agent",
+            "Revoke");
+    }
+
+    private void SetAgentAdministrativeState(string agentId, AgentDefinitionState targetState, string title, string actionVerb)
+    {
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            AppMessageBox.Show(this, "The selected agent is no longer available.", title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (agent.State == targetState)
+        {
+            return;
+        }
+
+        var result = AppMessageBox.Show(
+            this,
+            $"{actionVerb} agent '{agent.EffectiveDisplayName}'?",
+            title,
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        agent.State = targetState;
+        agent.ActiveRuns = 0;
+        agent.SessionId = null;
+        agent.IsDraining = false;
+        agent.LastStateReasonCode = targetState == AgentDefinitionState.Revoked ? "revoked" : "disabled";
+        agent.LastStateReasonMessage = targetState == AgentDefinitionState.Revoked
+            ? "Agent trust was revoked by an administrator."
+            : "Agent was disabled by an administrator.";
+        agent.LastSeenSummary = targetState == AgentDefinitionState.Revoked ? "Revoked" : "Disabled";
+        if (targetState == AgentDefinitionState.Revoked)
+        {
+            agent.RevokedAtUtc = DateTime.UtcNow;
+        }
+
+        _agentRegistryService.Save(_agentRegistry);
+        _agentRegistry = _agentRegistryService.Load();
+        RenderAgentsView();
+    }
+
+    private void RegenerateAgentEnrolment(string agentId)
+    {
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            AppMessageBox.Show(this, "The selected agent is no longer available.", "Agent Enrolment", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var secret = _agentRegistryService.GenerateEnrolment(agent, TimeSpan.FromHours(2));
+        agent.State = AgentDefinitionState.Pending;
+        _agentRegistryService.Save(_agentRegistry);
+        _agentRegistry = _agentRegistryService.Load();
+        RenderAgentsView();
+        ShowEnrolmentCommand(agent, secret);
+    }
+
+    private void ShowEnrolmentCommand(AgentDefinition agent, AgentEnrolmentSecret secret)
+    {
+        var command = AgentRegistryService.BuildEnrolmentCommand(agent, secret);
+        var window = new AgentEnrolmentCommandWindow(command, secret.ExpiresAtUtc) { Owner = this };
+        window.ShowDialog();
+    }
+
+    private AgentDefinition? FindAgent(string agentId)
+    {
+        return _agentRegistry.Agents.FirstOrDefault(agent =>
+            string.Equals(agent.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+    }
+
     private void RibbonDeleteTaskButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isAgentViewSelected)
+        {
+            TryDeleteSelectedAgent();
+            return;
+        }
+
         TryDeleteFromCurrentContext();
     }
 
     private void RibbonEditTaskButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isAgentViewSelected)
+        {
+            TryEditSelectedAgent();
+            return;
+        }
+
         if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
         {
             AppMessageBox.Show(this, "No tasks are available in the current group.", "Edit Task", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -5596,6 +7087,33 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isAgentViewSelected)
+        {
+            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            {
+                return;
+            }
+
+            if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                TryDeleteSelectedAgent();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.E && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
+            {
+                TryEditSelectedAgent();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key is Key.C or Key.V or Key.R)
+            {
+                return;
+            }
+        }
+
         if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
         {
             if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
@@ -5851,6 +7369,12 @@ public partial class MainWindow : Window
 
     private void TryDeleteFromCurrentContext()
     {
+        if (_isAgentViewSelected)
+        {
+            TryDeleteSelectedAgent();
+            return;
+        }
+
         if (IsSidebarPaneFocused() || _preferGroupDeleteContext)
         {
             TryDeleteSelectedGroup();
@@ -6297,6 +7821,21 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isAgentViewSelected)
+        {
+            RibbonAddActionLabel.Text = "Add Agent";
+            RibbonEditActionLabel.Text = "Edit Agent";
+            RibbonDeleteActionLabel.Text = "Delete";
+            RibbonRunChainButton.IsEnabled = false;
+            RibbonToggleTaskEnabledButton.IsEnabled = false;
+            RibbonToggleTaskEnabledLabel.Text = "Enable";
+            RibbonTaskSurfaceToggleButton.IsEnabled = false;
+            return;
+        }
+
+        RibbonAddActionLabel.Text = "Add";
+        RibbonEditActionLabel.Text = "Edit";
+        RibbonDeleteActionLabel.Text = "Delete";
         var hasVisibleTasks = _visibleTaskIndexes.Count > 0;
         var hasEnabledTasksInGroup = _visibleTaskIndexes.Any(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
 
@@ -6671,6 +8210,46 @@ public partial class MainWindow : Window
             UnregisterTaskCancellation(task);
             linkedCancellationSource?.Dispose();
             return new TaskExecutionResult { Succeeded = false, ExitCode = null };
+        }
+
+        var executionTargetSelection = ResolveExecutionTargetSelection(effectiveTask);
+        if (executionTargetSelection.Mode != ExecutionTargetMode.Local)
+        {
+            var receipt = _remoteControlPlaneService.TryDispatchTask(
+                effectiveTask,
+                executionTargetSelection,
+                resolved.ResolvedInputs,
+                publishedOutputs);
+
+            if (!receipt.Dispatched || string.IsNullOrWhiteSpace(receipt.AgentId) || string.IsNullOrWhiteSpace(receipt.RunId) || string.IsNullOrWhiteSpace(receipt.AttemptId))
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Remote dispatch failed. {receipt.Message}");
+                SetTabStopped(tabContext, false);
+                SetTaskRunState(task, TaskRunState.Failed);
+                CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+                UnregisterTaskCancellation(task);
+                linkedCancellationSource?.Dispose();
+                return new TaskExecutionResult { Succeeded = false, ExitCode = null };
+            }
+
+            _taskRemoteAttempts[taskStateKey] = new RemoteAttemptHandle
+            {
+                AgentId = receipt.AgentId,
+                RunId = receipt.RunId,
+                AttemptId = receipt.AttemptId
+            };
+
+            AppendLog(outputTextBox, $"[{task.Name}] Remote dispatch accepted. {receipt.Message}");
+            AppendLog(outputTextBox, $"[{task.Name}] run_id={receipt.RunId}, attempt_id={receipt.AttemptId}");
+            SetTaskRunState(task, TaskRunState.Running);
+            CompleteHistoryEntry(historyEntry, TaskRunOutcome.Started, null);
+
+            return new TaskExecutionResult
+            {
+                Succeeded = true,
+                ExitCode = null,
+                PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
+            };
         }
 
         var runner = TaskProcessStartInfoFactory.NormalizeRunner(effectiveTask.Runner);

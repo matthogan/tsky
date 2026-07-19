@@ -259,6 +259,8 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
@@ -294,8 +296,29 @@
                         </ComboBox.ItemContainerStyle>
                     </ComboBox>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
-                    <ComboBox x:Name="RunnerComboBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
+                    <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Execution Target" />
+                    <ComboBox x:Name="ExecutionTargetModeComboBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
+                        <ComboBox.ItemContainerStyle>
+                            <Style TargetType="ComboBoxItem">
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+                                <Setter Property="Padding" Value="8,4" />
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
+                        <ComboBoxItem Content="local" />
+                        <ComboBoxItem Content="agent" />
+                        <ComboBoxItem Content="pool" />
+                        <ComboBoxItem Content="auto" />
+                    </ComboBox>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Target Agent" />
+                    <TextBox x:Name="TargetAgentIdTextBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" ToolTip="Used when execution target is 'agent'." />
+
+                    <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Target Pool" />
+                    <TextBox x:Name="TargetPoolIdTextBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" ToolTip="Used when execution target is 'pool'." />
+
+                    <TextBlock Grid.Row="6" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
+                    <ComboBox x:Name="RunnerComboBox" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
                         <ComboBox.ItemContainerStyle>
                             <Style TargetType="ComboBoxItem">
                                 <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
@@ -319,16 +342,16 @@
                         <ComboBoxItem Content="python" />
                     </ComboBox>
 
-                    <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Command Line" />
-                    <TextBox x:Name="CommandLineTextBox" Grid.Row="4" Grid.Column="1" Margin="0,0,8,10" Height="32" />
-                    <Button Grid.Row="4" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseCommandButton_Click" />
+                    <TextBlock Grid.Row="7" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Command Line" />
+                    <TextBox x:Name="CommandLineTextBox" Grid.Row="7" Grid.Column="1" Margin="0,0,8,10" Height="32" />
+                    <Button Grid.Row="7" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseCommandButton_Click" />
 
-                    <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Working Directory" />
-                    <TextBox x:Name="WorkingDirectoryTextBox" Grid.Row="5" Grid.Column="1" Margin="0,0,8,10" Height="32" />
-                    <Button Grid.Row="5" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseDirectoryButton_Click" />
+                    <TextBlock Grid.Row="8" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Working Directory" />
+                    <TextBox x:Name="WorkingDirectoryTextBox" Grid.Row="8" Grid.Column="1" Margin="0,0,8,10" Height="32" />
+                    <Button Grid.Row="8" Grid.Column="2" Width="34" Height="32" Margin="0,0,0,10" Content="…" Style="{StaticResource FormEllipsisButtonStyle}" Click="BrowseDirectoryButton_Click" />
 
                     <CheckBox x:Name="RequiresElevationCheckBox"
-                              Grid.Row="6"
+                              Grid.Row="9"
                               Grid.Column="1"
                               Grid.ColumnSpan="2"
                               Margin="0,8,0,12"
@@ -336,7 +359,7 @@
                               Content="Requires administrator privileges (UAC)" />
 
                     <CheckBox x:Name="IgnoreExitCodeCheckBox"
-                              Grid.Row="7"
+                              Grid.Row="10"
                               Grid.Column="1"
                               Grid.ColumnSpan="2"
                               Margin="0,0,0,12"
@@ -344,7 +367,7 @@
                               Content="Ignore non-zero exit code (treat as success)" />
 
                     <CheckBox x:Name="WaitForExitCheckBox"
-                              Grid.Row="8"
+                              Grid.Row="11"
                               Grid.Column="1"
                               Grid.ColumnSpan="2"
                               Margin="0,0,0,12"
@@ -353,7 +376,7 @@
                               Content="Wait for task process to exit before completing" />
 
                     <CheckBox x:Name="KillProcessTreeOnCancelCheckBox"
-                              Grid.Row="9"
+                              Grid.Row="12"
                               Grid.Column="1"
                               Grid.ColumnSpan="2"
                               Margin="0,0,0,12"
@@ -361,14 +384,14 @@
                               IsChecked="True"
                               Content="Cancel kills full process tree" />
 
-                    <TextBlock Grid.Row="10" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Timeout (sec)" />
-                    <TextBox x:Name="TimeoutSecondsTextBox" Grid.Row="10" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="600" />
+                    <TextBlock Grid.Row="13" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Timeout (sec)" />
+                    <TextBox x:Name="TimeoutSecondsTextBox" Grid.Row="13" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="600" />
 
-                    <TextBlock Grid.Row="11" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
-                    <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="11" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="65536" />
+                    <TextBlock Grid.Row="14" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
+                    <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="65536" />
 
                     <CheckBox x:Name="IsEnabledCheckBox"
-                              Grid.Row="12"
+                              Grid.Row="15"
                               Grid.Column="1"
                               Grid.ColumnSpan="2"
                               Margin="0,0,0,12"
@@ -376,11 +399,11 @@
                               IsChecked="True"
                               Content="Task is enabled" />
 
-                    <TextBlock Grid.Row="13" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
-                    <TextBlock Grid.Row="13" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
+                    <TextBlock Grid.Row="16" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                    <TextBlock Grid.Row="16" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
 
                     <TextBox x:Name="EnvVarsTextBox"
-                             Grid.Row="14"
+                             Grid.Row="17"
                              Grid.Column="0"
                              Grid.ColumnSpan="3"
                              AcceptsReturn="True"

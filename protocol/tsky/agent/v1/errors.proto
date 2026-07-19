@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "google/protobuf/duration.proto";
+
+message TapError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  google.protobuf.Duration retry_after = 4;
+  map<string, string> detail = 5;
+}
+
+message ProtocolError {
+  string related_message_id = 1;
+  TapError error = 2;
+}
+
+message PolicyNotice {
+  string code = 1;
+  string message = 2;
+  map<string, string> detail = 3;
+}

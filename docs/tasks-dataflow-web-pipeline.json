@@ -214,7 +214,7 @@
           "name": "10 - Persist Report To Docs",
           "description": "Writes report markdown to docs folder and outputs final path.",
           "group": "Web Intelligence Pipeline",
-          "commandLine": "$runId='${input:runId}'; $report='${input:reportMarkdown}'; $safeRunId=($runId -replace '[^a-zA-Z0-9_-]','_'); $root=(Get-Location).Path; while($true){ if(Test-Path (Join-Path $root 'tsky.csproj')){ break }; $parent=Split-Path -Path $root -Parent; if([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $root){ break }; $root=$parent }; $docsDir=Join-Path $root 'docs'; New-Item -Path $docsDir -ItemType Directory -Force | Out-Null; $path=Join-Path $docsDir (\"pipeline-report-$safeRunId.md\"); Set-Content -Path $path -Value $report -Encoding UTF8; Write-Output $path",
+          "commandLine": "$runId='${input:runId}'; $report='${input:reportMarkdown}'; $safeRunId=($runId -replace '[^a-zA-Z0-9_-]','_'); $root=(Get-Location).Path; while($true){ if(Test-Path (Join-Path $root 'Tsky.sln')){ break }; $parent=Split-Path -Path $root -Parent; if([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $root){ break }; $root=$parent }; $docsDir=Join-Path $root 'docs'; New-Item -Path $docsDir -ItemType Directory -Force | Out-Null; $path=Join-Path $docsDir (\"pipeline-report-$safeRunId.md\"); Set-Content -Path $path -Value $report -Encoding UTF8; Write-Output $path",
           "runner": "powershell",
           "env": {},
           "workingDirectory": "",

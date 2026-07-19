@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+import "tsky/agent/v1/acknowledgement.proto";
+import "tsky/agent/v1/common.proto";
+import "tsky/agent/v1/errors.proto";
+
+// Enrolment, identity, session and security.
+
+message EcPublicKeyJwk {
+  string kty = 1; // "EC"
+  string crv = 2; // "P-256"
+  string x = 3;   // Base64URL
+  string y = 4;   // Base64URL
+}
+
+message DeviceDescriptor {
+  string hostname = 1;
+  string operating_system = 2;
+  string architecture = 3;
+  string implementation_name = 4;
+  string implementation_version = 5;
+}
+
+message EnrolmentRequest {
+  ProtocolVersion requested_protocol_version = 1;
+  string pending_agent_id = 2;
+  string enrolment_token = 3;
+  string controller_id = 4;
+  DeviceDescriptor device = 5;
+  EcPublicKeyJwk public_key_jwk = 6;
+  bytes nonce = 7;
+}
+
+message EnrolmentResponse {
+  string agent_id = 1;
+  string key_id = 2;
+  string controller_id = 3;
+  repeated ProtocolVersion supported_tap_versions = 4;
+  repeated ProtocolBinding supported_bindings = 5;
+  google.protobuf.Timestamp enrolled_at = 6;
+  TapError error = 20;
+}
+
+message SessionHello {
+  string agent_id = 1;
+  string key_id = 2;
+  bytes agent_nonce = 3;
+  repeated ProtocolVersion supported_tap_versions = 4;
+  repeated ProtocolBinding supported_bindings = 5;
+  string implementation_name = 6;
+  string implementation_version = 7;
+  repeated ExtensionSupport extensions = 8;
+}
+
+message SessionChallenge {
+  string controller_id = 1;
+  string session_id = 2;
+  bytes controller_nonce = 3;
+  ProtocolVersion selected_tap_version = 4;
+  ProtocolBinding selected_binding = 5;
+  google.protobuf.Timestamp issued_at = 6;
+  google.protobuf.Timestamp expires_at = 7;
+  string security_profile = 8; // e.g. "tap-es256-p1363-v1"
+}
+
+message SessionProof {
+  string session_id = 1;
+  string agent_id = 2;
+  string key_id = 3;
+  string security_profile = 4;
+  bytes signature = 5;
+}
+
+message SessionAccepted {
+  string session_id = 1;
+  ProtocolVersion selected_tap_version = 2;
+  ProtocolBinding selected_binding = 3;
+  SessionPolicy policy = 4;
+  repeated AttemptAcknowledgement acknowledgement_cursors = 5;
+  repeated ExtensionSupport negotiated_extensions = 6;
+}
+
+message SessionRejected {
+  TapError error = 1;
+}
+
+message SessionPolicy {
+  uint64 maximum_control_message_bytes = 1;
+  uint64 maximum_output_chunk_bytes = 2;
+  uint32 heartbeat_interval_seconds = 3;
+  uint32 suspect_after_seconds = 4;
+  uint32 offline_after_seconds = 5;
+  uint32 maximum_concurrent_runs = 6;
+}

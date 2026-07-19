@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "tsky/agent/v1/acknowledgement.proto";
+import "tsky/agent/v1/agent.proto";
+import "tsky/agent/v1/artifact.proto";
+import "tsky/agent/v1/common.proto";
+import "tsky/agent/v1/errors.proto";
+import "tsky/agent/v1/reconciliation.proto";
+import "tsky/agent/v1/run.proto";
+import "tsky/agent/v1/security.proto";
+
+service AgentControl {
+  // Opened by the agent. The agent sends AgentFrame values and receives
+  // ControllerFrame values over one long-lived bidirectional stream.
+  rpc Connect(stream AgentFrame) returns (stream ControllerFrame);
+}
+
+message AgentFrame {
+  FrameHeader header = 1;
+
+  oneof body {
+    SessionHello session_hello = 10;
+    SessionProof session_proof = 11;
+    AgentSnapshot agent_snapshot = 12;
+    AgentHeartbeat agent_heartbeat = 13;
+    CapabilityReport capability_report = 14;
+
+    RunAccepted run_accepted = 20;
+    RunRejected run_rejected = 21;
+    RunEvent run_event = 22;
+    RunOutput run_output = 23;
+    RunCompleted run_completed = 24;
+    ReconciliationResponse reconciliation_response = 25;
+
+    ArtifactUploadCompleted artifact_upload_completed = 30;
+    ArtifactUploadFailed artifact_upload_failed = 31;
+
+    ProtocolPong pong = 40;
+  }
+}
+
+message ControllerFrame {
+  FrameHeader header = 1;
+
+  oneof body {
+    SessionChallenge session_challenge = 10;
+    SessionAccepted session_accepted = 11;
+    SessionRejected session_rejected = 12;
+
+    RunOffer run_offer = 20;
+    CancelRun cancel_run = 21;
+    EventAcknowledgement event_acknowledgement = 22;
+    ReconciliationRequest reconciliation_request = 23;
+    DrainRequest drain_request = 24;
+
+    ArtifactUploadGrant artifact_upload_grant = 30;
+    PolicyNotice policy_notice = 31;
+
+    ProtocolPing ping = 40;
+    ProtocolError protocol_error = 41;
+  }
+}

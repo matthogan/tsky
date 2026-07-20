@@ -1,0 +1,3 @@
+obj\Debug\net8.0-windows\tsky\agent\v1/Acknowledgement.cs: C:/Users/admin/.nuget/packages/grpc.tools/2.71.0/build/native/include/google/protobuf/timestamp.proto\
+ ../../protocol/tsky/agent/v1/common.proto\
+ ../../protocol/tsky/agent/v1/acknowledgement.proto

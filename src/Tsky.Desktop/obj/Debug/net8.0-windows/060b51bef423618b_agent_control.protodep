@@ -1,0 +1,13 @@
+obj\Debug\net8.0-windows\tsky\agent\v1/AgentControl.cs \
+obj\Debug\net8.0-windows\tsky\agent\v1/AgentControlGrpc.cs: C:/Users/admin/.nuget/packages/grpc.tools/2.71.0/build/native/include/google/protobuf/timestamp.proto\
+ ../../protocol/tsky/agent/v1/common.proto\
+ ../../protocol/tsky/agent/v1/acknowledgement.proto\
+ C:/Users/admin/.nuget/packages/grpc.tools/2.71.0/build/native/include/google/protobuf/duration.proto\
+ ../../protocol/tsky/agent/v1/agent.proto\
+ ../../protocol/tsky/agent/v1/errors.proto\
+ ../../protocol/tsky/agent/v1/artifact.proto\
+ C:/Users/admin/.nuget/packages/grpc.tools/2.71.0/build/native/include/google/protobuf/struct.proto\
+ ../../protocol/tsky/agent/v1/run.proto\
+ ../../protocol/tsky/agent/v1/reconciliation.proto\
+ ../../protocol/tsky/agent/v1/security.proto\
+ ../../protocol/tsky/agent/v1/agent_control.proto

@@ -1,4 +1,23 @@
+# Go build output
 bin/
 dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+tsky-agent
+tsky-agent.exe
+
+# Go test binaries and output
 *.test
+*.out
+
+# Coverage reports
 coverage.out
+coverage*.out
+*.coverprofile
+
+# Temporary files
+*.tmp
+.temp/

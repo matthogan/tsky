@@ -17,7 +17,9 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using System.Windows.Automation;
 using Microsoft.Win32;
+using Tsky.Agent.V1;
 using Brush = System.Windows.Media.Brush;
 using Color = System.Windows.Media.Color;
 using RichTextBox = System.Windows.Controls.RichTextBox;
@@ -74,6 +76,7 @@ public partial class MainWindow : Window
     private readonly List<string> _favoriteGroupOrder = [];
     private readonly List<string> _nonFavoriteGroupsOrder = [];
     private readonly Dictionary<string, List<TextBlock>> _sidebarTaskStateGlyphs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Button> _sidebarAgentButtonsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
     private readonly Dictionary<string, Grid> _agentCardsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, GraphNodeVisual> _graphNodesByIndex = [];
@@ -93,9 +96,17 @@ public partial class MainWindow : Window
     private readonly AgentGatewayHost _agentGatewayHost;
     private readonly RemoteControlPlaneService _remoteControlPlaneService;
     private readonly Dictionary<string, RemoteAttemptHandle> _taskRemoteAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AgentTransientExecutionState> _agentTransientExecutionStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Queue<string>> _runningAttemptIdsByAgent = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, RemoteAttemptTracking> _remoteAttemptTracking = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AttemptBindingRecord> _attemptBindingByAttemptId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AttemptBindingRecord> _activeAttemptBindingByTaskStateKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingReconciliationAttempt> _pendingReconciliationByAttemptId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<RichTextBox, OutputBudgetState> _outputBudgetByTextBox = new();
     private readonly DispatcherTimer _agentStatusRefreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool _isAgentViewSelected;
     private string? _selectedAgentId;
+    private string? _selectedDispatchAgentId;
     private bool _isReplayingHistoryBatch;
     private bool _isHistoryDetailsVisible = true;
     private double _historyListPaneRatio = DefaultHistoryListPaneRatio;
@@ -128,6 +139,30 @@ public partial class MainWindow : Window
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] SidebarRunningFrames = ["◐", "◓", "◑", "◒"];
     private const double GraphDragThreshold = 6;
+    private const string AgentDispatchTelemetryCategory = "AgentDispatch";
+    private const string AgentDispatchValidationEvent = "Validation";
+    private const string AgentDispatchRequestEvent = "Request";
+    private const string AgentDispatchResponseEvent = "Response";
+    private const string AgentDispatchStateEvent = "State";
+    private const string AgentDispatchBindingEvent = "Binding";
+    private const string AgentDispatchActionEvent = "Action";
+    private const int AgentDispatchPageJumpSize = 5;
+    private const int MaxUiLogMessageChars = 12000;
+    private const int MaxUiTraceLineChars = 900;
+    private const int MaxUiPublishedValueChars = 1500;
+    private const int MaxUiStreamLineChars = 6000;
+    private const int MaxUiOutputCharsPerRun = 300000;
+    private static readonly Brush AgentsDispatchRowBorderBrush = new SolidColorBrush(Color.FromRgb(0x36, 0x3A, 0x3E));
+    private static readonly Brush AgentsDispatchRowSelectedBorderBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
+    private static readonly Brush AgentsDispatchRowFocusedBorderBrush = new SolidColorBrush(Color.FromRgb(0x8C, 0xC2, 0xFF));
+    private static readonly Brush AgentsDispatchRowBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x1F, 0x24, 0x29));
+    private static readonly Brush AgentsDispatchRowSelectedBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x23, 0x2A, 0x2B));
+    private static readonly Brush AgentsDispatchRowFocusedBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x26, 0x2D, 0x33));
+    private static readonly Brush AgentsDispatchPlayEnabledBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x19, 0xA8, 0x50));
+    private static readonly Brush AgentsDispatchPlayEnabledBorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0xD7, 0x7A));
+    private static readonly Brush AgentsDispatchPlayDisabledBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x33, 0x37, 0x3C));
+    private static readonly Brush AgentsDispatchPlayDisabledBorderBrush = new SolidColorBrush(Color.FromRgb(0x49, 0x4F, 0x56));
+    private static readonly Brush AgentsDispatchRunningBorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0xD7, 0x7A));
 
     public static readonly RoutedUICommand ToggleHistoryCommand = new(
         "Toggle History",
@@ -173,9 +208,22 @@ public partial class MainWindow : Window
         Agents
     }
 
+    private enum AgentTransientExecutionState
+    {
+        Idle,
+        Dispatching,
+        Running,
+        Completed,
+        Failed
+    }
+
     private sealed class TaskTabContext
     {
         public required OutputGroupPanelContext HostOutputPanel { get; init; }
+
+        public required string BaseTaskName { get; init; }
+
+        public required DateTime StartedAtLocal { get; init; }
 
         public required Border RunItemContainer { get; init; }
 
@@ -190,6 +238,13 @@ public partial class MainWindow : Window
         public required DispatcherTimer SpinnerTimer { get; init; }
 
         public int SpinnerFrameIndex { get; set; }
+    }
+
+    private sealed class OutputBudgetState
+    {
+        public int TotalCharsAppended { get; set; }
+
+        public bool LimitReachedLogged { get; set; }
     }
 
     private sealed class OutputGroupPanelContext
@@ -281,6 +336,82 @@ public partial class MainWindow : Window
         public required string AttemptId { get; init; }
     }
 
+    private sealed class RemoteAttemptTracking
+    {
+        public required string AgentId { get; init; }
+
+        public required string AttemptId { get; init; }
+
+        public required string RunId { get; init; }
+
+        public required string TaskName { get; init; }
+
+        public required string TaskStateKey { get; init; }
+
+        public required RichTextBox OutputTextBox { get; init; }
+
+        public bool EndMarkerWritten { get; set; }
+
+        public StringBuilder StandardOutputBuffer { get; } = new();
+
+        public StringBuilder StandardErrorBuffer { get; } = new();
+
+        public object SyncRoot { get; } = new();
+
+        public TaskCompletionSource<RemoteAttemptResult> CompletionSource { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool CompletionSignaled { get; set; }
+    }
+
+    private sealed class RemoteAttemptResult
+    {
+        public bool Succeeded { get; init; }
+
+        public int? ExitCode { get; init; }
+
+        public TaskRunOutcome Outcome { get; init; }
+
+        public string StandardOutput { get; init; } = string.Empty;
+
+        public string StandardError { get; init; } = string.Empty;
+
+        public string Message { get; init; } = string.Empty;
+
+        public Dictionary<string, string> ProducedOutputs { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class AttemptBindingRecord
+    {
+        public required string TaskStateKey { get; init; }
+
+        public required string TaskName { get; init; }
+
+        public required string AgentId { get; init; }
+
+        public required string RunId { get; init; }
+
+        public required string AttemptId { get; init; }
+
+        public DateTime CreatedAtUtc { get; init; } = DateTime.UtcNow;
+    }
+
+    private sealed class PendingReconciliationAttempt
+    {
+        public required string AgentId { get; init; }
+
+        public required string AttemptId { get; init; }
+
+        public required string RunId { get; init; }
+
+        public required string TaskName { get; init; }
+
+        public required string TaskStateKey { get; init; }
+
+        public required RichTextBox OutputTextBox { get; init; }
+
+        public DateTime DisconnectedAtUtc { get; init; } = DateTime.UtcNow;
+    }
+
     private sealed class ConnectorVisual
     {
         public required System.Windows.Shapes.Path PrimaryPath { get; init; }
@@ -325,6 +456,12 @@ public partial class MainWindow : Window
         public required string AgentId { get; init; }
 
         public required Border SelectionBorder { get; init; }
+    }
+
+    private sealed class AgentDispatchCommand
+    {
+        public required string AgentId { get; init; }
+        public bool RunChain { get; init; }
     }
 
     private sealed class PortEditorRow
@@ -387,7 +524,10 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _agentGatewaySettings = _agentGatewaySettingsService.Load();
-        _agentGatewayHost = new AgentGatewayHost(_agentRegistryService, _agentGatewaySettings, _ => Dispatcher.Invoke(HandleAgentRuntimeEvent));
+        _agentGatewayHost = new AgentGatewayHost(
+            _agentRegistryService,
+            _agentGatewaySettings,
+            runtimeEvent => Dispatcher.Invoke(() => HandleAgentRuntimeEvent(runtimeEvent)));
         _remoteControlPlaneService = new RemoteControlPlaneService(_agentGatewayHost, _agentRegistryService);
 
         _currentDirectoryConfigPath = TaskConfiguration.GetCurrentDirectoryConfigPath();
@@ -677,15 +817,33 @@ public partial class MainWindow : Window
         HandleAgentRuntimeEvent();
     }
 
-    private void HandleAgentRuntimeEvent()
+    private void HandleAgentRuntimeEvent(AgentGatewayRuntimeEvent? runtimeEvent = null)
     {
+        if (runtimeEvent is not null)
+        {
+            HandleRemoteRuntimeFrame(runtimeEvent);
+        }
+
+        _agentGatewayHost.MarkKnownAgentsOfflineIfStale();
+
+        var previous = _agentRegistry;
+
         var latest = _agentRegistryService.Load();
-        if (!HaveAgentRowsChanged(_agentRegistry, latest))
+
+        RequestReconciliationForReconnectedAgents(previous, latest);
+
+        ProcessRemoteAttemptCompletions(previous, latest);
+
+        var rowsChanged = HaveAgentRowsChanged(previous, latest);
+
+        // Always update the cached snapshot so non-visual consumers (e.g., dispatch row labels)
+        // see the newest registry data even if we skip a rerender on this tick.
+        _agentRegistry = latest;
+
+        if (!rowsChanged)
         {
             return;
         }
-
-        _agentRegistry = latest;
         AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
 
         if (_isAgentViewSelected)
@@ -694,6 +852,852 @@ public partial class MainWindow : Window
             UpdateSelectedAgentRuntimePanel();
             UpdateRibbonTaskActionState();
         }
+
+        RebuildAgentsSidebarList();
+
+        if (!_isAgentViewSelected && ReferenceEquals(BottomPaneTabControl?.SelectedItem, AgentsDispatchPaneTabItem))
+        {
+            RefreshAgentsDispatchPane();
+        }
+    }
+
+    private void HandleRemoteRuntimeFrame(AgentGatewayRuntimeEvent runtimeEvent)
+    {
+        if (runtimeEvent.RunAccepted is not null)
+        {
+            HandleRemoteRunAccepted(runtimeEvent.AgentId, runtimeEvent.RunAccepted);
+        }
+
+        if (runtimeEvent.RunRejected is not null)
+        {
+            HandleRemoteRunRejected(runtimeEvent.AgentId, runtimeEvent.RunRejected);
+        }
+
+        if (runtimeEvent.RunOutput is not null)
+        {
+            AppendRemoteRunOutput(runtimeEvent.AgentId, runtimeEvent.RunOutput);
+        }
+
+        if (runtimeEvent.RunEvent is not null)
+        {
+            AppendRemoteRunEvent(runtimeEvent.AgentId, runtimeEvent.RunEvent);
+        }
+
+        if (runtimeEvent.RunCompleted is not null)
+        {
+            HandleRemoteRunCompleted(runtimeEvent.AgentId, runtimeEvent.RunCompleted);
+        }
+
+        if (runtimeEvent.ReconciliationResponse is not null)
+        {
+            HandleReconciliationResponse(runtimeEvent.AgentId, runtimeEvent.ReconciliationResponse);
+        }
+
+        if (runtimeEvent.ArtifactUploadCompleted is not null)
+        {
+            HandleRemoteArtifactUploadCompleted(runtimeEvent.AgentId, runtimeEvent.ArtifactUploadCompleted);
+        }
+
+        if (runtimeEvent.ArtifactUploadFailed is not null)
+        {
+            HandleRemoteArtifactUploadFailed(runtimeEvent.AgentId, runtimeEvent.ArtifactUploadFailed);
+        }
+    }
+
+    private static void HandleRemoteArtifactUploadCompleted(string agentId, ArtifactUploadCompleted completed)
+    {
+        DebugTraceLog.Write(
+            AgentDispatchTelemetryCategory,
+            $"[ProtocolWarning] Received unsupported ArtifactUploadCompleted frame from agent='{NormalizeMarkerToken(agentId)}' artifact='{NormalizeMarkerToken(completed.ArtifactId)}' grant='{NormalizeMarkerToken(completed.GrantId)}' size={completed.SizeBytes}.");
+    }
+
+    private static void HandleRemoteArtifactUploadFailed(string agentId, ArtifactUploadFailed failed)
+    {
+        var errorCode = failed.Error?.Code;
+        var errorMessage = failed.Error?.Message;
+        DebugTraceLog.Write(
+            AgentDispatchTelemetryCategory,
+            $"[ProtocolWarning] Received unsupported ArtifactUploadFailed frame from agent='{NormalizeMarkerToken(agentId)}' artifact='{NormalizeMarkerToken(failed.ArtifactId)}' grant='{NormalizeMarkerToken(failed.GrantId)}' code='{NormalizeMarkerToken(errorCode)}' message='{NormalizeMarkerToken(errorMessage)}'.");
+    }
+
+    private void HandleRemoteRunAccepted(string agentId, RunAccepted runAccepted)
+    {
+        if (string.IsNullOrWhiteSpace(runAccepted.AttemptId)
+            || !_remoteAttemptTracking.TryGetValue(runAccepted.AttemptId, out var tracking))
+        {
+            return;
+        }
+
+        AppendLog(
+            tracking.OutputTextBox,
+            $"EVENT task={NormalizeMarkerToken(tracking.TaskName)} agent={NormalizeMarkerToken(agentId)} run={NormalizeMarkerToken(runAccepted.RunId)} attempt={NormalizeMarkerToken(runAccepted.AttemptId)} type=RunAccepted");
+    }
+
+    private void HandleRemoteRunRejected(string agentId, RunRejected runRejected)
+    {
+        if (string.IsNullOrWhiteSpace(runRejected.AttemptId)
+            || !_remoteAttemptTracking.TryGetValue(runRejected.AttemptId, out var tracking))
+        {
+            return;
+        }
+
+        var reason = runRejected.Error?.Message;
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            reason = runRejected.Error?.Code;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            reason = "agent rejected offer";
+        }
+
+        AppendLog(
+            tracking.OutputTextBox,
+            AgentDispatchLifecycleMarkers.Error(tracking.TaskName, agentId, reason, tracking.AttemptId));
+        WriteRemoteEndMarker(tracking, "Failed", reason);
+        SetRemoteTabStopped(tracking.OutputTextBox, succeeded: false);
+        TrySignalRemoteAttemptCompletion(
+            tracking,
+            new RemoteAttemptResult
+            {
+                Succeeded = false,
+                ExitCode = null,
+                Outcome = TaskRunOutcome.LaunchFailed,
+                StandardOutput = GetBufferedRemoteStandardOutput(tracking),
+                StandardError = GetBufferedRemoteStandardError(tracking),
+                Message = reason
+            });
+
+        _pendingReconciliationByAttemptId.Remove(runRejected.AttemptId);
+        _remoteAttemptTracking.Remove(runRejected.AttemptId);
+        _taskRemoteAttempts.Remove(tracking.TaskStateKey);
+        ClearAttemptBinding(tracking.TaskStateKey, runRejected.AttemptId);
+        RemoveRunningAttempt(agentId, runRejected.AttemptId);
+
+        var matchedTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+            string.Equals(GetTaskStateKey(task), tracking.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+        if (matchedTask is not null)
+        {
+            SetTaskRunState(matchedTask, TaskRunState.Failed);
+        }
+
+        SetAgentTransientExecutionState(agentId, AgentTransientExecutionState.Failed, "run_rejected_frame");
+    }
+
+    private void HandleReconciliationResponse(string agentId, ReconciliationResponse response)
+    {
+        var pendingForAgent = _pendingReconciliationByAttemptId.Values
+            .Where(item => string.Equals(item.AgentId, agentId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (pendingForAgent.Count == 0)
+        {
+            return;
+        }
+
+        var reconciledByAttemptId = response.Attempts
+            .Where(attempt => !string.IsNullOrWhiteSpace(attempt.AttemptId))
+            .ToDictionary(attempt => attempt.AttemptId, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pending in pendingForAgent)
+        {
+            var lifecycleContext = new AgentDispatchLifecycleContext(
+                pending.TaskName,
+                agentId,
+                pending.RunId,
+                pending.AttemptId);
+
+            if (!reconciledByAttemptId.TryGetValue(pending.AttemptId, out var reconciledAttempt))
+            {
+                AppendLog(
+                    pending.OutputTextBox,
+                    AgentDispatchLifecycleMarkers.ReconcileUnrecovered(lifecycleContext, response.ReconciliationId));
+
+                var unrecoveredTracking = _remoteAttemptTracking.TryGetValue(pending.AttemptId, out var unresolvedTracking)
+                    ? unresolvedTracking
+                    : null;
+
+                _pendingReconciliationByAttemptId.Remove(pending.AttemptId);
+                _remoteAttemptTracking.Remove(pending.AttemptId);
+                _taskRemoteAttempts.Remove(pending.TaskStateKey);
+                ClearAttemptBinding(pending.TaskStateKey, pending.AttemptId);
+                SetRemoteTabStopped(pending.OutputTextBox, succeeded: false);
+
+                var missingTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+                    string.Equals(GetTaskStateKey(task), pending.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+                if (missingTask is not null)
+                {
+                    SetTaskRunState(missingTask, TaskRunState.Failed);
+                }
+
+                SetAgentTransientExecutionState(agentId, AgentTransientExecutionState.Failed, "reconciliation_unrecovered");
+                if (unrecoveredTracking is not null)
+                {
+                    TrySignalRemoteAttemptCompletion(
+                        unrecoveredTracking,
+                        new RemoteAttemptResult
+                        {
+                            Succeeded = false,
+                            ExitCode = null,
+                            Outcome = TaskRunOutcome.LaunchFailed,
+                            StandardOutput = GetBufferedRemoteStandardOutput(unrecoveredTracking),
+                            StandardError = GetBufferedRemoteStandardError(unrecoveredTracking),
+                            Message = "attempt not found during reconciliation"
+                        });
+                }
+                continue;
+            }
+
+            if (reconciledAttempt.State is RunAttemptState.Succeeded
+                or RunAttemptState.Failed
+                or RunAttemptState.Cancelled
+                or RunAttemptState.Interrupted
+                or RunAttemptState.TimedOut)
+            {
+                var terminalLabel = reconciledAttempt.State switch
+                {
+                    RunAttemptState.Succeeded => "Succeeded",
+                    RunAttemptState.Cancelled => "Cancelled",
+                    _ => "Failed"
+                };
+
+                AppendLog(
+                    pending.OutputTextBox,
+                    AgentDispatchLifecycleMarkers.ReconcileRecovered(lifecycleContext, terminalLabel, response.ReconciliationId));
+
+                if (_remoteAttemptTracking.TryGetValue(pending.AttemptId, out var tracking) && !tracking.EndMarkerWritten)
+                {
+                    WriteRemoteEndMarker(tracking, terminalLabel, "recovered_by_reconciliation");
+                }
+
+                var recoveredTracking = _remoteAttemptTracking.TryGetValue(pending.AttemptId, out var completionTracking)
+                    ? completionTracking
+                    : null;
+
+                _pendingReconciliationByAttemptId.Remove(pending.AttemptId);
+                _remoteAttemptTracking.Remove(pending.AttemptId);
+                _taskRemoteAttempts.Remove(pending.TaskStateKey);
+                ClearAttemptBinding(pending.TaskStateKey, pending.AttemptId);
+                SetRemoteTabStopped(pending.OutputTextBox, reconciledAttempt.State == RunAttemptState.Succeeded);
+
+                var matchedTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+                    string.Equals(GetTaskStateKey(task), pending.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+                if (matchedTask is not null)
+                {
+                    SetTaskRunState(
+                        matchedTask,
+                        reconciledAttempt.State == RunAttemptState.Succeeded ? TaskRunState.Succeeded : TaskRunState.Failed);
+                }
+
+                SetAgentTransientExecutionState(
+                    agentId,
+                    reconciledAttempt.State == RunAttemptState.Succeeded ? AgentTransientExecutionState.Completed : AgentTransientExecutionState.Failed,
+                    "reconciliation_recovered_terminal");
+                if (recoveredTracking is not null)
+                {
+                    TrySignalRemoteAttemptCompletion(
+                        recoveredTracking,
+                        new RemoteAttemptResult
+                        {
+                            Succeeded = reconciledAttempt.State == RunAttemptState.Succeeded,
+                            ExitCode = null,
+                            Outcome = MapRemoteOutcome(reconciledAttempt.State),
+                            StandardOutput = GetBufferedRemoteStandardOutput(recoveredTracking),
+                            StandardError = GetBufferedRemoteStandardError(recoveredTracking),
+                            Message = "terminal state recovered by reconciliation"
+                        });
+                }
+
+                continue;
+            }
+
+            var inFlightState = reconciledAttempt.State.ToString();
+            AppendLog(
+                pending.OutputTextBox,
+                AgentDispatchLifecycleMarkers.ReconcileUnrecoveredInFlight(
+                    lifecycleContext,
+                    inFlightState,
+                    reconciledAttempt.ProcessIsKnownRunning,
+                    response.ReconciliationId));
+        }
+    }
+
+    private void RequestReconciliationForReconnectedAgents(AgentRegistry previous, AgentRegistry latest)
+    {
+        if (_pendingReconciliationByAttemptId.Count == 0)
+        {
+            return;
+        }
+
+        var reconnectedAgentIds = latest.Agents
+            .Where(latestAgent =>
+            {
+                var previousAgent = previous.Agents.FirstOrDefault(candidate =>
+                    string.Equals(candidate.AgentId, latestAgent.AgentId, StringComparison.OrdinalIgnoreCase));
+                return previousAgent is not null
+                    && !IsConnectedState(previousAgent.State)
+                    && IsConnectedState(latestAgent.State);
+            })
+            .Select(agent => agent.AgentId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (reconnectedAgentIds.Count == 0)
+        {
+            return;
+        }
+
+        var pendingForReconnectedAgents = _pendingReconciliationByAttemptId.Values
+            .Where(item => reconnectedAgentIds.Contains(item.AgentId))
+            .ToList();
+        if (pendingForReconnectedAgents.Count == 0)
+        {
+            return;
+        }
+
+        var probeCount = _remoteControlPlaneService.RequestReconciliationAll();
+        foreach (var pending in pendingForReconnectedAgents)
+        {
+            var lifecycleContext = new AgentDispatchLifecycleContext(
+                pending.TaskName,
+                pending.AgentId,
+                pending.RunId,
+                pending.AttemptId);
+            AppendLog(
+                pending.OutputTextBox,
+                AgentDispatchLifecycleMarkers.ReconcileRequestedOnReconnect(lifecycleContext, probeCount));
+        }
+    }
+
+    private void AppendRemoteRunOutput(string agentId, Tsky.Agent.V1.RunOutput runOutput)
+    {
+        if (string.IsNullOrWhiteSpace(runOutput.AttemptId)
+            || !_remoteAttemptTracking.TryGetValue(runOutput.AttemptId, out var tracking))
+        {
+            return;
+        }
+
+        var streamName = runOutput.Stream switch
+        {
+            OutputStream.Stderr => "stderr",
+            OutputStream.System => "system",
+            _ => "stdout"
+        };
+
+        var payload = runOutput.Data?.ToStringUtf8() ?? string.Empty;
+        if (string.IsNullOrEmpty(payload))
+        {
+            return;
+        }
+
+        lock (tracking.SyncRoot)
+        {
+            if (runOutput.Stream == OutputStream.Stderr)
+            {
+                tracking.StandardErrorBuffer.Append(payload);
+            }
+            else if (runOutput.Stream == OutputStream.Stdout)
+            {
+                tracking.StandardOutputBuffer.Append(payload);
+            }
+        }
+
+        var normalizedPayload = payload.Replace("\r\n", "\n");
+        normalizedPayload = normalizedPayload.Replace('\r', '\n');
+        var lines = normalizedPayload.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        if (lines.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var line in lines)
+        {
+            AppendStreamOutputLine(tracking.OutputTextBox, streamName, line);
+        }
+    }
+
+    private void AppendRemoteRunEvent(string agentId, Tsky.Agent.V1.RunEvent runEvent)
+    {
+        if (string.IsNullOrWhiteSpace(runEvent.AttemptId)
+            || !_remoteAttemptTracking.TryGetValue(runEvent.AttemptId, out var tracking))
+        {
+            return;
+        }
+
+        var eventType = runEvent.Type.ToString();
+        var attemptState = runEvent.AttemptState.ToString();
+        var stepToken = string.IsNullOrWhiteSpace(runEvent.StepId)
+            ? "n/a"
+            : NormalizeMarkerToken(runEvent.StepId);
+
+        AppendLog(
+            tracking.OutputTextBox,
+            $"EVENT task={NormalizeMarkerToken(tracking.TaskName)} agent={NormalizeMarkerToken(agentId)} run={NormalizeMarkerToken(runEvent.RunId)} attempt={NormalizeMarkerToken(runEvent.AttemptId)} seq={runEvent.EventSequence} type={eventType} step={stepToken} state={attemptState}");
+    }
+
+    private void HandleRemoteRunCompleted(string agentId, Tsky.Agent.V1.RunCompleted runCompleted)
+    {
+        if (string.IsNullOrWhiteSpace(runCompleted.AttemptId)
+            || !_remoteAttemptTracking.TryGetValue(runCompleted.AttemptId, out var tracking))
+        {
+            return;
+        }
+
+        var terminalState = runCompleted.TerminalState;
+        var terminalLabel = terminalState switch
+        {
+            RunAttemptState.Succeeded => "Succeeded",
+            RunAttemptState.Cancelled => "Cancelled",
+            RunAttemptState.TimedOut => "Failed",
+            RunAttemptState.Interrupted => "Failed",
+            RunAttemptState.Failed => "Failed",
+            _ => "Failed"
+        };
+
+        var reason = runCompleted.Error is not null && !string.IsNullOrWhiteSpace(runCompleted.Error.Message)
+            ? runCompleted.Error.Message
+            : "remote completion frame received";
+
+        WriteRemoteEndMarker(tracking, terminalLabel, reason);
+        SetRemoteTabStopped(tracking.OutputTextBox, terminalState == RunAttemptState.Succeeded);
+        TrySignalRemoteAttemptCompletion(
+            tracking,
+            new RemoteAttemptResult
+            {
+                Succeeded = terminalState == RunAttemptState.Succeeded,
+                ExitCode = runCompleted.HasExitCode ? runCompleted.ExitCode : null,
+                Outcome = MapRemoteOutcome(terminalState),
+                StandardOutput = GetBufferedRemoteStandardOutput(tracking),
+                StandardError = GetBufferedRemoteStandardError(tracking),
+                Message = reason,
+                ProducedOutputs = ExtractProducedPortOutputs(runCompleted)
+            });
+
+        _pendingReconciliationByAttemptId.Remove(runCompleted.AttemptId);
+        _remoteAttemptTracking.Remove(runCompleted.AttemptId);
+        _taskRemoteAttempts.Remove(tracking.TaskStateKey);
+        ClearAttemptBinding(tracking.TaskStateKey, runCompleted.AttemptId);
+        RemoveRunningAttempt(agentId, runCompleted.AttemptId);
+
+        var matchedTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+            string.Equals(GetTaskStateKey(task), tracking.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+        if (matchedTask is not null)
+        {
+            var succeeded = terminalState == RunAttemptState.Succeeded;
+            SetTaskRunState(matchedTask, succeeded ? TaskRunState.Succeeded : TaskRunState.Failed);
+        }
+
+        var transientState = terminalState == RunAttemptState.Succeeded
+            ? AgentTransientExecutionState.Completed
+            : AgentTransientExecutionState.Failed;
+        SetAgentTransientExecutionState(agentId, transientState, "run_completed_frame");
+    }
+
+    private void RemoveRunningAttempt(string agentId, string attemptId)
+    {
+        if (!_runningAttemptIdsByAgent.TryGetValue(agentId, out var queue) || queue.Count == 0)
+        {
+            return;
+        }
+
+        var retained = queue.Where(id => !string.Equals(id, attemptId, StringComparison.Ordinal)).ToArray();
+        if (retained.Length == 0)
+        {
+            _runningAttemptIdsByAgent.Remove(agentId);
+            return;
+        }
+
+        _runningAttemptIdsByAgent[agentId] = new Queue<string>(retained);
+    }
+
+    private static TaskRunOutcome MapRemoteOutcome(RunAttemptState terminalState)
+    {
+        return terminalState switch
+        {
+            RunAttemptState.Succeeded => TaskRunOutcome.Succeeded,
+            RunAttemptState.Cancelled => TaskRunOutcome.Cancelled,
+            RunAttemptState.TimedOut => TaskRunOutcome.TimedOut,
+            RunAttemptState.Interrupted => TaskRunOutcome.FailedNonZeroExit,
+            RunAttemptState.Failed => TaskRunOutcome.FailedNonZeroExit,
+            _ => TaskRunOutcome.LaunchFailed
+        };
+    }
+
+    private static Dictionary<string, string> ExtractProducedPortOutputs(RunCompleted runCompleted)
+    {
+        var outputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var produced in runCompleted.ProducedPortValues)
+        {
+            if (string.IsNullOrWhiteSpace(produced.PortId) || produced.Value is null)
+            {
+                continue;
+            }
+
+            outputs[produced.PortId] = ConvertPortValueToString(produced.Value);
+        }
+
+        return outputs;
+    }
+
+    private static string ConvertPortValueToString(PortValue value)
+    {
+        return value.ValueCase switch
+        {
+            PortValue.ValueOneofCase.StringValue => value.StringValue ?? string.Empty,
+            PortValue.ValueOneofCase.BoolValue => value.BoolValue ? "true" : "false",
+            PortValue.ValueOneofCase.IntegerValue => value.IntegerValue.ToString(CultureInfo.InvariantCulture),
+            PortValue.ValueOneofCase.FloatingValue => value.FloatingValue.ToString(CultureInfo.InvariantCulture),
+            PortValue.ValueOneofCase.DecimalValue => value.DecimalValue ?? string.Empty,
+            _ => value.ToString()
+        };
+    }
+
+    private static string GetBufferedRemoteStandardOutput(RemoteAttemptTracking tracking)
+    {
+        lock (tracking.SyncRoot)
+        {
+            return tracking.StandardOutputBuffer.ToString();
+        }
+    }
+
+    private static string GetBufferedRemoteStandardError(RemoteAttemptTracking tracking)
+    {
+        lock (tracking.SyncRoot)
+        {
+            return tracking.StandardErrorBuffer.ToString();
+        }
+    }
+
+    private static void TrySignalRemoteAttemptCompletion(RemoteAttemptTracking tracking, RemoteAttemptResult completion)
+    {
+        lock (tracking.SyncRoot)
+        {
+            if (tracking.CompletionSignaled)
+            {
+                return;
+            }
+
+            tracking.CompletionSignaled = true;
+        }
+
+        tracking.CompletionSource.TrySetResult(completion);
+    }
+
+    private void RegisterAttemptBinding(AttemptBindingRecord binding)
+    {
+        _attemptBindingByAttemptId[binding.AttemptId] = binding;
+        _activeAttemptBindingByTaskStateKey[binding.TaskStateKey] = binding;
+        LogAgentDispatchTelemetry(
+            AgentDispatchBindingEvent,
+            $"bind task={NormalizeMarkerToken(binding.TaskName)} taskKey={NormalizeMarkerToken(binding.TaskStateKey)} agent={NormalizeMarkerToken(binding.AgentId)} run={NormalizeMarkerToken(binding.RunId)} attempt={NormalizeMarkerToken(binding.AttemptId)}");
+    }
+
+    private bool TryGetActiveAttemptBindingForTask(string taskStateKey, out AttemptBindingRecord binding)
+    {
+        return _activeAttemptBindingByTaskStateKey.TryGetValue(taskStateKey, out binding!);
+    }
+
+    private void ClearAttemptBinding(string taskStateKey, string attemptId)
+    {
+        _attemptBindingByAttemptId.Remove(attemptId);
+
+        if (_activeAttemptBindingByTaskStateKey.TryGetValue(taskStateKey, out var existing)
+            && string.Equals(existing.AttemptId, attemptId, StringComparison.OrdinalIgnoreCase))
+        {
+            _activeAttemptBindingByTaskStateKey.Remove(taskStateKey);
+            LogAgentDispatchTelemetry(
+                AgentDispatchBindingEvent,
+                $"unbind taskKey={NormalizeMarkerToken(taskStateKey)} attempt={NormalizeMarkerToken(attemptId)}");
+        }
+    }
+
+    private void ProcessRemoteAttemptCompletions(AgentRegistry previous, AgentRegistry latest)
+    {
+        var activeAgentIds = _runningAttemptIdsByAgent.Keys.ToList();
+        foreach (var agentId in activeAgentIds)
+        {
+            var previousAgent = previous.Agents.FirstOrDefault(agent =>
+                string.Equals(agent.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+            var latestAgent = latest.Agents.FirstOrDefault(agent =>
+                string.Equals(agent.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+
+            if (latestAgent is null)
+            {
+                TransitionPendingAttemptsToTerminal(agentId, "Failed", "agent record removed during remote execution");
+                continue;
+            }
+
+            var successfulDelta = Math.Max(0, latestAgent.SuccessfulRuns - (previousAgent?.SuccessfulRuns ?? 0));
+            var failedDelta = Math.Max(0, latestAgent.FailedRuns - (previousAgent?.FailedRuns ?? 0));
+
+            for (var i = 0; i < successfulDelta; i++)
+            {
+                CompleteNextRunningAttempt(agentId, succeeded: true, reason: "remote completion reported");
+            }
+
+            for (var i = 0; i < failedDelta; i++)
+            {
+                CompleteNextRunningAttempt(agentId, succeeded: false, reason: "remote completion reported");
+            }
+
+            if (!IsConnectedState(latestAgent.State) && _runningAttemptIdsByAgent.TryGetValue(agentId, out var pendingQueue) && pendingQueue.Count > 0)
+            {
+                TransitionPendingAttemptsOnDisconnect(agentId, "agent disconnected while run was active");
+            }
+        }
+    }
+
+    private void TransitionPendingAttemptsOnDisconnect(string agentId, string reason)
+    {
+        if (!_runningAttemptIdsByAgent.TryGetValue(agentId, out var pendingQueue) || pendingQueue.Count == 0)
+        {
+            return;
+        }
+
+        var reconciliationProbeCount = _remoteControlPlaneService.RequestReconciliationAll();
+
+        while (pendingQueue.Count > 0)
+        {
+            var attemptId = pendingQueue.Dequeue();
+            if (!_remoteAttemptTracking.TryGetValue(attemptId, out var tracking))
+            {
+                continue;
+            }
+
+            AppendLog(
+                tracking.OutputTextBox,
+                AgentDispatchLifecycleMarkers.ReconcileRequested(
+                    new AgentDispatchLifecycleContext(tracking.TaskName, agentId, tracking.RunId, attemptId),
+                    reconciliationProbeCount));
+            AppendLog(
+                tracking.OutputTextBox,
+                AgentDispatchLifecycleMarkers.ReconcileAwaitingReconnect(
+                    new AgentDispatchLifecycleContext(tracking.TaskName, agentId, tracking.RunId, attemptId)));
+
+            _pendingReconciliationByAttemptId[attemptId] = new PendingReconciliationAttempt
+            {
+                AgentId = tracking.AgentId,
+                AttemptId = tracking.AttemptId,
+                RunId = tracking.RunId,
+                TaskName = tracking.TaskName,
+                TaskStateKey = tracking.TaskStateKey,
+                OutputTextBox = tracking.OutputTextBox
+            };
+
+            TrySignalRemoteAttemptCompletion(
+                tracking,
+                new RemoteAttemptResult
+                {
+                    Succeeded = false,
+                    ExitCode = null,
+                    Outcome = TaskRunOutcome.LaunchFailed,
+                    StandardOutput = GetBufferedRemoteStandardOutput(tracking),
+                    StandardError = GetBufferedRemoteStandardError(tracking),
+                    Message = reason
+                });
+
+            WriteRemoteEndMarker(tracking, "Unknown", "completion_not_inferred_after_disconnect");
+
+            var matchedTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+                string.Equals(GetTaskStateKey(task), tracking.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+            if (matchedTask is not null)
+            {
+                // Keep UI conservative after disconnect: treat unresolved runs as failed/unknown.
+                SetTaskRunState(matchedTask, TaskRunState.Failed);
+            }
+        }
+
+        _runningAttemptIdsByAgent.Remove(agentId);
+        SetAgentTransientExecutionState(agentId, AgentTransientExecutionState.Failed, reason + ":unknown_terminal_state");
+    }
+
+    private void CompleteNextRunningAttempt(string agentId, bool succeeded, string reason)
+    {
+        if (!_runningAttemptIdsByAgent.TryGetValue(agentId, out var pendingQueue) || pendingQueue.Count == 0)
+        {
+            return;
+        }
+
+        var attemptId = pendingQueue.Dequeue();
+        if (pendingQueue.Count == 0)
+        {
+            _runningAttemptIdsByAgent.Remove(agentId);
+        }
+
+        if (!_remoteAttemptTracking.TryGetValue(attemptId, out var tracking))
+        {
+            SetAgentTransientExecutionState(
+                agentId,
+                succeeded ? AgentTransientExecutionState.Completed : AgentTransientExecutionState.Failed,
+                $"completion_without_tracking:{reason}");
+            return;
+        }
+
+        WriteRemoteEndMarker(tracking, succeeded ? "Succeeded" : "Failed", reason);
+        SetRemoteTabStopped(tracking.OutputTextBox, succeeded);
+        TrySignalRemoteAttemptCompletion(
+            tracking,
+            new RemoteAttemptResult
+            {
+                Succeeded = succeeded,
+                ExitCode = null,
+                Outcome = succeeded ? TaskRunOutcome.Succeeded : TaskRunOutcome.FailedNonZeroExit,
+                StandardOutput = GetBufferedRemoteStandardOutput(tracking),
+                StandardError = GetBufferedRemoteStandardError(tracking),
+                Message = reason
+            });
+
+        var matchedTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+            string.Equals(GetTaskStateKey(task), tracking.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+        if (matchedTask is not null)
+        {
+            SetTaskRunState(matchedTask, succeeded ? TaskRunState.Succeeded : TaskRunState.Failed);
+        }
+
+        _remoteAttemptTracking.Remove(attemptId);
+        _taskRemoteAttempts.Remove(tracking.TaskStateKey);
+        ClearAttemptBinding(tracking.TaskStateKey, attemptId);
+        SetAgentTransientExecutionState(
+            agentId,
+            succeeded ? AgentTransientExecutionState.Completed : AgentTransientExecutionState.Failed,
+            reason);
+    }
+
+    private void TransitionPendingAttemptsToTerminal(string agentId, string endState, string reason)
+    {
+        if (!_runningAttemptIdsByAgent.TryGetValue(agentId, out var pendingQueue) || pendingQueue.Count == 0)
+        {
+            return;
+        }
+
+        while (pendingQueue.Count > 0)
+        {
+            var attemptId = pendingQueue.Dequeue();
+            if (!_remoteAttemptTracking.TryGetValue(attemptId, out var tracking))
+            {
+                continue;
+            }
+
+            WriteRemoteEndMarker(tracking, endState, reason);
+            SetRemoteTabStopped(tracking.OutputTextBox, string.Equals(endState, "Succeeded", StringComparison.OrdinalIgnoreCase));
+            var isSuccessfulTerminal = string.Equals(endState, "Succeeded", StringComparison.OrdinalIgnoreCase);
+            TrySignalRemoteAttemptCompletion(
+                tracking,
+                new RemoteAttemptResult
+                {
+                    Succeeded = isSuccessfulTerminal,
+                    ExitCode = null,
+                    Outcome = isSuccessfulTerminal ? TaskRunOutcome.Succeeded : TaskRunOutcome.FailedNonZeroExit,
+                    StandardOutput = GetBufferedRemoteStandardOutput(tracking),
+                    StandardError = GetBufferedRemoteStandardError(tracking),
+                    Message = reason
+                });
+            _remoteAttemptTracking.Remove(attemptId);
+            _taskRemoteAttempts.Remove(tracking.TaskStateKey);
+            ClearAttemptBinding(tracking.TaskStateKey, attemptId);
+
+            var matchedTask = _currentConfiguration.Tasks.FirstOrDefault(task =>
+                string.Equals(GetTaskStateKey(task), tracking.TaskStateKey, StringComparison.OrdinalIgnoreCase));
+            if (matchedTask is not null)
+            {
+                SetTaskRunState(matchedTask, TaskRunState.Failed);
+            }
+        }
+
+        _runningAttemptIdsByAgent.Remove(agentId);
+        SetAgentTransientExecutionState(agentId, AgentTransientExecutionState.Failed, reason);
+    }
+
+    private void WriteRemoteEndMarker(RemoteAttemptTracking tracking, string terminalState, string reason)
+    {
+        if (tracking.EndMarkerWritten)
+        {
+            return;
+        }
+
+        tracking.EndMarkerWritten = true;
+        AppendLog(
+            tracking.OutputTextBox,
+            AgentDispatchLifecycleMarkers.End(
+                new AgentDispatchLifecycleContext(tracking.TaskName, tracking.AgentId, tracking.RunId, tracking.AttemptId),
+                terminalState,
+                reason));
+    }
+
+    private void SetRemoteTabStopped(RichTextBox outputTextBox, bool succeeded)
+    {
+        if (!TryGetOutputTabContext(outputTextBox, out var tabContext))
+        {
+            return;
+        }
+
+        SetTabStopped(tabContext, succeeded);
+    }
+
+    private void SetAgentTransientExecutionState(string agentId, AgentTransientExecutionState state, string reason = "unspecified")
+    {
+        var previousState = _agentTransientExecutionStates.TryGetValue(agentId, out var existing)
+            ? existing
+            : AgentTransientExecutionState.Idle;
+
+        var activeRunningAttempts = _runningAttemptIdsByAgent.TryGetValue(agentId, out var pendingQueue)
+            ? pendingQueue.Count
+            : 0;
+
+        var coercedState = FromStateKind(
+            AgentTransientStatePolicy.CoerceForConcurrency(
+                ToStateKind(previousState),
+                ToStateKind(state),
+                activeRunningAttempts));
+
+        if (coercedState != state)
+        {
+            LogAgentDispatchTelemetry(
+                AgentDispatchStateEvent,
+                $"agent={NormalizeMarkerToken(agentId)} from={previousState} requested={state} coerced={coercedState} activeRunningAttempts={activeRunningAttempts} reason={NormalizeMarkerToken(reason)} guard=concurrency");
+        }
+
+        state = coercedState;
+
+        if (previousState == state)
+        {
+            return;
+        }
+
+        _agentTransientExecutionStates[agentId] = state;
+        LogAgentDispatchTelemetry(
+            AgentDispatchStateEvent,
+            $"agent={NormalizeMarkerToken(agentId)} from={previousState} to={state} reason={NormalizeMarkerToken(reason)}");
+
+        if (!_isAgentViewSelected && ReferenceEquals(BottomPaneTabControl?.SelectedItem, AgentsDispatchPaneTabItem))
+        {
+            RefreshAgentsDispatchPane();
+        }
+    }
+
+    private static AgentTransientStateKind ToStateKind(AgentTransientExecutionState state)
+    {
+        return state switch
+        {
+            AgentTransientExecutionState.Idle => AgentTransientStateKind.Idle,
+            AgentTransientExecutionState.Dispatching => AgentTransientStateKind.Dispatching,
+            AgentTransientExecutionState.Running => AgentTransientStateKind.Running,
+            AgentTransientExecutionState.Completed => AgentTransientStateKind.Completed,
+            AgentTransientExecutionState.Failed => AgentTransientStateKind.Failed,
+            _ => AgentTransientStateKind.Idle
+        };
+    }
+
+    private static AgentTransientExecutionState FromStateKind(AgentTransientStateKind state)
+    {
+        return state switch
+        {
+            AgentTransientStateKind.Idle => AgentTransientExecutionState.Idle,
+            AgentTransientStateKind.Dispatching => AgentTransientExecutionState.Dispatching,
+            AgentTransientStateKind.Running => AgentTransientExecutionState.Running,
+            AgentTransientStateKind.Completed => AgentTransientExecutionState.Completed,
+            AgentTransientStateKind.Failed => AgentTransientExecutionState.Failed,
+            _ => AgentTransientExecutionState.Idle
+        };
     }
 
     private static bool HaveAgentRowsChanged(AgentRegistry current, AgentRegistry next)
@@ -710,6 +1714,8 @@ public partial class MainWindow : Window
             var left = orderedCurrent[index];
             var right = orderedNext[index];
             if (!string.Equals(left.AgentId, right.AgentId, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(left.DisplayName, right.DisplayName, StringComparison.Ordinal)
+                || !string.Equals(left.Hostname, right.Hostname, StringComparison.Ordinal)
                 || left.State != right.State
                 || left.ActiveRuns != right.ActiveRuns
                 || left.SuccessfulRuns != right.SuccessfulRuns
@@ -1262,6 +2268,7 @@ public partial class MainWindow : Window
         GroupsSummaryText.Text = $"{groupNames.Count} groups created";
         AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
         UpdateAgentsSidebarVisual();
+        RebuildAgentsSidebarList();
         if (groupNames.Count == 0)
         {
             _selectedGroupName = null;
@@ -1525,6 +2532,8 @@ public partial class MainWindow : Window
         {
             AgentsSectionChevronText.Text = "▼";
         }
+
+        RebuildAgentsSidebarList();
     }
 
     private void SidebarAgentsExpander_Collapsed(object sender, RoutedEventArgs e)
@@ -1538,6 +2547,150 @@ public partial class MainWindow : Window
     private void AgentsSidebarButton_Click(object sender, RoutedEventArgs e)
     {
         SelectAgentsView();
+    }
+
+    private void SidebarAgentRowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string agentId })
+        {
+            return;
+        }
+
+        _selectedAgentId = agentId;
+        SelectAgentsView();
+    }
+
+    private void AgentsSearchTextBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        RebuildAgentsSidebarList();
+    }
+
+    private void AgentsSearchTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape || sender is not TextBox searchTextBox)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(searchTextBox.Text))
+        {
+            searchTextBox.Clear();
+        }
+
+        e.Handled = true;
+    }
+
+    private void RebuildAgentsSidebarList()
+    {
+        if (SidebarAgentsListPanel is null)
+        {
+            return;
+        }
+
+        SidebarAgentsListPanel.Children.Clear();
+        _sidebarAgentButtonsById.Clear();
+
+        var searchTerm = AgentsSearchTextBox?.Text?.Trim();
+
+        var orderedAgents = _agentRegistry.Agents
+            .OrderBy(agent => agent.EffectiveDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(searchTerm))
+        {
+            orderedAgents = orderedAgents
+                .Where(agent =>
+                    agent.EffectiveDisplayName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
+                    || agent.AgentId.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)
+                    || (!string.IsNullOrWhiteSpace(agent.Hostname)
+                        && agent.Hostname.Contains(searchTerm, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+
+        if (orderedAgents.Count == 0)
+        {
+            SidebarAgentsListPanel.Children.Add(new TextBlock
+            {
+                Text = string.IsNullOrWhiteSpace(searchTerm)
+                    ? "No agents configured."
+                    : "No agents match your search.",
+                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                Margin = new Thickness(8, 2, 8, 2),
+                FontSize = 11,
+                TextWrapping = TextWrapping.Wrap
+            });
+            return;
+        }
+
+        foreach (var agent in orderedAgents)
+        {
+            var connected = IsConnectedState(agent.State);
+            var row = new DockPanel
+            {
+                LastChildFill = true,
+                Margin = new Thickness(0)
+            };
+
+            var statusGlyph = new TextBlock
+            {
+                Text = connected ? "●" : "○",
+                Foreground = connected
+                    ? new SolidColorBrush(Color.FromRgb(0x3A, 0xD7, 0x7A))
+                    : new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)),
+                Width = 14,
+                VerticalAlignment = VerticalAlignment.Center,
+                FontSize = 11,
+                Margin = new Thickness(0, 0, 6, 0)
+            };
+            DockPanel.SetDock(statusGlyph, Dock.Left);
+
+            var nameText = new TextBlock
+            {
+                Text = agent.EffectiveDisplayName,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD0, 0xD7, 0xDE)),
+                FontSize = 11,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+
+            row.Children.Add(statusGlyph);
+            row.Children.Add(nameText);
+
+            var button = new Button
+            {
+                Tag = agent.AgentId,
+                Content = row,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Background = Brushes.Transparent,
+                BorderBrush = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                Padding = new Thickness(8, 6, 8, 6),
+                Margin = new Thickness(0, 0, 0, 2),
+                Cursor = Cursors.Hand,
+                ToolTip = $"Open Agents view and select {agent.EffectiveDisplayName}"
+            };
+            button.Click += SidebarAgentRowButton_Click;
+
+            SidebarAgentsListPanel.Children.Add(button);
+            _sidebarAgentButtonsById[agent.AgentId] = button;
+        }
+
+        UpdateAgentSidebarSelectionVisuals();
+    }
+
+    private void UpdateAgentSidebarSelectionVisuals()
+    {
+        foreach (var button in _sidebarAgentButtonsById.Values)
+        {
+            if (button.Tag is not string agentId)
+            {
+                continue;
+            }
+
+            button.Background = string.Equals(agentId, _selectedAgentId, StringComparison.OrdinalIgnoreCase)
+                ? new SolidColorBrush(Color.FromRgb(0x11, 0x15, 0x1A))
+                : Brushes.Transparent;
+        }
     }
 
     private void SelectAgentsView()
@@ -1555,6 +2708,7 @@ public partial class MainWindow : Window
         ApplyGroupViewState();
         ApplyBottomPaneTabsForViewMode();
         UpdateSelectedAgentRuntimePanel();
+        UpdateAgentSidebarSelectionVisuals();
         UpdateAgentsSidebarVisual();
         UpdateRibbonTaskActionState();
     }
@@ -1607,6 +2761,7 @@ public partial class MainWindow : Window
         if (_agentRegistry.Agents.Count == 0)
         {
             _selectedAgentId = null;
+            UpdateAgentSidebarSelectionVisuals();
             return;
         }
 
@@ -1627,6 +2782,7 @@ public partial class MainWindow : Window
 
         ApplyAgentCardSelectionVisuals();
         UpdateSelectedAgentRuntimePanel();
+        UpdateAgentSidebarSelectionVisuals();
     }
 
     private Grid CreateAgentCard(AgentDefinition agent, Color cardColor)
@@ -1824,6 +2980,7 @@ public partial class MainWindow : Window
         _selectedAgentId = agentId;
         ApplyAgentCardSelectionVisuals();
         UpdateSelectedAgentRuntimePanel();
+        UpdateAgentSidebarSelectionVisuals();
     }
 
     private void AgentCardButton_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
@@ -1836,6 +2993,7 @@ public partial class MainWindow : Window
         _selectedAgentId = agentId;
         ApplyAgentCardSelectionVisuals();
         UpdateSelectedAgentRuntimePanel();
+        UpdateAgentSidebarSelectionVisuals();
         OpenContextMenuAtPointer(CreateAgentContextMenu(agentId), button);
         e.Handled = true;
     }
@@ -1850,6 +3008,7 @@ public partial class MainWindow : Window
         _selectedAgentId = agentId;
         ApplyAgentCardSelectionVisuals();
         UpdateSelectedAgentRuntimePanel();
+        UpdateAgentSidebarSelectionVisuals();
         OpenContextMenuAtButton(CreateAgentContextMenu(agentId), button);
     }
 
@@ -1920,10 +3079,9 @@ public partial class MainWindow : Window
         var targetTaskName = TaskIdentity.NormalizeTaskName(target.TaskName);
         var targetTaskKey = TaskIdentity.BuildKey(targetGroup, targetTaskName);
 
-        if (!string.Equals(NormalizeGroupName(_selectedGroupName), targetGroup, StringComparison.OrdinalIgnoreCase))
-        {
-            SelectGroup(targetGroup);
-        }
+        // Always route through SelectGroup so clicking a task in the sidebar
+        // reliably switches from Agents view back to the selected group's task view.
+        SelectGroup(targetGroup);
 
         var selectedIndex = _currentConfiguration.Tasks.FindIndex(task =>
             string.Equals(TaskIdentity.BuildKey(task), targetTaskKey, StringComparison.OrdinalIgnoreCase));
@@ -2313,6 +3471,7 @@ public partial class MainWindow : Window
         InputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         OutputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         VariablesPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
+        AgentsDispatchPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         AgentRuntimePaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
         GatewaySettingsPaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
 
@@ -2332,6 +3491,11 @@ public partial class MainWindow : Window
             || ReferenceEquals(BottomPaneTabControl.SelectedItem, GatewaySettingsPaneTabItem))
         {
             BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
+        }
+
+        if (ReferenceEquals(BottomPaneTabControl.SelectedItem, AgentsDispatchPaneTabItem))
+        {
+            RefreshAgentsDispatchPane();
         }
     }
 
@@ -2817,6 +3981,10 @@ public partial class MainWindow : Window
             else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, VariablesPaneTabItem))
             {
                 OpenVariablesEditor(selectTab: false);
+            }
+            else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, AgentsDispatchPaneTabItem))
+            {
+                RefreshAgentsDispatchPane();
             }
         }
         finally
@@ -4228,7 +5396,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            await RunTaskChainFromTaskAsync(taskIndex);
+            _ = await RunTaskChainFromTaskAsync(taskIndex);
         };
 
         var deleteItem = new MenuItem { Header = "Delete", Style = (Style)Resources["AppMenuItemStyle"] };
@@ -6271,7 +7439,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await RunTaskChainFromTaskAsync(firstEnabledTaskIndex);
+        _ = await RunTaskChainFromTaskAsync(firstEnabledTaskIndex);
     }
 
     private void RibbonPreviousGroupButton_Click(object sender, RoutedEventArgs e)
@@ -6536,6 +7704,16 @@ public partial class MainWindow : Window
         var firstSpace = trimmed.IndexOf(' ');
         token = firstSpace < 0 ? trimmed : trimmed[..firstSpace].Trim();
         return !string.IsNullOrWhiteSpace(token);
+    }
+
+    private static string NormalizeMarkerToken(string? value)
+    {
+        return AgentDispatchLifecycleMarkers.NormalizeToken(value);
+    }
+
+    private static string BuildRemoteCorrelationId(string? taskName, string? agentId, string? attemptId)
+    {
+        return AgentDispatchLifecycleMarkers.BuildCorrelationId(taskName, agentId, attemptId);
     }
 
     private void RibbonShareButton_Click(object sender, RoutedEventArgs e)
@@ -7766,6 +8944,12 @@ public partial class MainWindow : Window
             if (ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPaneTabItem))
             {
                 SyncOutputTabForSelectedTask(task);
+                return;
+            }
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, AgentsDispatchPaneTabItem))
+            {
+                RefreshAgentsDispatchPane();
             }
         }
         finally
@@ -7812,6 +8996,776 @@ public partial class MainWindow : Window
         }
 
         selectedRun.RunItemExpander.IsExpanded = true;
+    }
+
+    private void RefreshAgentsDispatchPane()
+    {
+        if (AgentsDispatchRowsPanel is null || AgentsDispatchValidationText is null || AgentsDispatchTitleText is null)
+        {
+            return;
+        }
+
+        AgentsDispatchRowsPanel.Children.Clear();
+
+        var selectedTaskLabel = "No task selected";
+        if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex)
+            && TryGetTask(selectedTaskIndex, out var selectedTask))
+        {
+            selectedTaskLabel = $"Selected task: {selectedTask.Name} ({NormalizeGroupName(selectedTask.Group)})";
+        }
+
+        AgentsDispatchTitleText.Text = $"Run Selected Task On Agent  |  {selectedTaskLabel}";
+
+        var orderedAgents = GetOrderedAgentsForDispatch();
+
+        if (orderedAgents.Count == 0)
+        {
+            _selectedDispatchAgentId = null;
+            SetAgentsDispatchValidationMessage(
+                "No agents are available yet. Enroll an agent and ensure it is Online to run the selected task from this tab.",
+                isError: false);
+            return;
+        }
+
+        AgentsDispatchRowsPanel.Children.Add(CreateAgentDispatchHeaderRow());
+
+        if (string.IsNullOrWhiteSpace(_selectedDispatchAgentId)
+            || orderedAgents.All(agent => !string.Equals(agent.AgentId, _selectedDispatchAgentId, StringComparison.OrdinalIgnoreCase)))
+        {
+            _selectedDispatchAgentId = orderedAgents
+                .FirstOrDefault(IsAgentEligibleForDispatch)?.AgentId
+                ?? orderedAgents[0].AgentId;
+        }
+
+        foreach (var agent in orderedAgents)
+        {
+            AgentsDispatchRowsPanel.Children.Add(CreateAgentDispatchRow(agent));
+        }
+
+        if (!TryValidateSelectedTaskForAgentDispatch(out _, out var taskValidationMessage, out _))
+        {
+            SetAgentsDispatchValidationMessage(taskValidationMessage, isError: true);
+            return;
+        }
+
+        SetAgentsDispatchValidationMessage("Select an Online agent and choose Play to dispatch the selected task.", isError: false);
+    }
+
+    private Border CreateAgentDispatchHeaderRow()
+    {
+        var headerGrid = new Grid
+        {
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var agentHeader = new TextBlock
+        {
+            Text = "Agent",
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            Margin = new Thickness(0, 0, 10, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetColumn(agentHeader, 0);
+
+        var stateHeader = new TextBlock
+        {
+            Text = "State",
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            Margin = new Thickness(0, 0, 10, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetColumn(stateHeader, 1);
+
+        headerGrid.Children.Add(agentHeader);
+        headerGrid.Children.Add(stateHeader);
+
+        return new Border
+        {
+            Padding = new Thickness(8, 2, 8, 4),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0x42, 0x47)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Child = headerGrid
+        };
+    }
+
+    private Border CreateAgentDispatchRow(AgentDefinition agent)
+    {
+        var transientState = GetAgentTransientExecutionState(agent.AgentId);
+        var canDispatchToAgent = IsAgentEligibleForDispatch(agent);
+        var isRowLocked = transientState is AgentTransientExecutionState.Dispatching or AgentTransientExecutionState.Running;
+        var activeAttemptCount = _runningAttemptIdsByAgent.TryGetValue(agent.AgentId, out var queue)
+            ? queue.Count
+            : 0;
+        var isActivelyRunning = activeAttemptCount > 0 || transientState is AgentTransientExecutionState.Dispatching or AgentTransientExecutionState.Running;
+        var isSelected = string.Equals(_selectedDispatchAgentId, agent.AgentId, StringComparison.OrdinalIgnoreCase);
+        var agentDisplayName = GetAgentDisplayName(agent);
+        var row = new Grid
+        {
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = agentDisplayName,
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            // Use an explicit bright foreground here to avoid theme/resource contrast issues.
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0),
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        AutomationProperties.SetName(title, $"Agent {agentDisplayName}");
+        Grid.SetColumn(title, 0);
+
+        var state = new TextBlock
+        {
+            Text = GetAgentDispatchStateSummary(agent, transientState, activeAttemptCount),
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0),
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        AutomationProperties.SetName(state, $"Agent state {GetAgentDispatchStateSummary(agent, transientState, activeAttemptCount)}");
+        Grid.SetColumn(state, 1);
+
+        var canPlay = canDispatchToAgent && !isRowLocked;
+        var playButton = new Button
+        {
+            Content = "\uE768",
+            Style = (Style)Resources["HistoryActionButtonStyle"],
+            Margin = new Thickness(0),
+            MinWidth = 36,
+            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+            FontSize = 14,
+            IsEnabled = canPlay,
+            Background = canPlay ? AgentsDispatchPlayEnabledBackgroundBrush : AgentsDispatchPlayDisabledBackgroundBrush,
+            BorderBrush = canPlay ? AgentsDispatchPlayEnabledBorderBrush : AgentsDispatchPlayDisabledBorderBrush,
+            Foreground = Brushes.White,
+            Opacity = canPlay ? 1.0 : 0.65,
+            Tag = new AgentDispatchCommand { AgentId = agent.AgentId, RunChain = false }
+        };
+        playButton.ToolTip = $"Run selected task on {agentDisplayName}";
+        AutomationProperties.SetName(playButton, $"Play task on agent {agentDisplayName}");
+        AutomationProperties.SetHelpText(playButton, canPlay
+            ? "Dispatches the currently selected task to this agent."
+            : "Unavailable because the agent is not currently dispatchable.");
+        playButton.Click += AgentDispatchPlayButton_Click;
+        Grid.SetColumn(playButton, 2);
+
+        var canRunChain = canDispatchToAgent && !isRowLocked;
+        var chainButton = new Button
+        {
+            Content = "Chain",
+            Style = (Style)Resources["HistoryActionButtonStyle"],
+            Margin = new Thickness(6, 0, 0, 0),
+            MinWidth = 52,
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            IsEnabled = canRunChain,
+            Background = canRunChain ? AgentsDispatchPlayEnabledBackgroundBrush : AgentsDispatchPlayDisabledBackgroundBrush,
+            BorderBrush = canRunChain ? AgentsDispatchPlayEnabledBorderBrush : AgentsDispatchPlayDisabledBorderBrush,
+            Foreground = Brushes.White,
+            Opacity = canRunChain ? 1.0 : 0.65,
+            Tag = new AgentDispatchCommand { AgentId = agent.AgentId, RunChain = true }
+        };
+        chainButton.ToolTip = $"Run task chain from selected task on {agentDisplayName}";
+        AutomationProperties.SetName(chainButton, $"Run chain on agent {agentDisplayName}");
+        AutomationProperties.SetHelpText(chainButton, canRunChain
+            ? "Runs the selected group chain step-by-step on this agent with remote output propagation."
+            : "Unavailable because the agent is not currently dispatchable.");
+        chainButton.Click += AgentDispatchPlayButton_Click;
+        Grid.SetColumn(chainButton, 2);
+
+        var actionPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        actionPanel.Children.Add(playButton);
+        actionPanel.Children.Add(chainButton);
+        Grid.SetColumn(actionPanel, 2);
+
+        row.Children.Add(title);
+        row.Children.Add(state);
+        row.Children.Add(actionPanel);
+
+        var container = new Border
+        {
+            Padding = new Thickness(8, 8, 8, 8),
+            CornerRadius = new CornerRadius(0),
+            BorderBrush = isSelected
+                ? AgentsDispatchRowSelectedBorderBrush
+                : isActivelyRunning
+                    ? AgentsDispatchRunningBorderBrush
+                    : AgentsDispatchRowBorderBrush,
+            BorderThickness = isSelected ? new Thickness(2) : new Thickness(1),
+            Background = isSelected
+                ? AgentsDispatchRowSelectedBackgroundBrush
+                : AgentsDispatchRowBackgroundBrush,
+            Tag = agent.AgentId,
+            Focusable = true,
+            Child = row
+        };
+
+        container.MouseLeftButtonUp += AgentDispatchRow_MouseLeftButtonUp;
+        container.KeyDown += AgentDispatchRow_KeyDown;
+        container.GotKeyboardFocus += AgentDispatchRow_GotKeyboardFocus;
+        container.LostKeyboardFocus += AgentDispatchRow_LostKeyboardFocus;
+        AutomationProperties.SetName(container, $"Agent list item {agentDisplayName}");
+        AutomationProperties.SetHelpText(container, "Selects this agent row for expanded agent actions and details.");
+
+        ApplyDispatchRowVisual(container);
+
+        return container;
+    }
+
+    private void AgentDispatchRow_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: string agentId } || string.IsNullOrWhiteSpace(agentId))
+        {
+            return;
+        }
+
+        _selectedDispatchAgentId = agentId;
+
+        if (!_isAgentViewSelected && ReferenceEquals(BottomPaneTabControl?.SelectedItem, AgentsDispatchPaneTabItem))
+        {
+            RefreshAgentsDispatchPane();
+            FocusSelectedDispatchRow();
+        }
+    }
+
+    private async void AgentDispatchRow_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not Border { Tag: string agentId } || string.IsNullOrWhiteSpace(agentId))
+        {
+            return;
+        }
+
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            _selectedDispatchAgentId = agentId;
+            await DispatchSelectedTaskToAgentAsync(agentId);
+            return;
+        }
+
+        if (e.Key == Key.Up)
+        {
+            e.Handled = true;
+            MoveDispatchSelection(-1);
+            return;
+        }
+
+        if (e.Key == Key.Down)
+        {
+            e.Handled = true;
+            MoveDispatchSelection(1);
+            return;
+        }
+
+        if (e.Key == Key.Home)
+        {
+            e.Handled = true;
+            SelectDispatchRowByIndex(0);
+            return;
+        }
+
+        if (e.Key == Key.End)
+        {
+            e.Handled = true;
+            var orderedAgents = GetOrderedAgentsForDispatch();
+            if (orderedAgents.Count > 0)
+            {
+                SelectDispatchRowByIndex(orderedAgents.Count - 1);
+            }
+            return;
+        }
+
+        if (e.Key == Key.PageUp)
+        {
+            e.Handled = true;
+            MoveDispatchSelection(-AgentDispatchPageJumpSize);
+            return;
+        }
+
+        if (e.Key == Key.PageDown)
+        {
+            e.Handled = true;
+            MoveDispatchSelection(AgentDispatchPageJumpSize);
+        }
+    }
+
+    private void AgentDispatchRow_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is Border border)
+        {
+            ApplyDispatchRowVisual(border);
+        }
+    }
+
+    private void AgentDispatchRow_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is Border border)
+        {
+            ApplyDispatchRowVisual(border);
+        }
+    }
+
+    private void MoveDispatchSelection(int offset)
+    {
+        var orderedAgents = GetOrderedAgentsForDispatch();
+        if (orderedAgents.Count == 0)
+        {
+            return;
+        }
+
+        var currentIndex = orderedAgents.FindIndex(agent =>
+            string.Equals(agent.AgentId, _selectedDispatchAgentId, StringComparison.OrdinalIgnoreCase));
+        if (currentIndex < 0)
+        {
+            currentIndex = 0;
+        }
+
+        var nextIndex = Math.Clamp(currentIndex + offset, 0, orderedAgents.Count - 1);
+        if (nextIndex == currentIndex)
+        {
+            return;
+        }
+
+        SelectDispatchRowByIndex(nextIndex);
+    }
+
+    private void SelectDispatchRowByIndex(int index)
+    {
+        var orderedAgents = GetOrderedAgentsForDispatch();
+        if (orderedAgents.Count == 0)
+        {
+            return;
+        }
+
+        var boundedIndex = Math.Clamp(index, 0, orderedAgents.Count - 1);
+        _selectedDispatchAgentId = orderedAgents[boundedIndex].AgentId;
+        RefreshAgentsDispatchPane();
+        FocusSelectedDispatchRow();
+    }
+
+    private void FocusSelectedDispatchRow()
+    {
+        if (AgentsDispatchRowsPanel is null || string.IsNullOrWhiteSpace(_selectedDispatchAgentId))
+        {
+            return;
+        }
+
+        var selectedRow = AgentsDispatchRowsPanel.Children
+            .OfType<Border>()
+            .FirstOrDefault(border => border.Tag is string rowAgentId
+                && string.Equals(rowAgentId, _selectedDispatchAgentId, StringComparison.OrdinalIgnoreCase));
+
+        selectedRow?.Focus();
+    }
+
+    private void ApplyDispatchRowVisual(Border row)
+    {
+        if (row.Tag is not string rowAgentId || string.IsNullOrWhiteSpace(rowAgentId))
+        {
+            return;
+        }
+
+        var isSelected = string.Equals(_selectedDispatchAgentId, rowAgentId, StringComparison.OrdinalIgnoreCase);
+        var isFocused = row.IsKeyboardFocused || row.IsKeyboardFocusWithin;
+
+        if (isSelected)
+        {
+            row.BorderBrush = isFocused ? AgentsDispatchRowFocusedBorderBrush : AgentsDispatchRowSelectedBorderBrush;
+            row.BorderThickness = new Thickness(2);
+            row.Background = isFocused ? AgentsDispatchRowFocusedBackgroundBrush : AgentsDispatchRowSelectedBackgroundBrush;
+            return;
+        }
+
+        row.BorderBrush = isFocused ? AgentsDispatchRowFocusedBorderBrush : AgentsDispatchRowBorderBrush;
+        row.BorderThickness = new Thickness(1);
+        row.Background = isFocused ? AgentsDispatchRowFocusedBackgroundBrush : AgentsDispatchRowBackgroundBrush;
+    }
+
+    private List<AgentDefinition> GetOrderedAgentsForDispatch()
+    {
+        return _agentRegistry.Agents
+            .OrderBy(agent => GetAgentDisplayName(agent), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async void AgentDispatchPlayButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: AgentDispatchCommand command })
+        {
+            return;
+        }
+
+        _selectedDispatchAgentId = command.AgentId;
+        if (command.RunChain)
+        {
+            await DispatchSelectedTaskChainToAgentAsync(command.AgentId);
+            return;
+        }
+
+        await DispatchSelectedTaskToAgentAsync(command.AgentId);
+    }
+
+    private async Task DispatchSelectedTaskToAgentAsync(string agentId)
+    {
+        if (!TryValidateSelectedTaskForAgentDispatch(out var task, out var taskValidationMessage, out var taskValidationReason))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: null,
+                agentId: agentId,
+                reason: taskValidationReason,
+                message: taskValidationMessage);
+            SetAgentsDispatchValidationMessage(taskValidationMessage, isError: true);
+            return;
+        }
+
+        await RunSelectedTaskOnAgent(task, agentId);
+    }
+
+    private async Task DispatchSelectedTaskChainToAgentAsync(string agentId)
+    {
+        if (!TryValidateSelectedTaskForAgentDispatch(out var task, out var taskValidationMessage, out var taskValidationReason))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: null,
+                agentId: agentId,
+                reason: taskValidationReason,
+                message: taskValidationMessage);
+            SetAgentsDispatchValidationMessage(taskValidationMessage, isError: true);
+            return;
+        }
+
+        await RunSelectedTaskChainOnAgent(task, agentId);
+    }
+
+    private async Task<bool> RunSelectedTaskOnAgent(LauncherTask selectedTask, string agentId)
+    {
+        var taskIdentityKey = GetTaskIdentityKey(selectedTask);
+        var taskIndex = _currentConfiguration.Tasks.FindIndex(candidate =>
+            string.Equals(GetTaskIdentityKey(candidate), taskIdentityKey, StringComparison.OrdinalIgnoreCase));
+
+        if (taskIndex < 0 || !TryGetTask(taskIndex, out var task))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: selectedTask.Name,
+                agentId: agentId,
+                reason: "task_unavailable",
+                message: "The selected task is no longer available.");
+            SetAgentsDispatchValidationMessage("The selected task is no longer available.", isError: true);
+            return false;
+        }
+
+        if (!IsTaskEnabled(task))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agentId,
+                reason: "task_disabled",
+                message: $"Task '{task.Name}' is disabled.");
+            SetAgentsDispatchValidationMessage($"Task '{task.Name}' is disabled.", isError: true);
+            return false;
+        }
+
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agentId,
+                reason: "agent_unavailable",
+                message: "The selected agent is no longer available.");
+            SetAgentsDispatchValidationMessage("The selected agent is no longer available.", isError: true);
+            RefreshAgentsDispatchPane();
+            return false;
+        }
+
+        if (!IsAgentEligibleForDispatch(agent))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agent.AgentId,
+                reason: "agent_not_eligible",
+                message: $"Agent '{GetAgentDisplayName(agent)}' is not eligible for dispatch ({agent.State.ToString().ToLowerInvariant()}).");
+            SetAgentsDispatchValidationMessage($"Agent '{GetAgentDisplayName(agent)}' is not eligible for dispatch ({agent.State.ToString().ToLowerInvariant()}).", isError: true);
+            RefreshAgentsDispatchPane();
+            return false;
+        }
+
+        _selectedTaskIndex = taskIndex;
+        ApplyTaskCardSelectionVisuals();
+
+        var dispatchSelection = new ExecutionTargetSelection
+        {
+            Mode = ExecutionTargetMode.SpecificAgent,
+            AgentId = agent.AgentId
+        };
+
+        var taskStateKey = GetTaskStateKey(task);
+        if (TryGetActiveAttemptBindingForTask(taskStateKey, out var activeBinding))
+        {
+            var existingAgent = FindAgent(activeBinding.AgentId) is { } boundAgent
+                ? GetAgentDisplayName(boundAgent)
+                : activeBinding.AgentId;
+            var retargetMessage =
+                $"Task '{task.Name}' is already bound to agent '{existingAgent}' for active attempt '{activeBinding.AttemptId}'. " +
+                "Wait for completion/cancellation before dispatching to another agent.";
+            LogAgentDispatchTelemetry(AgentDispatchBindingEvent, retargetMessage);
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agent.AgentId,
+                reason: "active_binding_immutable",
+                message: retargetMessage);
+            SetAgentsDispatchValidationMessage(retargetMessage, isError: true);
+            return false;
+        }
+
+        LogAgentDispatchTelemetry(
+            AgentDispatchActionEvent,
+            $"action=run_selected_task task={NormalizeMarkerToken(task.Name)} agent={NormalizeMarkerToken(agent.AgentId)}");
+
+        SetAgentTransientExecutionState(agent.AgentId, AgentTransientExecutionState.Dispatching, "play_clicked");
+
+        var result = await ExecuteTaskAsync(task, null, isReplay: false, forcedExecutionTargetSelection: dispatchSelection);
+        if (result.Succeeded)
+        {
+            SetAgentsDispatchValidationMessage($"Dispatch requested: '{task.Name}' -> {GetAgentDisplayName(agent)}.", isError: false);
+            return true;
+        }
+
+        SetAgentTransientExecutionState(agent.AgentId, AgentTransientExecutionState.Failed, "dispatch_call_failed");
+        SetAgentsDispatchValidationMessage($"Dispatch failed for '{task.Name}' on {GetAgentDisplayName(agent)}. Check Task Output for details.", isError: true);
+        return false;
+    }
+
+    private async Task<bool> RunSelectedTaskChainOnAgent(LauncherTask selectedTask, string agentId)
+    {
+        var taskIdentityKey = GetTaskIdentityKey(selectedTask);
+        var taskIndex = _currentConfiguration.Tasks.FindIndex(candidate =>
+            string.Equals(GetTaskIdentityKey(candidate), taskIdentityKey, StringComparison.OrdinalIgnoreCase));
+
+        if (taskIndex < 0 || !TryGetTask(taskIndex, out var task))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: selectedTask.Name,
+                agentId: agentId,
+                reason: "task_unavailable",
+                message: "The selected task is no longer available.");
+            SetAgentsDispatchValidationMessage("The selected task is no longer available.", isError: true);
+            return false;
+        }
+
+        if (!IsTaskEnabled(task))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agentId,
+                reason: "task_disabled",
+                message: $"Task '{task.Name}' is disabled.");
+            SetAgentsDispatchValidationMessage($"Task '{task.Name}' is disabled.", isError: true);
+            return false;
+        }
+
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agentId,
+                reason: "agent_unavailable",
+                message: "The selected agent is no longer available.");
+            SetAgentsDispatchValidationMessage("The selected agent is no longer available.", isError: true);
+            RefreshAgentsDispatchPane();
+            return false;
+        }
+
+        if (!IsAgentEligibleForDispatch(agent))
+        {
+            LogAgentDispatchValidationFailure(
+                taskName: task.Name,
+                agentId: agent.AgentId,
+                reason: "agent_not_eligible",
+                message: $"Agent '{GetAgentDisplayName(agent)}' is not eligible for dispatch ({agent.State.ToString().ToLowerInvariant()}).");
+            SetAgentsDispatchValidationMessage($"Agent '{GetAgentDisplayName(agent)}' is not eligible for dispatch ({agent.State.ToString().ToLowerInvariant()}).", isError: true);
+            RefreshAgentsDispatchPane();
+            return false;
+        }
+
+        _selectedTaskIndex = taskIndex;
+        ApplyTaskCardSelectionVisuals();
+
+        var dispatchSelection = new ExecutionTargetSelection
+        {
+            Mode = ExecutionTargetMode.SpecificAgent,
+            AgentId = agent.AgentId
+        };
+
+        LogAgentDispatchTelemetry(
+            AgentDispatchActionEvent,
+            $"action=run_chain task={NormalizeMarkerToken(task.Name)} agent={NormalizeMarkerToken(agent.AgentId)}");
+
+        SetAgentTransientExecutionState(agent.AgentId, AgentTransientExecutionState.Dispatching, "chain_play_clicked");
+
+        var succeeded = await RunTaskChainFromTaskAsync(taskIndex, dispatchSelection);
+        if (succeeded)
+        {
+            SetAgentsDispatchValidationMessage($"Chain started from '{task.Name}' on {GetAgentDisplayName(agent)}.", isError: false);
+            return true;
+        }
+
+        SetAgentTransientExecutionState(agent.AgentId, AgentTransientExecutionState.Failed, "chain_dispatch_failed");
+        SetAgentsDispatchValidationMessage($"Chain failed from '{task.Name}' on {GetAgentDisplayName(agent)}. Check Task Output for details.", isError: true);
+        return false;
+    }
+
+    private static string GetAgentDisplayName(AgentDefinition agent)
+    {
+        if (!string.IsNullOrWhiteSpace(agent.DisplayName))
+        {
+            return agent.DisplayName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(agent.Hostname))
+        {
+            return agent.Hostname.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(agent.AgentId))
+        {
+            return agent.AgentId.Trim();
+        }
+
+        return "Unnamed Agent";
+    }
+
+    private bool TryValidateSelectedTaskForAgentDispatch(out LauncherTask task, out string message, out string reason)
+    {
+        task = null!;
+        message = string.Empty;
+        reason = string.Empty;
+
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex) || !TryGetTask(taskIndex, out task))
+        {
+            message = "Select a task in the current group before choosing an agent.";
+            reason = "no_selected_task";
+            return false;
+        }
+
+        if (!IsTaskEnabled(task))
+        {
+            message = $"Task '{task.Name}' is disabled.";
+            reason = "task_disabled";
+            return false;
+        }
+
+        return true;
+    }
+
+    private void LogAgentDispatchValidationFailure(string? taskName, string? agentId, string reason, string message)
+    {
+        LogAgentDispatchTelemetry(
+            AgentDispatchValidationEvent,
+            $"task={NormalizeMarkerToken(taskName)} agent={NormalizeMarkerToken(agentId)} reason={NormalizeMarkerToken(reason)} message={NormalizeMarkerToken(message)}");
+    }
+
+    private void LogDispatchRequest(
+        LauncherTask task,
+        ExecutionTargetSelection executionTargetSelection,
+        string requestedAgentToken,
+        IReadOnlyDictionary<string, string> resolvedInputs,
+        IReadOnlyDictionary<string, string> declaredOutputs)
+    {
+        var corr = BuildRemoteCorrelationId(task.Name, requestedAgentToken, "dispatch-request");
+        LogAgentDispatchTelemetry(
+            AgentDispatchRequestEvent,
+            $"task={NormalizeMarkerToken(task.Name)} mode={executionTargetSelection.Mode} requestedAgent={NormalizeMarkerToken(requestedAgentToken)} pool={NormalizeMarkerToken(executionTargetSelection.PoolId)} runner={NormalizeMarkerToken(task.Runner)} waitForExit={task.WaitForExit} timeoutSec={task.TimeoutSeconds} inputs={resolvedInputs.Count} outputs={declaredOutputs.Count} corr={corr}");
+    }
+
+    private void LogDispatchResponse(LauncherTask task, string requestedAgentToken, RemoteDispatchReceipt receipt)
+    {
+        var resolvedAgentToken = string.IsNullOrWhiteSpace(receipt.AgentId)
+            ? requestedAgentToken
+            : receipt.AgentId;
+        var attemptToken = string.IsNullOrWhiteSpace(receipt.AttemptId)
+            ? "dispatch-failed"
+            : receipt.AttemptId;
+        var corr = BuildRemoteCorrelationId(task.Name, resolvedAgentToken, attemptToken);
+
+        LogAgentDispatchTelemetry(
+            AgentDispatchResponseEvent,
+            $"task={NormalizeMarkerToken(task.Name)} dispatched={receipt.Dispatched} agent={NormalizeMarkerToken(receipt.AgentId)} run={NormalizeMarkerToken(receipt.RunId)} attempt={NormalizeMarkerToken(receipt.AttemptId)} corr={corr} message={NormalizeMarkerToken(receipt.Message)}");
+    }
+
+    private static void LogAgentDispatchTelemetry(string eventName, string message)
+    {
+        DebugTraceLog.Write($"{AgentDispatchTelemetryCategory}.{eventName}", message);
+    }
+
+    private static bool IsAgentEligibleForDispatch(AgentDefinition agent)
+    {
+        return agent.State == AgentDefinitionState.Online
+            && !agent.IsDraining;
+    }
+
+    private AgentTransientExecutionState GetAgentTransientExecutionState(string agentId)
+    {
+        return _agentTransientExecutionStates.TryGetValue(agentId, out var state)
+            ? state
+            : AgentTransientExecutionState.Idle;
+    }
+
+    private static string GetAgentDispatchStateSummary(AgentDefinition agent, AgentTransientExecutionState transientState, int activeAttemptCount)
+    {
+        var stateLabel = agent.State.ToString();
+        if (agent.IsDraining && agent.State != AgentDefinitionState.Draining)
+        {
+            stateLabel += " (Draining)";
+        }
+
+        if (activeAttemptCount > 0 || transientState is AgentTransientExecutionState.Dispatching or AgentTransientExecutionState.Running)
+        {
+            var countLabel = activeAttemptCount <= 0 ? "1" : activeAttemptCount.ToString(CultureInfo.InvariantCulture);
+            stateLabel += $" · Running ({countLabel})";
+        }
+
+        return stateLabel;
+    }
+
+    private void SetAgentsDispatchValidationMessage(string message, bool isError)
+    {
+        if (AgentsDispatchValidationText is null)
+        {
+            return;
+        }
+
+        AgentsDispatchValidationText.Text = message;
+        AgentsDispatchValidationText.Foreground = isError
+            ? new SolidColorBrush(Color.FromRgb(0xE1, 0x6A, 0x6A))
+            : (Brush)Resources["SecondaryTextBrush"];
     }
 
     private void UpdateRibbonTaskActionState()
@@ -8091,12 +10045,12 @@ public partial class MainWindow : Window
         await ExecuteTaskAsync(task, button, isReplay: false);
     }
 
-    private async Task RunTaskChainFromTaskAsync(int startTaskIndex)
+    private async Task<bool> RunTaskChainFromTaskAsync(int startTaskIndex, ExecutionTargetSelection? forcedExecutionTargetSelection = null)
     {
         if (!TryGetTask(startTaskIndex, out var startTask))
         {
             AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
+            return false;
         }
 
         var groupName = NormalizeGroupName(startTask.Group);
@@ -8110,7 +10064,7 @@ public partial class MainWindow : Window
         var startPosition = sameGroupTasks.FindIndex(item => item.Index == startTaskIndex);
         if (startPosition < 0)
         {
-            return;
+            return false;
         }
 
         var context = new DataflowContext();
@@ -8126,13 +10080,21 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            var result = await ExecuteTaskAsync(taskInfo.Task, null, isReplay: false, dataflowContext: context, chainStepLabel: chainLabel);
+            var result = await ExecuteTaskAsync(
+                taskInfo.Task,
+                null,
+                isReplay: false,
+                dataflowContext: context,
+                chainStepLabel: chainLabel,
+                forcedExecutionTargetSelection: forcedExecutionTargetSelection);
 
             if (!result.Succeeded)
             {
-                return;
+                return false;
             }
         }
+
+        return true;
     }
 
     private async Task<TaskExecutionResult> ExecuteTaskAsync(
@@ -8142,7 +10104,8 @@ public partial class MainWindow : Window
         string? replayFromEntryId = null,
         DataflowContext? dataflowContext = null,
         string? chainStepLabel = null,
-        CancellationToken externalCancellationToken = default)
+        CancellationToken externalCancellationToken = default,
+        ExecutionTargetSelection? forcedExecutionTargetSelection = null)
     {
         var operationDetail = isReplay ? $"{task.Name}-replay" : task.Name;
         using var taskRunScope = DebugTraceLog.BeginOperation("task", operationDetail);
@@ -8212,21 +10175,59 @@ public partial class MainWindow : Window
             return new TaskExecutionResult { Succeeded = false, ExitCode = null };
         }
 
-        var executionTargetSelection = ResolveExecutionTargetSelection(effectiveTask);
+        var executionTargetSelection = forcedExecutionTargetSelection ?? ResolveExecutionTargetSelection(effectiveTask);
         if (executionTargetSelection.Mode != ExecutionTargetMode.Local)
         {
-            var receipt = _remoteControlPlaneService.TryDispatchTask(
+            var requestedAgentToken = string.IsNullOrWhiteSpace(executionTargetSelection.AgentId)
+                ? "(auto)"
+                : executionTargetSelection.AgentId;
+
+            if (TryGetActiveAttemptBindingForTask(taskStateKey, out var existingBinding))
+            {
+                var existingAgentToken = string.IsNullOrWhiteSpace(existingBinding.AgentId)
+                    ? "(unknown)"
+                    : existingBinding.AgentId;
+                var immutableMessage =
+                    $"Task '{task.Name}' already has an active binding: agent={existingAgentToken}, attempt={existingBinding.AttemptId}. Retargeting is blocked until completion.";
+                AppendLog(outputTextBox, $"[{task.Name}] {immutableMessage}");
+                AppendLog(
+                    outputTextBox,
+                    AgentDispatchLifecycleMarkers.Error(task.Name, requestedAgentToken, "active_binding_immutable", "retarget-blocked"));
+                SetTabStopped(tabContext, false);
+                SetTaskRunState(task, TaskRunState.Failed);
+                CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+                return new TaskExecutionResult { Succeeded = false, ExitCode = null };
+            }
+
+            LogDispatchRequest(
+                effectiveTask,
+                executionTargetSelection,
+                requestedAgentToken,
+                resolved.ResolvedInputs,
+                publishedOutputs);
+
+            var receipt = await DispatchRemoteOfferWithRetryAsync(
                 effectiveTask,
                 executionTargetSelection,
                 resolved.ResolvedInputs,
-                publishedOutputs);
+                publishedOutputs,
+                effectiveCancellationToken);
+
+            LogDispatchResponse(effectiveTask, requestedAgentToken, receipt);
 
             if (!receipt.Dispatched || string.IsNullOrWhiteSpace(receipt.AgentId) || string.IsNullOrWhiteSpace(receipt.RunId) || string.IsNullOrWhiteSpace(receipt.AttemptId))
             {
                 AppendLog(outputTextBox, $"[{task.Name}] Remote dispatch failed. {receipt.Message}");
+                AppendLog(
+                    outputTextBox,
+                    AgentDispatchLifecycleMarkers.Error(task.Name, requestedAgentToken, receipt.Message, "dispatch-failed"));
                 SetTabStopped(tabContext, false);
                 SetTaskRunState(task, TaskRunState.Failed);
                 CompleteHistoryEntry(historyEntry, TaskRunOutcome.LaunchFailed, null);
+                if (!string.IsNullOrWhiteSpace(executionTargetSelection.AgentId))
+                {
+                    SetAgentTransientExecutionState(executionTargetSelection.AgentId, AgentTransientExecutionState.Failed, "dispatch_rejected");
+                }
                 UnregisterTaskCancellation(task);
                 linkedCancellationSource?.Dispose();
                 return new TaskExecutionResult { Succeeded = false, ExitCode = null };
@@ -8239,15 +10240,138 @@ public partial class MainWindow : Window
                 AttemptId = receipt.AttemptId
             };
 
-            AppendLog(outputTextBox, $"[{task.Name}] Remote dispatch accepted. {receipt.Message}");
+            SetOutputTabAgentTitle(tabContext, ResolveAgentTitleName(receipt.AgentId));
+
+            var remoteTracking = new RemoteAttemptTracking
+            {
+                AgentId = receipt.AgentId,
+                AttemptId = receipt.AttemptId,
+                RunId = receipt.RunId,
+                TaskName = task.Name,
+                TaskStateKey = taskStateKey,
+                OutputTextBox = outputTextBox,
+                EndMarkerWritten = false
+            };
+            _remoteAttemptTracking[receipt.AttemptId] = remoteTracking;
+
+            RegisterAttemptBinding(new AttemptBindingRecord
+            {
+                TaskStateKey = taskStateKey,
+                TaskName = task.Name,
+                AgentId = receipt.AgentId,
+                RunId = receipt.RunId,
+                AttemptId = receipt.AttemptId
+            });
+
+            if (!_runningAttemptIdsByAgent.TryGetValue(receipt.AgentId, out var runningAttempts))
+            {
+                runningAttempts = new Queue<string>();
+                _runningAttemptIdsByAgent[receipt.AgentId] = runningAttempts;
+            }
+
+            runningAttempts.Enqueue(receipt.AttemptId);
+
+            AppendLog(outputTextBox, $"[{task.Name}] Offer sent (pending agent acceptance). {receipt.Message}");
             AppendLog(outputTextBox, $"[{task.Name}] run_id={receipt.RunId}, attempt_id={receipt.AttemptId}");
+            AppendLog(
+                outputTextBox,
+                AgentDispatchLifecycleMarkers.Start(new AgentDispatchLifecycleContext(task.Name, receipt.AgentId, receipt.RunId, receipt.AttemptId)));
             SetTaskRunState(task, TaskRunState.Running);
-            CompleteHistoryEntry(historyEntry, TaskRunOutcome.Started, null);
+            SetAgentTransientExecutionState(receipt.AgentId, AgentTransientExecutionState.Running, "dispatch_accepted");
+
+            var shouldWaitForRemoteCompletion = dataflowContext is not null;
+            if (!shouldWaitForRemoteCompletion)
+            {
+                CompleteHistoryEntry(historyEntry, TaskRunOutcome.Started, null);
+
+                return new TaskExecutionResult
+                {
+                    Succeeded = true,
+                    ExitCode = null,
+                    PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
+                };
+            }
+
+            if (!effectiveTask.WaitForExit)
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Chain execution requires terminal completion in remote mode; waiting for completion despite waitForExit=false.");
+            }
+
+            CancellationTokenSource? timeoutCts = null;
+            CancellationTokenSource? remoteCompletionWaitCts = null;
+            var waitToken = effectiveCancellationToken;
+            if (effectiveTask.TimeoutSeconds > 0)
+            {
+                timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(effectiveTask.TimeoutSeconds));
+                remoteCompletionWaitCts = CancellationTokenSource.CreateLinkedTokenSource(effectiveCancellationToken, timeoutCts.Token);
+                waitToken = remoteCompletionWaitCts.Token;
+            }
+
+            RemoteAttemptResult remoteCompletion;
+            try
+            {
+                remoteCompletion = await remoteTracking.CompletionSource.Task.WaitAsync(waitToken);
+            }
+            catch (OperationCanceledException)
+            {
+                var timedOut = timeoutCts?.IsCancellationRequested == true && !effectiveCancellationToken.IsCancellationRequested;
+                var cancelReason = timedOut ? "timeout" : "cancellation";
+                AppendLog(outputTextBox, $"[{task.Name}] Remote chain step ended early due to {cancelReason}. Sending cancel to agent.");
+
+                if (_remoteControlPlaneService.TryCancel(receipt.AgentId, receipt.RunId, receipt.AttemptId, out var cancelMessage))
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] {cancelMessage}");
+                }
+                else
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Failed to send remote cancellation: {cancelMessage}");
+                }
+
+                SetTaskRunState(task, TaskRunState.Failed);
+                SetTabStopped(tabContext, false);
+                CompleteHistoryEntry(historyEntry, timedOut ? TaskRunOutcome.TimedOut : TaskRunOutcome.Cancelled, null);
+
+                return new TaskExecutionResult
+                {
+                    Succeeded = false,
+                    ExitCode = null,
+                    PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
+                };
+            }
+            finally
+            {
+                remoteCompletionWaitCts?.Dispose();
+                timeoutCts?.Dispose();
+            }
+
+            foreach (var produced in remoteCompletion.ProducedOutputs)
+            {
+                publishedOutputs[produced.Key] = produced.Value;
+            }
+
+            publishedOutputs = ResolveRuntimeOutputValues(
+                publishedOutputs,
+                remoteCompletion.StandardOutput,
+                remoteCompletion.StandardError,
+                remoteCompletion.ExitCode);
+
+            if (remoteCompletion.Succeeded && publishedOutputs.Count > 0)
+            {
+                AppendPublishedOutputs(outputTextBox, task.Name, publishedOutputs);
+                dataflowContext?.RegisterTaskOutputs(task.Name, publishedOutputs);
+            }
+
+            if (!remoteCompletion.Succeeded && !string.IsNullOrWhiteSpace(remoteCompletion.Message))
+            {
+                AppendLog(outputTextBox, $"[{task.Name}] Remote step failed: {remoteCompletion.Message}");
+            }
+
+            CompleteHistoryEntry(historyEntry, remoteCompletion.Outcome, remoteCompletion.ExitCode);
 
             return new TaskExecutionResult
             {
-                Succeeded = true,
-                ExitCode = null,
+                Succeeded = remoteCompletion.Succeeded,
+                ExitCode = remoteCompletion.ExitCode,
                 PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
             };
         }
@@ -8264,7 +10388,7 @@ public partial class MainWindow : Window
 
         var modePrefix = isReplay ? "[replay] " : string.Empty;
         var executionMode = waitForExit ? "wait" : "fire-and-forget";
-        AppendLog(outputTextBox, $"[{task.Name}] {modePrefix}Running ({runner}, {executionMode}): {effectiveTask.CommandLine}");
+        AppendLog(outputTextBox, $"[{task.Name}] {modePrefix}Running ({runner}, {executionMode}): {PreviewForUiLog(effectiveTask.CommandLine, MaxUiPublishedValueChars)}");
         if (waitForExit && effectiveTask.TimeoutSeconds > 0)
         {
             AppendLog(outputTextBox, $"[{task.Name}] Timeout: {effectiveTask.TimeoutSeconds}s | Kill tree on cancel: {effectiveTask.KillProcessTreeOnCancel} | Max output capture: {effectiveTask.MaxCapturedOutputChars} chars/stream.");
@@ -8560,7 +10684,8 @@ public partial class MainWindow : Window
     private TaskTabContext CreateOutputTab(string taskName)
     {
         var currentOutputPanel = GetOrCreateSelectedGroupOutputPanel();
-        var runTitle = $"{taskName} {DateTime.Now:HH:mm:ss}";
+        var startedAtLocal = DateTime.Now;
+        var runTitle = BuildOutputTabTitle(taskName, null, startedAtLocal);
         var accentColor = GetTaskRunAccentColor(taskName);
         var accentBrush = CreateRunGradientBrush(accentColor, runTitle);
         var titleBrush = GetReadableTextBrush(accentColor);
@@ -8659,6 +10784,8 @@ public partial class MainWindow : Window
         var tabContext = new TaskTabContext
         {
             HostOutputPanel = currentOutputPanel,
+            BaseTaskName = taskName,
+            StartedAtLocal = startedAtLocal,
             RunItemContainer = runItemContainer,
             RunItemExpander = runItemExpander,
             OutputTextBox = outputTextBox,
@@ -8691,12 +10818,39 @@ public partial class MainWindow : Window
 
         currentOutputPanel.Runs.Insert(0, tabContext);
         currentOutputPanel.RunListPanel.Children.Insert(0, runItemContainer);
+        _outputBudgetByTextBox[outputTextBox] = new OutputBudgetState();
         UpdateOutputListPlaceholder(currentOutputPanel);
 
         tabContext.RunItemExpander.IsExpanded = true;
         outputTextBox.Focus();
 
         return tabContext;
+    }
+
+    private static string BuildOutputTabTitle(string taskName, string? agentName, DateTime startedAtLocal)
+    {
+        var normalizedTaskName = string.IsNullOrWhiteSpace(taskName) ? "Task" : taskName.Trim();
+        var normalizedAgentName = string.IsNullOrWhiteSpace(agentName) ? null : agentName.Trim();
+        var agentSuffix = normalizedAgentName is null ? string.Empty : $" [{normalizedAgentName}]";
+        return $"{normalizedTaskName}{agentSuffix} {startedAtLocal:HH:mm:ss}";
+    }
+
+    private void SetOutputTabAgentTitle(TaskTabContext tabContext, string? agentName)
+    {
+        tabContext.TitleText.Text = BuildOutputTabTitle(tabContext.BaseTaskName, agentName, tabContext.StartedAtLocal);
+    }
+
+    private string ResolveAgentTitleName(string agentId)
+    {
+        var agent = FindAgent(agentId);
+        if (agent is null)
+        {
+            return agentId;
+        }
+
+        return string.IsNullOrWhiteSpace(agent.EffectiveDisplayName)
+            ? agentId
+            : agent.EffectiveDisplayName;
     }
 
     private OutputGroupPanelContext GetOrCreateSelectedGroupOutputPanel()
@@ -8825,6 +10979,7 @@ public partial class MainWindow : Window
     {
         var panel = runContext.HostOutputPanel;
         runContext.SpinnerTimer.Stop();
+        _outputBudgetByTextBox.Remove(runContext.OutputTextBox);
 
         panel.Runs.Remove(runContext);
         panel.RunListPanel.Children.Remove(runContext.RunItemContainer);
@@ -9015,7 +11170,7 @@ public partial class MainWindow : Window
 
         foreach (var line in resolved.TraceLines)
         {
-            builder.AppendLine($"  - {line}");
+            builder.AppendLine($"  - {PreviewForUiLog(line, MaxUiTraceLineChars)}");
         }
 
         AppendLog(outputTextBox, builder.ToString().TrimEnd());
@@ -9033,7 +11188,7 @@ public partial class MainWindow : Window
 
         foreach (var pair in outputs.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
         {
-            builder.AppendLine($"  - {pair.Key} = {pair.Value}");
+            builder.AppendLine($"  - {pair.Key} = {PreviewForUiLog(pair.Value, MaxUiPublishedValueChars)}");
         }
 
         AppendLog(outputTextBox, builder.ToString().TrimEnd());
@@ -9041,12 +11196,24 @@ public partial class MainWindow : Window
 
     private void AppendLog(RichTextBox outputTextBox, string message)
     {
+        var boundedMessage = PreviewForUiLog(message, MaxUiLogMessageChars);
+        if (!TryConsumeOutputBudget(outputTextBox, boundedMessage.Length, out var budgetState))
+        {
+            if (!budgetState.LimitReachedLogged)
+            {
+                budgetState.LimitReachedLogged = true;
+                AppendLogBypassBudget(outputTextBox, "[system] Output limit reached for this run; additional log lines are suppressed to keep the UI responsive.");
+            }
+
+            return;
+        }
+
         var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
         paragraph.Inlines.Add(new Run(" "));
-        AppendTaggedMessageRuns(paragraph, message);
+        AppendTaggedMessageRuns(paragraph, boundedMessage);
         paragraph.Inlines.Add(new Run(Environment.NewLine + Environment.NewLine));
         if (shouldAutoScroll)
         {
@@ -9056,6 +11223,18 @@ public partial class MainWindow : Window
 
     private void AppendStreamOutputLine(RichTextBox outputTextBox, string streamName, string line)
     {
+        var boundedLine = PreviewForUiLog(line, MaxUiStreamLineChars);
+        if (!TryConsumeOutputBudget(outputTextBox, boundedLine.Length, out var budgetState))
+        {
+            if (!budgetState.LimitReachedLogged)
+            {
+                budgetState.LimitReachedLogged = true;
+                AppendLogBypassBudget(outputTextBox, "[system] Output limit reached for this run; additional stream output is suppressed to keep the UI responsive.");
+            }
+
+            return;
+        }
+
         var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
         var paragraph = EnsureOutputParagraph(outputTextBox);
@@ -9073,12 +11252,95 @@ public partial class MainWindow : Window
         });
         paragraph.Inlines.Add(new Run(" "));
 
-        AppendAnsiText(outputTextBox, line);
+        AppendAnsiText(outputTextBox, boundedLine);
         AppendPlainText(outputTextBox, Environment.NewLine + Environment.NewLine);
         if (shouldAutoScroll)
         {
             outputTextBox.ScrollToEnd();
         }
+    }
+
+    private bool TryConsumeOutputBudget(RichTextBox outputTextBox, int incomingChars, out OutputBudgetState state)
+    {
+        if (!_outputBudgetByTextBox.TryGetValue(outputTextBox, out state!))
+        {
+            state = new OutputBudgetState();
+            _outputBudgetByTextBox[outputTextBox] = state;
+        }
+
+        if (state.TotalCharsAppended >= MaxUiOutputCharsPerRun)
+        {
+            return false;
+        }
+
+        state.TotalCharsAppended += Math.Max(0, incomingChars);
+        return true;
+    }
+
+    private void AppendLogBypassBudget(RichTextBox outputTextBox, string message)
+    {
+        var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var paragraph = EnsureOutputParagraph(outputTextBox);
+        AppendTimestampRun(paragraph, timestamp);
+        paragraph.Inlines.Add(new Run(" "));
+        AppendTaggedMessageRuns(paragraph, PreviewForUiLog(message, MaxUiLogMessageChars));
+        paragraph.Inlines.Add(new Run(Environment.NewLine + Environment.NewLine));
+        if (shouldAutoScroll)
+        {
+            outputTextBox.ScrollToEnd();
+        }
+    }
+
+    private static string PreviewForUiLog(string? value, int maxChars)
+    {
+        if (string.IsNullOrEmpty(value) || maxChars < 32)
+        {
+            return value ?? string.Empty;
+        }
+
+        if (value.Length <= maxChars)
+        {
+            return value;
+        }
+
+        var omitted = value.Length - maxChars;
+        return value[..maxChars] + $" ... [truncated {omitted} chars]";
+    }
+
+    private async Task<RemoteDispatchReceipt> DispatchRemoteOfferWithRetryAsync(
+        LauncherTask task,
+        ExecutionTargetSelection selection,
+        IReadOnlyDictionary<string, string> resolvedInputs,
+        IReadOnlyDictionary<string, string> publishedOutputs,
+        CancellationToken cancellationToken)
+    {
+        var receipt = await Task.Run(
+            () => _remoteControlPlaneService.TryDispatchTask(task, selection, resolvedInputs, publishedOutputs),
+            cancellationToken);
+
+        if (receipt.Dispatched || !IsDispatchTimeoutReceipt(receipt) || cancellationToken.IsCancellationRequested)
+        {
+            return receipt;
+        }
+
+        // Transient write stalls can clear once the stream resumes; retry once before failing the chain step.
+        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+
+        return await Task.Run(
+            () => _remoteControlPlaneService.TryDispatchTask(task, selection, resolvedInputs, publishedOutputs),
+            cancellationToken);
+    }
+
+    private static bool IsDispatchTimeoutReceipt(RemoteDispatchReceipt receipt)
+    {
+        if (receipt.Dispatched)
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(receipt.Message)
+            && receipt.Message.Contains("Timed out sending frame to agent", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ShouldAutoScrollOutput(RichTextBox outputTextBox)

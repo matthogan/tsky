@@ -958,15 +958,45 @@
                         </DockPanel>
                     </Expander.Header>
 
-                    <Button x:Name="AgentsSidebarButton"
-                            Padding="8,7"
-                            HorizontalContentAlignment="Stretch"
-                            Background="Transparent"
-                            BorderBrush="Transparent"
-                            BorderThickness="0"
-                            Style="{StaticResource SidebarTreeGroupHeaderButtonStyle}"
-                            Click="AgentsSidebarButton_Click"
-                            Content="Open Agents View" />
+                    <StackPanel>
+                        <Button x:Name="AgentsSidebarButton"
+                                Padding="8,7"
+                                HorizontalContentAlignment="Stretch"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="0"
+                                Style="{StaticResource SidebarTreeGroupHeaderButtonStyle}"
+                                Click="AgentsSidebarButton_Click"
+                                Content="Open Agents View" />
+
+                        <Border Background="#FF151A1F" CornerRadius="14" Padding="8,4" MinHeight="30" Margin="0,4,0,4">
+                            <DockPanel LastChildFill="True">
+                                <TextBlock Text="🔍"
+                                           Foreground="#FF6E7681"
+                                           Margin="0,0,6,0"
+                                           VerticalAlignment="Center" />
+                                <TextBox x:Name="AgentsSearchTextBox"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Foreground="#FFB7C0C8"
+                                         CaretBrush="#FFB7C0C8"
+                                         Padding="0"
+                                         MinHeight="18"
+                                         VerticalContentAlignment="Center"
+                                         TextChanged="AgentsSearchTextBox_TextChanged"
+                                         PreviewKeyDown="AgentsSearchTextBox_PreviewKeyDown"
+                                         ToolTip="Search agents by name, id, or host" />
+                            </DockPanel>
+                        </Border>
+
+                        <ScrollViewer x:Name="SidebarAgentsScrollViewer"
+                                      Margin="0,4,0,0"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled"
+                                      MaxHeight="240">
+                            <StackPanel x:Name="SidebarAgentsListPanel" />
+                        </ScrollViewer>
+                    </StackPanel>
                 </Expander>
 
             </Grid>
@@ -1610,6 +1640,52 @@
                                                 Style="{StaticResource HistoryActionButtonStyle}"
                                                 Click="SaveVariablesButton_Click" />
                                     </StackPanel>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem x:Name="AgentsDispatchPaneTabItem"
+                             Header="Agents"
+                             Visibility="Collapsed"
+                             AutomationProperties.Name="Agents Dispatch Tab"
+                             AutomationProperties.HelpText="Run the currently selected task on a specific online agent.">
+                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                            <Border Padding="10"
+                                    CornerRadius="0"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource PanelBorderBrush}"
+                                    BorderThickness="0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock x:Name="AgentsDispatchTitleText"
+                                               Text="Run Selected Task On Agent"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,8"
+                                               AutomationProperties.Name="Agents Dispatch Title" />
+
+                                    <TextBlock x:Name="AgentsDispatchValidationText"
+                                               Grid.Row="1"
+                                               Text=""
+                                               FontSize="11"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,8"
+                                               AutomationProperties.Name="Agents Dispatch Status Message"
+                                               AutomationProperties.HelpText="Validation and dispatch guidance for agent runs." />
+
+                                    <ScrollViewer Grid.Row="2"
+                                                  VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled"
+                                                  AutomationProperties.Name="Agents Dispatch Rows">
+                                        <StackPanel x:Name="AgentsDispatchRowsPanel"
+                                                    AutomationProperties.Name="Agent Dispatch Row List" />
+                                    </ScrollViewer>
                                 </Grid>
                             </Border>
                         </Grid>

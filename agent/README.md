@@ -176,6 +176,7 @@ schemaVersion: 1
 controller:
 	url: "https://controller.example:7341"
 	controllerId: "ctl_1234567890"
+	tlsCaCertPath: "" # optional PEM file containing CA/server certs trusted for this agent only
 	tlsPinnedSha256: "" # optional; supports sha256/ or hex formats
 
 identity:
@@ -228,6 +229,11 @@ logging:
 - `controller.tlsPinnedSha256`
 	- Optional certificate pin for HTTPS.
 	- Accepted formats include `sha256/<hex>` or colon-separated hex.
+
+- `controller.tlsCaCertPath`
+	- Optional path to a PEM file used as custom Root CAs for HTTPS verification.
+	- Useful when you do not want to install certificates into the OS trust store.
+	- Requires `controller.url` to use `https`.
 
 - `identity.agentId`, `identity.keyId`, `identity.keyReference`
 	- Populated by successful enrolment.

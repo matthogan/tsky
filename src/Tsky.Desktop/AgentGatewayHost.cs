@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.IO;
 using System.Collections.Concurrent;
+using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
@@ -18,17 +19,39 @@ using Tsky.Agent.V1;
 
 namespace tsky;
 
+public sealed class AgentGatewayRuntimeEvent
+{
+    public required string AgentId { get; init; }
+
+    public RunAccepted? RunAccepted { get; init; }
+
+    public RunRejected? RunRejected { get; init; }
+
+    public RunEvent? RunEvent { get; init; }
+
+    public RunOutput? RunOutput { get; init; }
+
+    public RunCompleted? RunCompleted { get; init; }
+
+    public ReconciliationResponse? ReconciliationResponse { get; init; }
+
+    public ArtifactUploadCompleted? ArtifactUploadCompleted { get; init; }
+
+    public ArtifactUploadFailed? ArtifactUploadFailed { get; init; }
+}
+
 public sealed class AgentGatewayHost : IAsyncDisposable
 {
+    private static readonly TimeSpan OfflineAfter = TimeSpan.FromSeconds(35);
     private readonly AgentRegistryService _registryService;
-    private readonly Action<string>? _onAgentEvent;
+    private readonly Action<AgentGatewayRuntimeEvent>? _onAgentEvent;
     private AgentGatewaySettings _settings;
     private AgentGatewayRuntime? _runtime;
     private WebApplication? _app;
 
     public const int DefaultPort = 7341;
 
-    public AgentGatewayHost(AgentRegistryService registryService, AgentGatewaySettings settings, Action<string>? onAgentEvent = null)
+    public AgentGatewayHost(AgentRegistryService registryService, AgentGatewaySettings settings, Action<AgentGatewayRuntimeEvent>? onAgentEvent = null)
     {
         _registryService = registryService;
         _settings = settings;
@@ -74,6 +97,52 @@ public sealed class AgentGatewayHost : IAsyncDisposable
         return _runtime?.RequestDrainingFromAll(draining) ?? 0;
     }
 
+    public void MarkKnownAgentsOfflineIfStale()
+    {
+        if (_runtime is not null)
+        {
+            _runtime.MarkKnownAgentsOfflineIfStale();
+            return;
+        }
+
+        var registry = _registryService.Load();
+        var changed = false;
+        var now = DateTime.UtcNow;
+
+        foreach (var agent in registry.Agents)
+        {
+            if (agent.State is AgentDefinitionState.Revoked or AgentDefinitionState.Disabled or AgentDefinitionState.Incompatible)
+            {
+                continue;
+            }
+
+            if (agent.LastSeenAtUtc is null)
+            {
+                continue;
+            }
+
+            if (now - agent.LastSeenAtUtc.Value <= OfflineAfter)
+            {
+                continue;
+            }
+
+            if (agent.State != AgentDefinitionState.Offline)
+            {
+                agent.State = AgentDefinitionState.Offline;
+                agent.SessionId = null;
+                agent.LastStateReasonCode = "heartbeat_timeout";
+                agent.LastStateReasonMessage = "Heartbeat timeout exceeded offline threshold.";
+                agent.LastSeenSummary = "Heartbeat timeout";
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            _registryService.Save(registry);
+        }
+    }
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_app is not null)
@@ -106,29 +175,18 @@ public sealed class AgentGatewayHost : IAsyncDisposable
                 }
 
                 var certificate = new X509Certificate2(settings.CertificatePath, settings.CertificatePassword);
-                options.ListenLocalhost(port, listen =>
-                {
-                    listen.Protocols = HttpProtocols.Http1AndHttp2;
-                    listen.UseHttps(certificate);
-                });
+                ConfigureListener(options, bindHost, port, HttpProtocols.Http1AndHttp2, certificate);
 
                 if (settings.IsDevLoopbackFallbackEnabled && port != DefaultPort)
                 {
-                    options.ListenLocalhost(DefaultPort, listen =>
-                    {
-                        listen.Protocols = HttpProtocols.Http1AndHttp2;
-                    });
-
-                    fallbackEndpoint = $"http://localhost:{DefaultPort}";
+                    ConfigureListener(options, bindHost, DefaultPort, HttpProtocols.Http1AndHttp2);
+                    fallbackEndpoint = $"http://{bindHost}:{DefaultPort}";
                 }
             }
             else
             {
-                options.ListenLocalhost(port, listen =>
-                {
-                    // Cleartext gRPC requires a dedicated HTTP/2 endpoint.
-                    listen.Protocols = HttpProtocols.Http2;
-                });
+                // Cleartext gRPC requires a dedicated HTTP/2 endpoint.
+                ConfigureListener(options, bindHost, port, HttpProtocols.Http2);
 
                 restPort = port < 65535 ? port + 1 : DefaultPort;
                 if (restPort == port || restPort <= 0 || restPort > 65535)
@@ -136,11 +194,8 @@ public sealed class AgentGatewayHost : IAsyncDisposable
                     restPort = DefaultPort == port ? 7342 : DefaultPort;
                 }
 
-                options.ListenLocalhost(restPort, listen =>
-                {
-                    // Keep enrolment and diagnostics endpoints available to HTTP/1 clients.
-                    listen.Protocols = HttpProtocols.Http1;
-                });
+                // Keep enrolment and diagnostics endpoints available to HTTP/1 clients.
+                ConfigureListener(options, bindHost, restPort, HttpProtocols.Http1);
 
                 fallbackEndpoint = $"http://{bindHost}:{restPort}";
             }
@@ -206,6 +261,74 @@ public sealed class AgentGatewayHost : IAsyncDisposable
         _app = app;
     }
 
+    private static void ConfigureListener(KestrelServerOptions options, string bindHost, int port, HttpProtocols protocols, X509Certificate2? certificate = null)
+    {
+        var host = string.IsNullOrWhiteSpace(bindHost) ? "localhost" : bindHost.Trim();
+
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            options.ListenLocalhost(port, listen =>
+            {
+                listen.Protocols = protocols;
+                if (certificate is not null)
+                {
+                    listen.UseHttps(certificate);
+                }
+            });
+
+            return;
+        }
+
+        if (host == "*" || host == "+" || host == "0.0.0.0")
+        {
+            options.ListenAnyIP(port, listen =>
+            {
+                listen.Protocols = protocols;
+                if (certificate is not null)
+                {
+                    listen.UseHttps(certificate);
+                }
+            });
+
+            return;
+        }
+
+        if (IPAddress.TryParse(host, out var ipAddress))
+        {
+            options.Listen(ipAddress, port, listen =>
+            {
+                listen.Protocols = protocols;
+                if (certificate is not null)
+                {
+                    listen.UseHttps(certificate);
+                }
+            });
+
+            return;
+        }
+
+        var resolved = Dns.GetHostAddresses(host)
+            .Distinct()
+            .ToArray();
+
+        if (resolved.Length == 0)
+        {
+            throw new InvalidOperationException($"BindHost '{host}' did not resolve to any IP addresses.");
+        }
+
+        foreach (var address in resolved)
+        {
+            options.Listen(address, port, listen =>
+            {
+                listen.Protocols = protocols;
+                if (certificate is not null)
+                {
+                    listen.UseHttps(certificate);
+                }
+            });
+        }
+    }
+
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         if (_app is null)
@@ -244,7 +367,7 @@ internal sealed class AgentGatewayRuntime
     private readonly string _primaryEndpoint;
     private readonly string _enrolmentBaseEndpoint;
     private readonly string? _fallbackEndpoint;
-    private readonly Action<string>? _onAgentEvent;
+    private readonly Action<AgentGatewayRuntimeEvent>? _onAgentEvent;
     private readonly object _sync = new();
     private readonly ConcurrentDictionary<string, AgentSessionConnection> _sessions = new(StringComparer.OrdinalIgnoreCase);
 
@@ -254,7 +377,7 @@ internal sealed class AgentGatewayRuntime
         string primaryEndpoint,
         string enrolmentBaseEndpoint,
         string? fallbackEndpoint,
-        Action<string>? onAgentEvent)
+        Action<AgentGatewayRuntimeEvent>? onAgentEvent)
     {
         _registryService = registryService;
         _controllerId = controllerId;
@@ -341,7 +464,10 @@ internal sealed class AgentGatewayRuntime
             });
         }
 
-        _onAgentEvent?.Invoke(result.AgentId ?? string.Empty);
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = result.AgentId ?? string.Empty
+        });
         return response;
     }
 
@@ -506,7 +632,10 @@ internal sealed class AgentGatewayRuntime
             _registryService.Save(registry);
         }
 
-        _onAgentEvent?.Invoke(hello.AgentId);
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = hello.AgentId
+        });
     }
 
     public void ApplySnapshot(string agentId, AgentSnapshot snapshot)
@@ -546,7 +675,10 @@ internal sealed class AgentGatewayRuntime
             _registryService.Save(registry);
         }
 
-        _onAgentEvent?.Invoke(agentId);
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId
+        });
     }
 
     public void ApplyHeartbeat(string agentId, AgentHeartbeat heartbeat)
@@ -589,7 +721,46 @@ internal sealed class AgentGatewayRuntime
             _registryService.Save(registry);
         }
 
-        _onAgentEvent?.Invoke(agentId);
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId
+        });
+    }
+
+    public void ApplyRunEvent(string agentId, RunEvent runEvent)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            RunEvent = runEvent
+        });
+    }
+
+    public void ApplyRunAccepted(string agentId, RunAccepted runAccepted)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            RunAccepted = runAccepted
+        });
+    }
+
+    public void ApplyRunRejected(string agentId, RunRejected runRejected)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            RunRejected = runRejected
+        });
+    }
+
+    public void ApplyRunOutput(string agentId, RunOutput runOutput)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            RunOutput = runOutput
+        });
     }
 
     public void ApplyRunCompleted(string agentId, RunCompleted runCompleted)
@@ -616,7 +787,38 @@ internal sealed class AgentGatewayRuntime
             _registryService.Save(registry);
         }
 
-        _onAgentEvent?.Invoke(agentId);
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            RunCompleted = runCompleted
+        });
+    }
+
+    public void ApplyReconciliationResponse(string agentId, ReconciliationResponse reconciliationResponse)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            ReconciliationResponse = reconciliationResponse
+        });
+    }
+
+    public void ApplyArtifactUploadCompleted(string agentId, ArtifactUploadCompleted artifactUploadCompleted)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            ArtifactUploadCompleted = artifactUploadCompleted
+        });
+    }
+
+    public void ApplyArtifactUploadFailed(string agentId, ArtifactUploadFailed artifactUploadFailed)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            ArtifactUploadFailed = artifactUploadFailed
+        });
     }
 
     public void MarkDisconnected(string agentId, string sessionId)
@@ -650,7 +852,10 @@ internal sealed class AgentGatewayRuntime
             _registryService.Save(registry);
         }
 
-        _onAgentEvent?.Invoke(agentId);
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId
+        });
     }
 
     public void MarkKnownAgentsOfflineIfStale()
@@ -795,11 +1000,45 @@ internal sealed class AgentGatewayRuntime
             return false;
         }
 
+        const int sendTimeoutMilliseconds = 15000;
+
+        if (TrySendOnConnection(connection, frame, sendTimeoutMilliseconds, out reason))
+        {
+            return true;
+        }
+
+        // If the connection changed while sending failed, retry once on the latest session.
+        if (_sessions.TryGetValue(agentId, out var latestConnection)
+            && !ReferenceEquals(latestConnection, connection)
+            && TrySendOnConnection(latestConnection, frame, sendTimeoutMilliseconds, out reason))
+        {
+            return true;
+        }
+
+        var isTimeout = reason.StartsWith("Timed out sending frame to agent", StringComparison.OrdinalIgnoreCase);
+        if (!isTimeout
+            && _sessions.TryGetValue(agentId, out var current)
+            && ReferenceEquals(current, connection)
+            && _sessions.TryRemove(agentId, out var removed))
+        {
+            removed.Dispose();
+        }
+
+        return false;
+    }
+
+    private static bool TrySendOnConnection(AgentSessionConnection connection, ControllerFrame frame, int sendTimeoutMilliseconds, out string reason)
+    {
         try
         {
-            connection.SendAsync(frame).GetAwaiter().GetResult();
+            connection.SendAsync(frame, sendTimeoutMilliseconds).GetAwaiter().GetResult();
             reason = string.Empty;
             return true;
+        }
+        catch (TimeoutException ex)
+        {
+            reason = ex.Message;
+            return false;
         }
         catch (Exception ex)
         {
@@ -823,6 +1062,8 @@ internal sealed class AgentGatewayRuntime
     private sealed class AgentSessionConnection : IDisposable
     {
         private readonly SemaphoreSlim _writeGate = new(1, 1);
+        private bool _disposed;
+        private bool _faulted;
 
         public AgentSessionConnection(string agentId, string sessionId, IServerStreamWriter<ControllerFrame> responseStream)
         {
@@ -837,12 +1078,45 @@ internal sealed class AgentGatewayRuntime
 
         public IServerStreamWriter<ControllerFrame> ResponseStream { get; }
 
-        public async Task SendAsync(ControllerFrame frame)
+        public async Task SendAsync(ControllerFrame frame, int timeoutMilliseconds)
         {
-            await _writeGate.WaitAsync();
+            if (_disposed || _faulted)
+            {
+                throw new ObjectDisposedException(nameof(AgentSessionConnection));
+            }
+
+            var gateEntered = await _writeGate.WaitAsync(timeoutMilliseconds).ConfigureAwait(false);
+            if (!gateEntered)
+            {
+                _faulted = true;
+                throw new TimeoutException($"Timed out sending frame to agent after {timeoutMilliseconds}ms.");
+            }
+
             try
             {
-                await ResponseStream.WriteAsync(frame);
+                if (_disposed || _faulted)
+                {
+                    throw new ObjectDisposedException(nameof(AgentSessionConnection));
+                }
+
+                var writeTask = ResponseStream.WriteAsync(frame);
+                var completed = await Task.WhenAny(writeTask, Task.Delay(timeoutMilliseconds)).ConfigureAwait(false) == writeTask;
+                if (!completed)
+                {
+                    _faulted = true;
+                    _ = writeTask.ContinueWith(t =>
+                    {
+                        _ = t.Exception;
+                    }, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+                    throw new TimeoutException($"Timed out sending frame to agent after {timeoutMilliseconds}ms.");
+                }
+
+                await writeTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                _faulted = true;
+                throw;
             }
             finally
             {
@@ -852,7 +1126,7 @@ internal sealed class AgentGatewayRuntime
 
         public void Dispose()
         {
-            _writeGate.Dispose();
+            _disposed = true;
         }
     }
 
@@ -1087,7 +1361,49 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
                     continue;
                 }
 
-                if (frame.ReconciliationResponse is not null || frame.CapabilityReport is not null || frame.RunEvent is not null || frame.RunOutput is not null)
+                if (frame.RunAccepted is not null)
+                {
+                    _runtime.ApplyRunAccepted(hello.AgentId, frame.RunAccepted);
+                    continue;
+                }
+
+                if (frame.RunRejected is not null)
+                {
+                    _runtime.ApplyRunRejected(hello.AgentId, frame.RunRejected);
+                    continue;
+                }
+
+                if (frame.RunEvent is not null)
+                {
+                    _runtime.ApplyRunEvent(hello.AgentId, frame.RunEvent);
+                    continue;
+                }
+
+                if (frame.RunOutput is not null)
+                {
+                    _runtime.ApplyRunOutput(hello.AgentId, frame.RunOutput);
+                    continue;
+                }
+
+                if (frame.ReconciliationResponse is not null)
+                {
+                    _runtime.ApplyReconciliationResponse(hello.AgentId, frame.ReconciliationResponse);
+                    continue;
+                }
+
+                if (frame.ArtifactUploadCompleted is not null)
+                {
+                    _runtime.ApplyArtifactUploadCompleted(hello.AgentId, frame.ArtifactUploadCompleted);
+                    continue;
+                }
+
+                if (frame.ArtifactUploadFailed is not null)
+                {
+                    _runtime.ApplyArtifactUploadFailed(hello.AgentId, frame.ArtifactUploadFailed);
+                    continue;
+                }
+
+                if (frame.CapabilityReport is not null)
                 {
                     continue;
                 }

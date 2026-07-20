@@ -29,6 +29,7 @@ type ControllerConfig struct {
 	URL             string `yaml:"url" json:"url"`
 	ControllerID    string `yaml:"controllerId" json:"controllerId"`
 	TLSPinnedSHA256 string `yaml:"tlsPinnedSha256" json:"tlsPinnedSha256"`
+	TLSCACertPath   string `yaml:"tlsCaCertPath" json:"tlsCaCertPath"`
 }
 
 type IdentityConfig struct {
@@ -235,6 +236,7 @@ var (
 
 func applyEmbeddedEnv(cfg *Config) {
 	cfg.Controller.URL = expandEmbeddedEnv(cfg.Controller.URL)
+	cfg.Controller.TLSCACertPath = expandEmbeddedEnv(cfg.Controller.TLSCACertPath)
 	cfg.Identity.KeyReference = expandEmbeddedEnv(cfg.Identity.KeyReference)
 	cfg.Runtime.Root = expandEmbeddedEnv(cfg.Runtime.Root)
 	for idx := range cfg.Execution.AllowedWorkingRoots {

@@ -50,7 +50,7 @@ func New(cfg config.Config, store *runtimefs.Store, log *slog.Logger) *Engine {
 func (e *Engine) HandleOffer(ctx context.Context, sender Sender, offer *agentv1.RunOffer) {
 	acceptance, duplicate, err := e.accept(offer)
 	if err != nil {
-		_ = sender.Send(&agentv1.AgentFrame{
+		if sendErr := e.sendFrame(sender, &agentv1.AgentFrame{
 			Header: tapproto.Header(offer.OfferId),
 			Body: &agentv1.AgentFrame_RunRejected{RunRejected: &agentv1.RunRejected{
 				OfferId:   offer.OfferId,
@@ -58,10 +58,12 @@ func (e *Engine) HandleOffer(ctx context.Context, sender Sender, offer *agentv1.
 				AttemptId: offer.AttemptId,
 				Error:     tapError("run_rejected", err.Error(), false),
 			}},
-		})
+		}, "RunRejected", offer.RunId, offer.AttemptId); sendErr != nil {
+			e.log.Error("failed to send run rejection", "error", sendErr, "runId", offer.RunId, "attemptId", offer.AttemptId, "offerId", offer.OfferId)
+		}
 		return
 	}
-	_ = sender.Send(&agentv1.AgentFrame{
+	if err := e.sendFrame(sender, &agentv1.AgentFrame{
 		Header: tapproto.Header(offer.OfferId),
 		Body: &agentv1.AgentFrame_RunAccepted{RunAccepted: &agentv1.RunAccepted{
 			OfferId:          acceptance.OfferID,
@@ -70,7 +72,10 @@ func (e *Engine) HandleOffer(ctx context.Context, sender Sender, offer *agentv1.
 			PlanDigestSha256: offer.PlanDigestSha256,
 			AcceptedAt:       timestamppb.New(acceptance.AcceptedAt),
 		}},
-	})
+	}, "RunAccepted", offer.RunId, offer.AttemptId); err != nil {
+		e.log.Error("failed to send run acceptance", "error", err, "runId", offer.RunId, "attemptId", offer.AttemptId, "offerId", offer.OfferId)
+		return
+	}
 	if duplicate {
 		return
 	}
@@ -145,7 +150,7 @@ func (e *Engine) execute(parent context.Context, sender Sender, offer *agentv1.R
 	if state == nil {
 		state = &runtimefs.State{RunID: offer.RunId, AttemptID: offer.AttemptId}
 	}
-	sendState := func(st agentv1.RunAttemptState, stepID string, detail map[string]any) {
+	sendState := func(st agentv1.RunAttemptState, stepID string, detail map[string]any) error {
 		state.State = st
 		state.HighestEventSeq++
 		state.ProcessKnownRunning = st == agentv1.RunAttemptState_RUN_ATTEMPT_STATE_RUNNING
@@ -161,52 +166,75 @@ func (e *Engine) execute(parent context.Context, sender Sender, offer *agentv1.R
 			Detail:        toStruct(detail),
 		}
 		_ = e.store.AppendRunEvent(ev)
-		_ = sender.Send(&agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunEvent{RunEvent: ev}})
+		return e.sendFrame(sender, &agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunEvent{RunEvent: ev}}, "RunEvent", offer.RunId, offer.AttemptId)
 	}
-	sendState(agentv1.RunAttemptState_RUN_ATTEMPT_STATE_PREPARING, "", nil)
+	if err := sendState(agentv1.RunAttemptState_RUN_ATTEMPT_STATE_PREPARING, "", nil); err != nil {
+		final := agentv1.RunAttemptState_RUN_ATTEMPT_STATE_FAILED
+		state.ErrorCode = "frame_send_failed"
+		state.ErrorMessage = err.Error()
+		state.State = final
+		state.ProcessKnownRunning = false
+		_ = e.store.WriteState(*state)
+		e.sendTerminalFailure(sender, offer, state, final, 0, false)
+		return
+	}
 	var final agentv1.RunAttemptState
 	var exitCode int32
 	var hasExit bool
 	for _, step := range sortedSteps(offer.Plan.Steps) {
-		sendState(agentv1.RunAttemptState_RUN_ATTEMPT_STATE_RUNNING, step.StepId, map[string]any{"displayName": step.DisplayName})
+		if err := sendState(agentv1.RunAttemptState_RUN_ATTEMPT_STATE_RUNNING, step.StepId, map[string]any{"displayName": step.DisplayName}); err != nil {
+			final = agentv1.RunAttemptState_RUN_ATTEMPT_STATE_FAILED
+			state.ErrorCode = "frame_send_failed"
+			state.ErrorMessage = err.Error()
+			break
+		}
 		code, err := e.runStep(ctx, sender, offer, state, step)
 		exitCode, hasExit = code, true
 		if err != nil {
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				final = agentv1.RunAttemptState_RUN_ATTEMPT_STATE_TIMED_OUT
+				state.ErrorCode = "timed_out"
+				state.ErrorMessage = err.Error()
+				break
 			} else if errors.Is(ctx.Err(), context.Canceled) {
 				final = agentv1.RunAttemptState_RUN_ATTEMPT_STATE_CANCELLED
+				state.ErrorCode = "cancelled"
+				state.ErrorMessage = err.Error()
+				break
+			}
+
+			var exitErr *exec.ExitError
+			if step.ContinueOnError && errors.As(err, &exitErr) {
+				e.log.Info("ignoring non-zero process exit due to continue-on-error policy",
+					"runId", offer.RunId,
+					"attemptId", offer.AttemptId,
+					"stepId", step.StepId,
+					"exitCode", code)
+				continue
 			} else {
 				final = agentv1.RunAttemptState_RUN_ATTEMPT_STATE_FAILED
-			}
-			state.ErrorCode = "process_failed"
-			state.ErrorMessage = err.Error()
-			if !step.ContinueOnError {
-				break
+				state.ErrorCode = "process_failed"
+				state.ErrorMessage = err.Error()
+				if !step.ContinueOnError {
+					break
+				}
 			}
 		}
 	}
 	if final == agentv1.RunAttemptState_RUN_ATTEMPT_STATE_UNSPECIFIED {
 		final = agentv1.RunAttemptState_RUN_ATTEMPT_STATE_SUCCEEDED
 	}
-	sendState(final, "", nil)
+	if err := sendState(final, "", nil); err != nil {
+		final = agentv1.RunAttemptState_RUN_ATTEMPT_STATE_FAILED
+		state.ErrorCode = "frame_send_failed"
+		state.ErrorMessage = err.Error()
+		state.State = final
+		state.ProcessKnownRunning = false
+	}
 	state.ExitCode = exitCode
 	state.HasExitCode = hasExit
 	_ = e.store.WriteState(*state)
-	completed := &agentv1.RunCompleted{
-		RunId:              offer.RunId,
-		AttemptId:          offer.AttemptId,
-		PlanDigestSha256:   offer.PlanDigestSha256,
-		TerminalState:      final,
-		ExitCode:           exitCode,
-		HasExitCode:        hasExit,
-		CompletedAt:        timestamppb.Now(),
-		FinalEventSequence: state.HighestEventSeq,
-	}
-	if final != agentv1.RunAttemptState_RUN_ATTEMPT_STATE_SUCCEEDED {
-		completed.Error = tapError(state.ErrorCode, state.ErrorMessage, false)
-	}
-	_ = sender.Send(&agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunCompleted{RunCompleted: completed}})
+	e.sendTerminalFailure(sender, offer, state, final, exitCode, hasExit)
 }
 
 func (e *Engine) runStep(ctx context.Context, sender Sender, offer *agentv1.RunOffer, state *runtimefs.State, step *agentv1.RunStep) (int32, error) {
@@ -218,6 +246,7 @@ func (e *Engine) runStep(ctx context.Context, sender Sender, offer *agentv1.RunO
 	if exe == "" {
 		return 0, fmt.Errorf("process.v1 requires executable")
 	}
+	exe = resolveExecutable(exe)
 	args := stringSliceParam(params, "arguments")
 	wd := stringParam(params, "workingDirectory")
 	if wd == "" {
@@ -255,9 +284,17 @@ func (e *Engine) runStep(ctx context.Context, sender Sender, offer *agentv1.RunO
 		}
 	}()
 	var wg sync.WaitGroup
+	sendError := make(chan error, 1)
+	reportSendError := func(err error) {
+		select {
+		case sendError <- err:
+		default:
+		}
+		cancel()
+	}
 	wg.Add(2)
-	go e.copyOutput(&wg, sender, offer, state, step.StepId, agentv1.OutputStream_OUTPUT_STREAM_STDOUT, stdout)
-	go e.copyOutput(&wg, sender, offer, state, step.StepId, agentv1.OutputStream_OUTPUT_STREAM_STDERR, stderr)
+	go e.copyOutput(&wg, sender, offer, state, step.StepId, agentv1.OutputStream_OUTPUT_STREAM_STDOUT, stdout, reportSendError)
+	go e.copyOutput(&wg, sender, offer, state, step.StepId, agentv1.OutputStream_OUTPUT_STREAM_STDERR, stderr, reportSendError)
 	err = command.Wait()
 	close(done)
 	wg.Wait()
@@ -265,13 +302,18 @@ func (e *Engine) runStep(ctx context.Context, sender Sender, offer *agentv1.RunO
 	if command.ProcessState != nil {
 		exitCode = int32(command.ProcessState.ExitCode())
 	}
+	select {
+	case sendErr := <-sendError:
+		return exitCode, fmt.Errorf("failed to send run output: %w", sendErr)
+	default:
+	}
 	if err != nil {
 		return exitCode, err
 	}
 	return exitCode, nil
 }
 
-func (e *Engine) copyOutput(wg *sync.WaitGroup, sender Sender, offer *agentv1.RunOffer, state *runtimefs.State, stepID string, stream agentv1.OutputStream, reader io.Reader) {
+func (e *Engine) copyOutput(wg *sync.WaitGroup, sender Sender, offer *agentv1.RunOffer, state *runtimefs.State, stepID string, stream agentv1.OutputStream, reader io.Reader, reportSendError func(error)) {
 	defer wg.Done()
 	scanner := bufio.NewScanner(reader)
 	buf := make([]byte, 64*1024)
@@ -296,8 +338,42 @@ func (e *Engine) copyOutput(wg *sync.WaitGroup, sender Sender, offer *agentv1.Ru
 			Data:           data,
 		}
 		_ = e.store.AppendOutput(out)
-		_ = sender.Send(&agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunOutput{RunOutput: out}})
+		if err := e.sendFrame(sender, &agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunOutput{RunOutput: out}}, "RunOutput", offer.RunId, offer.AttemptId); err != nil {
+			reportSendError(err)
+			return
+		}
 	}
+	if err := scanner.Err(); err != nil {
+		e.log.Warn("failed to scan process output stream", "error", err, "runId", offer.RunId, "attemptId", offer.AttemptId, "stepId", stepID, "stream", stream.String())
+	}
+}
+
+func (e *Engine) sendTerminalFailure(sender Sender, offer *agentv1.RunOffer, state *runtimefs.State, final agentv1.RunAttemptState, exitCode int32, hasExit bool) {
+	completed := &agentv1.RunCompleted{
+		RunId:              offer.RunId,
+		AttemptId:          offer.AttemptId,
+		PlanDigestSha256:   offer.PlanDigestSha256,
+		TerminalState:      final,
+		ExitCode:           exitCode,
+		HasExitCode:        hasExit,
+		CompletedAt:        timestamppb.Now(),
+		FinalEventSequence: state.HighestEventSeq,
+	}
+	if final != agentv1.RunAttemptState_RUN_ATTEMPT_STATE_SUCCEEDED {
+		completed.Error = tapError(state.ErrorCode, state.ErrorMessage, false)
+	}
+	if err := e.sendFrame(sender, &agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunCompleted{RunCompleted: completed}}, "RunCompleted", offer.RunId, offer.AttemptId); err != nil {
+		e.log.Error("failed to send terminal run completion", "error", err, "runId", offer.RunId, "attemptId", offer.AttemptId)
+	}
+}
+
+func (e *Engine) sendFrame(sender Sender, frame *agentv1.AgentFrame, frameType, runID, attemptID string) error {
+	if err := sender.Send(frame); err != nil {
+		e.log.Error("failed to send agent frame", "error", err, "frameType", frameType, "runId", runID, "attemptId", attemptID)
+		return err
+	}
+
+	return nil
 }
 
 func sortedSteps(steps []*agentv1.RunStep) []*agentv1.RunStep {

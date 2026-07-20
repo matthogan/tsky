@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.IO;
+using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Tsky.Agent.V1;
 
@@ -63,13 +66,13 @@ public sealed class RemoteControlPlaneService
         };
 
         var parameters = new Struct();
-        parameters.Fields["runner"] = Value.ForString(task.Runner ?? "exe");
-        parameters.Fields["commandLine"] = Value.ForString(task.CommandLine ?? string.Empty);
-        parameters.Fields["workingDirectory"] = Value.ForString(task.WorkingDirectory ?? string.Empty);
-
-        foreach (var pair in task.Env)
+        if (!TryBuildProcessV1Parameters(task, parameters, out var commandError))
         {
-            parameters.Fields[$"env:{pair.Key}"] = Value.ForString(pair.Value ?? string.Empty);
+            return new RemoteDispatchReceipt
+            {
+                Dispatched = false,
+                Message = commandError
+            };
         }
 
         var step = new RunStep
@@ -81,9 +84,7 @@ public sealed class RemoteControlPlaneService
             ContinueOnError = task.IgnoreExitCode,
             Command = new ExecutorCommand
             {
-                ExecutorId = string.Equals(task.Runner, "powershell", StringComparison.OrdinalIgnoreCase)
-                    ? "powershell.v1"
-                    : "process.v1",
+                ExecutorId = "process.v1",
                 ExecutorVersion = "1",
                 Parameters = parameters
             }
@@ -113,7 +114,7 @@ public sealed class RemoteControlPlaneService
             OfferId = offerId,
             RunId = runId,
             AttemptId = attemptId,
-            PlanDigestSha256 = Google.Protobuf.ByteString.CopyFrom(Guid.NewGuid().ToByteArray()),
+            PlanDigestSha256 = ByteString.CopyFrom(ComputePlanDigest(runPlan)),
             Plan = runPlan,
             OfferExpiresAt = Timestamp.FromDateTime(DateTime.UtcNow.AddMinutes(2)),
             DisconnectPolicy = DisconnectPolicy.ContinueAndReport
@@ -205,5 +206,101 @@ public sealed class RemoteControlPlaneService
             ExecutionTargetMode.Automatic => "No eligible online agent is currently available.",
             _ => "No remote execution target was selected."
         };
+    }
+
+    private static bool TryBuildProcessV1Parameters(LauncherTask task, Struct parameters, out string error)
+    {
+        error = string.Empty;
+
+        var runner = TaskProcessStartInfoFactory.NormalizeRunner(task.Runner);
+        var commandLine = task.CommandLine?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(commandLine))
+        {
+            error = "Remote dispatch requires a non-empty commandLine.";
+            return false;
+        }
+
+        string executable;
+        List<string> arguments;
+        switch (runner)
+        {
+            case "exe":
+                var tokens = WindowsCommandLineParser.Tokenize(commandLine);
+                if (tokens.Count == 0)
+                {
+                    error = "Runner 'exe' requires an executable in commandLine.";
+                    return false;
+                }
+
+                executable = tokens[0];
+                arguments = tokens.Skip(1).ToList();
+                break;
+
+            case "cmd":
+                executable = "cmd.exe";
+                arguments = ["/c", commandLine];
+                break;
+
+            case "powershell":
+                executable = "pwsh";
+                arguments = ["-ExecutionPolicy", "Bypass", "-Command", commandLine];
+                break;
+
+            case "python":
+                executable = "python";
+                arguments = WindowsCommandLineParser.Tokenize(commandLine);
+                break;
+
+            default:
+                error = "Runner must be one of: exe, cmd, powershell, python.";
+                return false;
+        }
+
+        parameters.Fields["executable"] = Value.ForString(executable);
+        parameters.Fields["arguments"] = new Value
+        {
+            ListValue = new ListValue
+            {
+                Values = { arguments.Select(Value.ForString) }
+            }
+        };
+
+        if (!string.IsNullOrWhiteSpace(task.WorkingDirectory))
+        {
+            parameters.Fields["workingDirectory"] = Value.ForString(task.WorkingDirectory.Trim());
+        }
+
+        if (task.Env.Count > 0)
+        {
+            var environment = new Struct();
+            foreach (var pair in task.Env)
+            {
+                if (string.IsNullOrWhiteSpace(pair.Key))
+                {
+                    continue;
+                }
+
+                environment.Fields[pair.Key.Trim()] = Value.ForString(pair.Value ?? string.Empty);
+            }
+
+            if (environment.Fields.Count > 0)
+            {
+                parameters.Fields["environment"] = Value.ForStruct(environment);
+            }
+        }
+
+        return true;
+    }
+
+    internal static byte[] ComputePlanDigest(RunPlan plan)
+    {
+        using var stream = new MemoryStream();
+        var output = new CodedOutputStream(stream, leaveOpen: true)
+        {
+            Deterministic = true
+        };
+        plan.WriteTo(output);
+        output.Flush();
+        return SHA256.HashData(stream.ToArray());
     }
 }

@@ -1,14 +1,15 @@
 schemaVersion: 1
 controller:
-    url: http://localhost:7341
+    url: https://XEON:7341
     controllerId: ctl_801bbc237b40a8b3699231e7
-    tlsPinnedSha256: ""
+    tlsCaCertPath: C:/code/github/tsky/.temp/gateway-ca.pem
+    tlsPinnedSha256: "sha256/570bf83e41b8eb439a6a230a4f179831cf8db7a24c78b6bad690f00394f43e5b"
 identity:
     agentId: agt_364b110822f29dc6b2e71b80
     keyId: key_65cf3f48066a234843ec6bf8
-    keyReference: file://C:\Users\admin\AppData\Local\tsky\Agents\AgentLocal\runtime\identity\agent-key.pem
+    keyReference: C:/Users/admin/AppData/Local/tsky/Agents/AgentLocal/runtime/identity/agent-key.pem
 runtime:
-    root: C:\Users\admin\AppData\Local\tsky\Agents\AgentLocal\runtime
+    root: C:/Users/admin/AppData/Local/tsky/Agents/AgentLocal/runtime
     completedRunRetentionDays: 30
     outputRetentionDays: 14
     artifactRetentionDays: 7
@@ -22,7 +23,8 @@ execution:
     allowedExecutors:
         - process.v1
     allowedWorkingRoots:
-        - C:\Users\admin\AppData\Local\tsky\Agents\AgentLocal\runtime\work
+        - C:/Users/admin/AppData/Local/tsky/Agents/AgentLocal/runtime/work
+        - C:/code
     allowShellExecutor: false
 connection:
     heartbeatSeconds: 10

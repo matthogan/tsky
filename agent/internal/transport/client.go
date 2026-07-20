@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +68,10 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.cfg.Controller.URL == "" {
 		return fmt.Errorf("controller.url is required")
 	}
+	caSource := "(system trust store)"
+	if caPath := strings.TrimSpace(c.cfg.Controller.TLSCACertPath); caPath != "" {
+		caSource = caPath
+	}
 	minBackoff := time.Duration(c.cfg.Connection.ReconnectMinimumSeconds) * time.Second
 	maxBackoff := time.Duration(c.cfg.Connection.ReconnectMaximumSeconds) * time.Second
 	backoff := minBackoff
@@ -75,7 +81,7 @@ func (c *Client) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 		attempt++
-		c.log.Info("TAP connection attempt", "attempt", attempt, "controller", c.cfg.Controller.URL)
+		c.log.Info("TAP connection attempt", "attempt", attempt, "controller", c.cfg.Controller.URL, "caCertPath", caSource)
 		err := c.connectOnce(ctx)
 		if err == nil || ctx.Err() != nil {
 			return err
@@ -109,7 +115,7 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) connectOnce(ctx context.Context) error {
-	target, tlsConfig, err := grpcTarget(c.cfg.Controller.URL, c.cfg.Controller.TLSPinnedSHA256)
+	target, tlsConfig, err := grpcTarget(c.cfg.Controller.URL, c.cfg.Controller.TLSPinnedSHA256, c.cfg.Controller.TLSCACertPath)
 	if err != nil {
 		return err
 	}
@@ -275,10 +281,40 @@ func (c *Client) receiver(ctx context.Context, stream agentv1.AgentControl_Conne
 			c.engine.HandleOffer(ctx, c, body.RunOffer)
 		case *agentv1.ControllerFrame_CancelRun:
 			c.engine.Cancel(body.CancelRun.RunId, body.CancelRun.AttemptId)
+		case *agentv1.ControllerFrame_EventAcknowledgement:
+			attemptCount := len(body.EventAcknowledgement.GetAttempts())
+			runID := ""
+			attemptID := ""
+			if attemptCount > 0 {
+				runID = body.EventAcknowledgement.GetAttempts()[0].GetRunId()
+				attemptID = body.EventAcknowledgement.GetAttempts()[0].GetAttemptId()
+			}
+			c.log.Warn(
+				"controller frame type not implemented by agent",
+				"frameType", "EventAcknowledgement",
+				"attemptCount", attemptCount,
+				"firstRunId", runID,
+				"firstAttemptId", attemptID,
+			)
 		case *agentv1.ControllerFrame_ReconciliationRequest:
 			_ = c.Send(&agentv1.AgentFrame{Header: tapproto.Header(body.ReconciliationRequest.ReconciliationId), Body: &agentv1.AgentFrame_ReconciliationResponse{ReconciliationResponse: c.reconcile(body.ReconciliationRequest)}})
 		case *agentv1.ControllerFrame_DrainRequest:
 			c.draining = body.DrainRequest.Draining
+		case *agentv1.ControllerFrame_ArtifactUploadGrant:
+			c.log.Warn(
+				"controller frame type not implemented by agent",
+				"frameType", "ArtifactUploadGrant",
+				"artifactId", body.ArtifactUploadGrant.GetArtifactId(),
+				"runId", body.ArtifactUploadGrant.GetRunId(),
+				"attemptId", body.ArtifactUploadGrant.GetAttemptId(),
+			)
+		case *agentv1.ControllerFrame_PolicyNotice:
+			c.log.Warn(
+				"controller frame type not implemented by agent",
+				"frameType", "PolicyNotice",
+				"code", body.PolicyNotice.GetCode(),
+				"message", body.PolicyNotice.GetMessage(),
+			)
 		case *agentv1.ControllerFrame_Ping:
 			_ = c.Send(&agentv1.AgentFrame{Header: tapproto.Header(body.Ping.PingId), Body: &agentv1.AgentFrame_Pong{Pong: &agentv1.ProtocolPong{PingId: body.Ping.PingId}}})
 		case *agentv1.ControllerFrame_ProtocolError:
@@ -308,7 +344,7 @@ func (c *Client) reconcile(req *agentv1.ReconciliationRequest) *agentv1.Reconcil
 	return &agentv1.ReconciliationResponse{ReconciliationId: req.ReconciliationId, Attempts: attempts}
 }
 
-func grpcTarget(rawURL, pin string) (string, *tls.Config, error) {
+func grpcTarget(rawURL, pin, caCertPath string) (string, *tls.Config, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", nil, err
@@ -318,9 +354,19 @@ func grpcTarget(rawURL, pin string) (string, *tls.Config, error) {
 	}
 	switch u.Scheme {
 	case "http":
+		if strings.TrimSpace(caCertPath) != "" {
+			return "", nil, fmt.Errorf("controller.tlsCaCertPath requires controller.url to use https")
+		}
 		return u.Host, nil, nil
 	case "https":
 		cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}
+		if strings.TrimSpace(caCertPath) != "" {
+			rootCAs, err := loadRootCAsFromPEM(caCertPath)
+			if err != nil {
+				return "", nil, err
+			}
+			cfg.RootCAs = rootCAs
+		}
 		if pin != "" {
 			expected := normalizePin(pin)
 			cfg.VerifyConnection = func(cs tls.ConnectionState) error {
@@ -338,6 +384,20 @@ func grpcTarget(rawURL, pin string) (string, *tls.Config, error) {
 	default:
 		return "", nil, fmt.Errorf("unsupported controller URL scheme %q", u.Scheme)
 	}
+}
+
+func loadRootCAsFromPEM(path string) (*x509.CertPool, error) {
+	pemData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read controller.tlsCaCertPath %q: %w", path, err)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemData) {
+		return nil, fmt.Errorf("controller.tlsCaCertPath %q does not contain valid PEM certificates", path)
+	}
+
+	return pool, nil
 }
 
 func jitter(d time.Duration) time.Duration {

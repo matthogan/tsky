@@ -1,0 +1,2 @@
+obj\Debug\net8.0-windows\tsky\agent\v1/Errors.cs: C:/Users/admin/.nuget/packages/grpc.tools/2.71.0/build/native/include/google/protobuf/duration.proto\
+ ../../protocol/tsky/agent/v1/errors.proto

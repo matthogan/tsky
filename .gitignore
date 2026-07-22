@@ -1,6 +1,10 @@
 # Build artifacts
-/bin/
-/obj/
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+**/[Bb]in/
+**/[Oo]bj/
 /artifacts/
 
 # Visual Studio

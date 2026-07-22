@@ -22,9 +22,11 @@ public static class TaskVariableService
 
     public static IReadOnlyList<TaskVariableUsage> GetGroupVariableUsages(
         LauncherTask task,
-        IReadOnlyDictionary<string, string> groupVariables)
+        IReadOnlyDictionary<string, string> groupVariables,
+        bool includeDataflowFields = true)
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var inputNames = GetTaskInputNames(task);
         CollectPlaceholderNames(task.Name, names);
         CollectPlaceholderNames(task.Description, names);
         CollectPlaceholderNames(task.Group, names);
@@ -34,9 +36,17 @@ public static class TaskVariableService
         CollectPlaceholderNames(task.ImportedFromFile, names);
         CollectPlaceholderNames(task.ImportedAtUtc, names);
         CollectPlaceholderNames(task.Env, names);
-        CollectPlaceholderNames(task.Inputs, names);
-        CollectPlaceholderNames(task.InputBindings, names);
-        CollectPlaceholderNames(task.Outputs, names);
+
+        if (includeDataflowFields)
+        {
+            CollectPlaceholderNames(task.Inputs, names);
+            CollectPlaceholderNames(task.InputBindings, names);
+            CollectPlaceholderNames(task.Outputs, names);
+        }
+
+        // A placeholder that matches an input name is considered dataflow input usage,
+        // not a group variable, unless a group variable with that exact name exists.
+        names.RemoveWhere(name => inputNames.Contains(name) && !groupVariables.ContainsKey(name));
 
         return names
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
@@ -260,5 +270,28 @@ public static class TaskVariableService
             CollectPlaceholderNames(pair.Key, names);
             CollectPlaceholderNames(pair.Value, names);
         }
+    }
+
+    private static HashSet<string> GetTaskInputNames(LauncherTask task)
+    {
+        var inputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var inputName in task.Inputs.Keys)
+        {
+            if (!string.IsNullOrWhiteSpace(inputName))
+            {
+                inputNames.Add(inputName.Trim());
+            }
+        }
+
+        foreach (var bindingName in task.InputBindings.Keys)
+        {
+            if (!string.IsNullOrWhiteSpace(bindingName))
+            {
+                inputNames.Add(bindingName.Trim());
+            }
+        }
+
+        return inputNames;
     }
 }

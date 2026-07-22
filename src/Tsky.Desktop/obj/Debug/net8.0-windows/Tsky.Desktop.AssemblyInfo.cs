@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Tsky.Desktop")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+2d1a83690af64fbcefa1a832b7f30678c5cce60f")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+8084a21678b1c7ab62b0a4fffe81870d41ad2785")]
 [assembly: System.Reflection.AssemblyProductAttribute("Tsky.Desktop")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Tsky.Desktop")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

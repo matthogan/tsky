@@ -40,8 +40,6 @@ public partial class TaskFormWindow : Window
                  {
                      NameTextBox,
                      DescriptionTextBox,
-                     TargetAgentIdTextBox,
-                     TargetPoolIdTextBox,
                      CommandLineTextBox,
                      WorkingDirectoryTextBox,
                      TimeoutSecondsTextBox,
@@ -61,10 +59,6 @@ public partial class TaskFormWindow : Window
         GroupComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
         GroupComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
         GroupComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
-
-        ExecutionTargetModeComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
-        ExecutionTargetModeComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
-        ExecutionTargetModeComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
     }
 
     private void InitializeGroupChoices(IEnumerable<string>? existingGroups, string? defaultGroupName)
@@ -152,25 +146,6 @@ public partial class TaskFormWindow : Window
             return;
         }
 
-        var executionTargetMode = (ExecutionTargetModeComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString()?.Trim().ToLowerInvariant()
-            ?? "local";
-        var targetAgentId = string.IsNullOrWhiteSpace(TargetAgentIdTextBox.Text) ? null : TargetAgentIdTextBox.Text.Trim();
-        var targetPoolId = string.IsNullOrWhiteSpace(TargetPoolIdTextBox.Text) ? null : TargetPoolIdTextBox.Text.Trim();
-
-        if (executionTargetMode == "agent" && string.IsNullOrWhiteSpace(targetAgentId))
-        {
-            AppMessageBox.Show(this, "Target Agent is required when execution target mode is 'agent'.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
-            TargetAgentIdTextBox.Focus();
-            return;
-        }
-
-        if (executionTargetMode == "pool" && string.IsNullOrWhiteSpace(targetPoolId))
-        {
-            AppMessageBox.Show(this, "Target Pool is required when execution target mode is 'pool'.", "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
-            TargetPoolIdTextBox.Focus();
-            return;
-        }
-
         var runner = (RunnerComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "exe";
 
         Task = new LauncherTask
@@ -178,9 +153,6 @@ public partial class TaskFormWindow : Window
             Name = NameTextBox.Text.Trim(),
             Description = string.IsNullOrWhiteSpace(DescriptionTextBox.Text) ? null : DescriptionTextBox.Text.Trim(),
             Group = string.IsNullOrWhiteSpace(GroupComboBox.Text) ? "General" : GroupComboBox.Text.Trim(),
-            ExecutionTargetMode = executionTargetMode,
-            TargetAgentId = targetAgentId,
-            TargetPoolId = targetPoolId,
             Runner = runner,
             CommandLine = CommandLineTextBox.Text.Trim(),
             WorkingDirectory = WorkingDirectoryTextBox.Text.Trim(),

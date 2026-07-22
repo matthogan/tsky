@@ -503,6 +503,25 @@ public partial class MainWindow : Window
         public override string ToString() => DisplayText;
     }
 
+    private sealed class AgentHistoryListItem
+    {
+        public required AgentDefinition Agent { get; init; }
+
+        public string DisplayText
+        {
+            get
+            {
+                var lastSeenText = Agent.LastSeenAtUtc.HasValue
+                    ? Agent.LastSeenAtUtc.Value.ToLocalTime().ToString("HH:mm:ss")
+                    : "n/a";
+
+                return $"{Agent.EffectiveDisplayName}  active:{Agent.ActiveRuns}  ok:{Agent.SuccessfulRuns}  err:{Agent.FailedRuns}  seen:{lastSeenText}";
+            }
+        }
+
+        public override string ToString() => DisplayText;
+    }
+
     private static readonly Color[] PastelPalette =
     [
         Color.FromRgb(0x56, 0xCC, 0xF2),
@@ -569,6 +588,7 @@ public partial class MainWindow : Window
         TaskGraphCanvas.PreviewMouseMove += TaskGraphCanvas_PreviewMouseMove;
         TaskGraphCanvas.PreviewMouseLeftButtonUp += TaskGraphCanvas_PreviewMouseLeftButtonUp;
         TaskGraphCanvas.LostMouseCapture += TaskGraphCanvas_LostMouseCapture;
+        OutputGridSplitter.DragCompleted += OutputGridSplitter_DragCompleted;
         TaskWorkspaceSurface.MouseRightButtonUp += TaskWorkspaceSurface_MouseRightButtonUp;
         PreviewMouseLeftButtonUp += MainWindow_PreviewMouseLeftButtonUp;
         SizeChanged += (_, _) => ScheduleConnectorRefresh();
@@ -762,6 +782,12 @@ public partial class MainWindow : Window
         _agentStatusRefreshTimer.Stop();
         CommandManager.RemovePreviewExecutedHandler(this, CommandManager_PreviewExecuted);
         _ = _agentGatewayHost.StopAsync();
+        PersistUiState();
+    }
+
+    private void OutputGridSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        CacheCurrentOutputHeightForSelectedGroup();
         PersistUiState();
     }
 
@@ -3222,6 +3248,7 @@ public partial class MainWindow : Window
 
     private void SelectGroup(string groupName)
     {
+        CacheCurrentOutputHeightForSelectedGroup();
         SelectTasksView();
         DebugTraceLog.Write($"[Group] SelectGroup requested='{groupName}', previous='{_selectedGroupName ?? "(none)"}'");
         _selectedGroupName = groupName;
@@ -3468,6 +3495,7 @@ public partial class MainWindow : Window
         }
 
         var inAgentView = _isAgentViewSelected;
+        OutputPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         InputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         OutputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         VariablesPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
@@ -3833,6 +3861,26 @@ public partial class MainWindow : Window
         });
     }
 
+    private void CacheCurrentOutputHeightForSelectedGroup()
+    {
+        var selectedGroupKey = NormalizeGroupName(_selectedGroupName);
+        if (string.IsNullOrWhiteSpace(selectedGroupKey))
+        {
+            return;
+        }
+
+        var currentHeight = OutputRowDefinition.ActualHeight > 0
+            ? OutputRowDefinition.ActualHeight
+            : OutputRowDefinition.Height.Value;
+
+        if (currentHeight <= 0)
+        {
+            return;
+        }
+
+        _groupOutputHeights[selectedGroupKey] = Math.Max(MinOutputHeight, currentHeight);
+    }
+
     private void AnimateRowHeight(RowDefinition rowDefinition, double targetHeight, Action? onCompleted = null)
     {
         const double epsilon = 0.2;
@@ -3986,6 +4034,10 @@ public partial class MainWindow : Window
             {
                 RefreshAgentsDispatchPane();
             }
+            else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
+            {
+                RefreshHistoryView();
+            }
         }
         finally
         {
@@ -3995,6 +4047,25 @@ public partial class MainWindow : Window
 
     private void RefreshHistoryView()
     {
+        if (_isAgentViewSelected)
+        {
+            var agentItems = _agentRegistry.Agents
+                .Where(agent => agent.ActiveRuns > 0
+                    || agent.SuccessfulRuns > 0
+                    || agent.FailedRuns > 0
+                    || !string.IsNullOrWhiteSpace(agent.LastSeenSummary)
+                    || agent.LastSeenAtUtc.HasValue)
+                .OrderByDescending(agent => agent.LastSeenAtUtc ?? DateTime.MinValue)
+                .ThenBy(agent => agent.EffectiveDisplayName, StringComparer.OrdinalIgnoreCase)
+                .Select(agent => new AgentHistoryListItem { Agent = agent })
+                .ToList();
+
+            HistoryListBox.ItemsSource = agentItems;
+            UpdateHistoryPreview();
+            UpdateHistoryActionState();
+            return;
+        }
+
         IEnumerable<TaskRunHistoryEntry> filtered = _runHistory;
 
         if (!string.IsNullOrWhiteSpace(_selectedGroupName))
@@ -4065,6 +4136,50 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isAgentViewSelected)
+        {
+            var selectedAgentItems = HistoryListBox.SelectedItems.OfType<AgentHistoryListItem>().ToList();
+            if (selectedAgentItems.Count == 0)
+            {
+                if (HistoryListBox.Items.Count == 0)
+                {
+                    HistoryDetailsTextBox.Text = "No stored agent run history state is available yet.";
+                    return;
+                }
+
+                HistoryDetailsTextBox.Text = "Select an agent history item to view details.";
+                return;
+            }
+
+            var firstAgent = selectedAgentItems[0].Agent;
+            var agentBuilder = new StringBuilder();
+
+            if (selectedAgentItems.Count > 1)
+            {
+                agentBuilder.AppendLine($"{selectedAgentItems.Count} items selected. Showing details for the first selected item.");
+                agentBuilder.AppendLine();
+            }
+
+            agentBuilder.AppendLine($"Agent: {firstAgent.EffectiveDisplayName}");
+            agentBuilder.AppendLine($"Agent ID: {firstAgent.AgentId}");
+            agentBuilder.AppendLine($"State: {firstAgent.State}");
+            agentBuilder.AppendLine($"Active runs: {firstAgent.ActiveRuns}");
+            agentBuilder.AppendLine($"Successful runs: {firstAgent.SuccessfulRuns}");
+            agentBuilder.AppendLine($"Failed runs: {firstAgent.FailedRuns}");
+            agentBuilder.AppendLine($"Last seen: {(firstAgent.LastSeenAtUtc.HasValue ? firstAgent.LastSeenAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "n/a")}");
+
+            if (!string.IsNullOrWhiteSpace(firstAgent.LastSeenSummary))
+            {
+                agentBuilder.AppendLine();
+                agentBuilder.AppendLine("Last seen summary");
+                agentBuilder.AppendLine(firstAgent.LastSeenSummary);
+            }
+
+            HistoryDetailsTextBox.Text = agentBuilder.ToString().TrimEnd();
+            HistoryDetailsTextBox.ScrollToHome();
+            return;
+        }
+
         var selectedItems = HistoryListBox.SelectedItems.OfType<HistoryListItem>().ToList();
         if (selectedItems.Count == 0)
         {
@@ -4131,9 +4246,8 @@ public partial class MainWindow : Window
 
     private void UpdateHistoryActionState()
     {
-        var selectedItems = HistoryListBox.SelectedItems.OfType<HistoryListItem>().ToList();
-        var hasSelection = selectedItems.Count > 0;
-        var hasReplayableSelection = hasSelection;
+        var hasSelection = HistoryListBox.SelectedItems.Count > 0;
+        var hasReplayableSelection = HistoryListBox.SelectedItems.OfType<HistoryListItem>().Any();
 
         ReplaySelectedButton.IsEnabled = hasReplayableSelection && !_isReplayingHistoryBatch;
         ClearHistorySelectionButton.IsEnabled = hasSelection;
@@ -4408,7 +4522,10 @@ public partial class MainWindow : Window
             };
             bottomGlyphs.Children.Add(orderText);
 
-            var variableUsages = TaskVariableService.GetGroupVariableUsages(task, GetGroupVariablesForGroup(task.Group));
+            var variableUsages = TaskVariableService.GetGroupVariableUsages(
+                task,
+                GetGroupVariablesForGroup(task.Group),
+                includeDataflowFields: false);
             if (variableUsages.Count > 0)
             {
                 bottomGlyphs.Children.Add(new TextBlock
@@ -9837,7 +9954,12 @@ public partial class MainWindow : Window
         }
 
         var taskJson = TaskConfiguration.SerializeTask(selectedTask);
-        var editorWindow = new TaskEditorWindow(taskJson) { Owner = this };
+        var existingGroups = _currentConfiguration.Tasks
+            .Select(task => NormalizeGroupName(task.Group))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var editorWindow = new TaskEditorWindow(taskJson, existingGroups) { Owner = this };
 
         if (editorWindow.ShowDialog() != true)
         {

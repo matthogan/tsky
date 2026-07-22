@@ -155,4 +155,58 @@ public sealed class TaskVariableServiceTests
             Environment.SetEnvironmentVariable(variableName, previousValue);
         }
     }
+
+    [Fact]
+    public void GetGroupVariableUsages_InputPlaceholderInCommandLine_IsNotReportedAsVariable()
+    {
+        var task = new LauncherTask
+        {
+            Name = "Extract Prices",
+            Group = "JSON Dataflow Example",
+            Runner = "powershell",
+            CommandLine = "'${Phone.Data}' | ConvertFrom-Json",
+            Inputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Phone.Data"] = "[]"
+            },
+            InputBindings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Phone.Data"] = "port:Phone.Data"
+            }
+        };
+
+        var usages = TaskVariableService.GetGroupVariableUsages(
+            task,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
+        Assert.DoesNotContain(usages, usage => usage.Name.Equals("Phone.Data", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void GetGroupVariableUsages_InputPlaceholderInCommandLine_WithMatchingGroupVariable_IsReportedAsVariable()
+    {
+        var task = new LauncherTask
+        {
+            Name = "Extract Prices",
+            Group = "JSON Dataflow Example",
+            Runner = "powershell",
+            CommandLine = "'${Phone.Data}' | ConvertFrom-Json",
+            Inputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Phone.Data"] = "[]"
+            }
+        };
+
+        var variables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Phone.Data"] = "override"
+        };
+
+        var usages = TaskVariableService.GetGroupVariableUsages(task, variables);
+
+        var usage = Assert.Single(usages, item => item.Name.Equals("Phone.Data", StringComparison.OrdinalIgnoreCase));
+        Assert.True(usage.IsDefined);
+        Assert.True(usage.HasValue);
+        Assert.Equal("override", usage.Value);
+    }
 }

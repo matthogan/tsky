@@ -296,27 +296,6 @@
                         </ComboBox.ItemContainerStyle>
                     </ComboBox>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Execution Target" />
-                    <ComboBox x:Name="ExecutionTargetModeComboBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
-                        <ComboBox.ItemContainerStyle>
-                            <Style TargetType="ComboBoxItem">
-                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
-                                <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
-                                <Setter Property="Padding" Value="8,4" />
-                            </Style>
-                        </ComboBox.ItemContainerStyle>
-                        <ComboBoxItem Content="local" />
-                        <ComboBoxItem Content="agent" />
-                        <ComboBoxItem Content="pool" />
-                        <ComboBoxItem Content="auto" />
-                    </ComboBox>
-
-                    <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Target Agent" />
-                    <TextBox x:Name="TargetAgentIdTextBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" ToolTip="Used when execution target is 'agent'." />
-
-                    <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Target Pool" />
-                    <TextBox x:Name="TargetPoolIdTextBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" ToolTip="Used when execution target is 'pool'." />
-
                     <TextBlock Grid.Row="6" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
                     <ComboBox x:Name="RunnerComboBox" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
                         <ComboBox.ItemContainerStyle>

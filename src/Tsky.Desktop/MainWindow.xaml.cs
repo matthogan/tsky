@@ -251,6 +251,8 @@ public partial class MainWindow : Window
     {
         public required OutputGroupPanelContext HostOutputPanel { get; init; }
 
+        public string? TaskStateKey { get; set; }
+
         public required string BaseTaskName { get; init; }
 
         public required DateTime StartedAtLocal { get; init; }
@@ -4304,7 +4306,7 @@ public partial class MainWindow : Window
 
         if (_isAgentViewSelected)
         {
-            var selectedAgentItems = HistoryListBox.SelectedItems.OfType<AgentHistoryListItem>().ToList();
+            var selectedAgentItems = GetSelectedAgentHistoryItems();
             if (selectedAgentItems.Count == 0)
             {
                 if (HistoryListBox.Items.Count == 0)
@@ -4346,7 +4348,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var selectedItems = HistoryListBox.SelectedItems.OfType<HistoryListItem>().ToList();
+        var selectedItems = GetSelectedTaskHistoryItems();
         if (selectedItems.Count == 0)
         {
             HistoryDetailsTextBox.Text = "Select a history item to view details.";
@@ -4412,12 +4414,46 @@ public partial class MainWindow : Window
 
     private void UpdateHistoryActionState()
     {
-        var hasSelection = HistoryListBox.SelectedItems.Count > 0;
-        var hasReplayableSelection = HistoryListBox.SelectedItems.OfType<HistoryListItem>().Any();
+        var selectedTaskItems = GetSelectedTaskHistoryItems();
+        var selectedAgentItems = GetSelectedAgentHistoryItems();
+        var hasSelection = selectedTaskItems.Count > 0 || selectedAgentItems.Count > 0;
+        var hasReplayableSelection = selectedTaskItems.Count > 0;
 
         ReplaySelectedButton.IsEnabled = hasReplayableSelection && !_isReplayingHistoryBatch;
         ClearHistorySelectionButton.IsEnabled = hasSelection;
 
+    }
+
+    private List<HistoryListItem> GetSelectedTaskHistoryItems()
+    {
+        var selectedItems = HistoryListBox.SelectedItems.OfType<HistoryListItem>().ToList();
+        if (selectedItems.Count > 0)
+        {
+            return selectedItems;
+        }
+
+        if (HistoryListBox.SelectedItem is HistoryListItem singleSelection)
+        {
+            selectedItems.Add(singleSelection);
+        }
+
+        return selectedItems;
+    }
+
+    private List<AgentHistoryListItem> GetSelectedAgentHistoryItems()
+    {
+        var selectedItems = HistoryListBox.SelectedItems.OfType<AgentHistoryListItem>().ToList();
+        if (selectedItems.Count > 0)
+        {
+            return selectedItems;
+        }
+
+        if (HistoryListBox.SelectedItem is AgentHistoryListItem singleSelection)
+        {
+            selectedItems.Add(singleSelection);
+        }
+
+        return selectedItems;
     }
 
     private void ClearHistorySelectionButton_Click(object sender, RoutedEventArgs e)
@@ -4428,8 +4464,7 @@ public partial class MainWindow : Window
 
     private async void ReplaySelectedButton_Click(object sender, RoutedEventArgs e)
     {
-        var selectedEntries = HistoryListBox.SelectedItems
-            .OfType<HistoryListItem>()
+        var selectedEntries = GetSelectedTaskHistoryItems()
             .Select(item => item.Entry)
             .OrderBy(entry => entry.StartedAtUtc)
             .ToList();
@@ -7421,6 +7456,19 @@ public partial class MainWindow : Window
             ? "Cancellation requested. tsky will terminate the process tree."
             : "Cancellation requested. tsky will terminate only the main process.";
         return true;
+    }
+
+    private bool HasActiveCancellationHandle(string taskStateKey)
+    {
+        return _taskExecutionCancellation.ContainsKey(taskStateKey)
+            || _taskRemoteAttempts.ContainsKey(taskStateKey);
+    }
+
+    private bool TryGetTaskByStateKey(string taskStateKey, out LauncherTask task)
+    {
+        task = _currentConfiguration.Tasks.FirstOrDefault(candidate =>
+            string.Equals(GetTaskStateKey(candidate), taskStateKey, StringComparison.OrdinalIgnoreCase))!;
+        return task is not null;
     }
 
     private void UnregisterTaskCancellation(LauncherTask task)
@@ -10453,6 +10501,7 @@ public partial class MainWindow : Window
         var tabName = isReplay ? $"{task.Name} (replay)" : task.Name;
         var tabContext = CreateOutputTab(tabName);
         var outputTextBox = tabContext.OutputTextBox;
+        tabContext.TaskStateKey = GetTaskStateKey(task);
         SetTabRunning(tabContext);
         SetTaskRunState(task, TaskRunState.Running);
         var groupVariables = GetGroupVariablesForGroup(task.Group);
@@ -11309,7 +11358,7 @@ public partial class MainWindow : Window
         closeButton.Click += (_, args) =>
         {
             args.Handled = true;
-            CloseOutputRun(tabContext);
+            TryCloseOutputRun(tabContext);
         };
 
         currentOutputPanel.Runs.Insert(0, tabContext);
@@ -11486,6 +11535,33 @@ public partial class MainWindow : Window
         }
 
         UpdateOutputListPlaceholder(panel);
+    }
+
+    private void TryCloseOutputRun(TaskTabContext runContext)
+    {
+        var taskStateKey = runContext.TaskStateKey;
+        if (string.IsNullOrWhiteSpace(taskStateKey) || !HasActiveCancellationHandle(taskStateKey))
+        {
+            CloseOutputRun(runContext);
+            return;
+        }
+
+        if (!TryGetTaskByStateKey(taskStateKey, out var task))
+        {
+            AppendLog(runContext.OutputTextBox, "Failed to kill process: task definition could not be resolved for this run.");
+            runContext.RunItemExpander.IsExpanded = true;
+            return;
+        }
+
+        if (!TryCancelTaskExecution(task, out var cancelMessage))
+        {
+            AppendLog(runContext.OutputTextBox, $"[{task.Name}] Failed to kill process. {cancelMessage}");
+            runContext.RunItemExpander.IsExpanded = true;
+            return;
+        }
+
+        AppendLog(runContext.OutputTextBox, $"[{task.Name}] {cancelMessage}");
+        CloseOutputRun(runContext);
     }
 
     private Color GetTaskRunAccentColor(string taskName)

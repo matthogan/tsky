@@ -244,3 +244,16 @@ Recommended sequence:
 - Static inspection completed.
 - `dotnet build .\\Tsky.sln --no-restore` could not be run because `dotnet` was not installed or not on `PATH` in this environment.
 - The repository had pre-existing modified and untracked files before this document was created. This assessment does not attempt to classify those changes.
+
+## Quick-Run Checklist (Task Output Close Behavior)
+
+Reference: [docs/task-output-close-ui-regression-test-plan.md](docs/task-output-close-ui-regression-test-plan.md)
+
+- [ ] Build passes (`dotnet build`).
+- [ ] Start a long-running task, click X on its Task Output item while running.
+- [ ] Confirm cancellation message is logged and item closes only after cancel request succeeds.
+- [ ] Run a short task to completion, click X on its Task Output item.
+- [ ] Confirm item closes immediately and no cancellation log line is added.
+- [ ] Reproduce cancellation-failure condition, click X on the active item.
+- [ ] Confirm item remains visible and a failure log line is appended to that same item.
+- [ ] Repeat each scenario once more to confirm behavior is stable.

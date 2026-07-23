@@ -4151,6 +4151,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!ReferenceEquals(e.Source, BottomPaneTabControl))
+        {
+            return;
+        }
+
         var groupKey = NormalizeGroupName(_selectedGroupName);
         var isHistorySelected = ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem);
 

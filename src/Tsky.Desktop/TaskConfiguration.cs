@@ -408,6 +408,7 @@ public sealed class TaskConfiguration
             || !TryValidateStringProperty(task, "executionTargetMode", out error, allowNull: true)
             || !TryValidateStringProperty(task, "targetAgentId", out error, allowNull: true)
             || !TryValidateStringProperty(task, "targetPoolId", out error, allowNull: true)
+            || !TryValidateStringProperty(task, "resultEvaluatorScript", out error, allowNull: true)
             || !TryValidateStringProperty(task, "commandLine", out error)
             || !TryValidateStringProperty(task, "runner", out error)
             || !TryValidateStringProperty(task, "workingDirectory", out error)
@@ -901,6 +902,8 @@ public sealed class LauncherTask
     public string? TargetAgentId { get; set; }
 
     public string? TargetPoolId { get; set; }
+
+    public string? ResultEvaluatorScript { get; set; }
 
     public string CommandLine { get; set; } = string.Empty;
 

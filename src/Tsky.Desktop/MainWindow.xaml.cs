@@ -18,8 +18,11 @@ using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using System.Windows.Automation;
+using ICSharpCode.AvalonEdit.Highlighting;
+using ICSharpCode.AvalonEdit.Highlighting.Xshd;
 using Microsoft.Win32;
 using Tsky.Agent.V1;
+using System.Xml;
 using Brush = System.Windows.Media.Brush;
 using Color = System.Windows.Media.Color;
 using RichTextBox = System.Windows.Controls.RichTextBox;
@@ -152,6 +155,33 @@ public partial class MainWindow : Window
     private const int MaxUiPublishedValueChars = 1500;
     private const int MaxUiStreamLineChars = 6000;
     private const int MaxUiOutputCharsPerRun = 300000;
+    private const string DefaultResultEvaluatorScript = """
+        function evaluate(task) {
+            if (task.timedOut || task.cancelled) {
+                return {
+                    outcome: 'failure',
+                    reasonCode: task.cancelled ? 'CANCELLED' : 'TIMEOUT',
+                    message: task.cancelled
+                        ? 'Task was cancelled by user.'
+                        : 'Task timed out before completion.'
+                };
+            }
+
+            if (task.exitCode === 0) {
+                return {
+                    outcome: 'success',
+                    reasonCode: 'EXIT_CODE_0',
+                    message: 'Process exited with code 0.'
+                };
+            }
+
+            return {
+                outcome: 'failure',
+                reasonCode: 'NON_ZERO_EXIT',
+                message: 'Process exited with a non-zero code: ' + task.exitCode
+            };
+        }
+        """;
     private static readonly Brush AgentsDispatchRowBorderBrush = new SolidColorBrush(Color.FromRgb(0x36, 0x3A, 0x3E));
     private static readonly Brush AgentsDispatchRowSelectedBorderBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
     private static readonly Brush AgentsDispatchRowFocusedBorderBrush = new SolidColorBrush(Color.FromRgb(0x8C, 0xC2, 0xFF));
@@ -318,6 +348,19 @@ public partial class MainWindow : Window
         public int? ExitCode { get; init; }
 
         public Dictionary<string, string> PublishedOutputs { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class EvaluatedTaskOutcome
+    {
+        public bool Applied { get; init; }
+
+        public bool Succeeded { get; init; }
+
+        public bool IsEvaluationError { get; init; }
+
+        public string? Message { get; init; }
+
+        public string? ReasonCode { get; init; }
     }
 
     private sealed class TaskRunningOverlayVisual
@@ -610,6 +653,7 @@ public partial class MainWindow : Window
         _agentStatusRefreshTimer.Start();
 
         LoadTaskButtons();
+        ConfigureResultEvaluatorEditor();
         UpdateTaskSurfaceToggleUi();
         SyncTaskSurfaceToViewport();
         DebugTraceLog.Write($"[Startup] MainWindow initialized. LogPath='{DebugTraceLog.CurrentLogPath}'");
@@ -690,7 +734,119 @@ public partial class MainWindow : Window
         {
             ApplyTitleBarTheme(useDarkTheme);
             ApplyConnectorThemeRefresh();
+            ApplyResultEvaluatorEditorTheme();
         });
+    }
+
+    private void ConfigureResultEvaluatorEditor()
+    {
+        if (ResultEvaluatorScriptTextBox is null)
+        {
+            return;
+        }
+
+        ResultEvaluatorScriptTextBox.ShowLineNumbers = true;
+        ResultEvaluatorScriptTextBox.Options.ConvertTabsToSpaces = true;
+        ResultEvaluatorScriptTextBox.Options.IndentationSize = 2;
+        ResultEvaluatorScriptTextBox.Options.HighlightCurrentLine = true;
+        ResultEvaluatorScriptTextBox.WordWrap = true;
+        ResultEvaluatorScriptTextBox.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        ResultEvaluatorScriptTextBox.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        ResultEvaluatorScriptTextBox.SyntaxHighlighting = LoadJavaScriptHighlighting(App.IsDarkThemeEnabled());
+
+        ApplyResultEvaluatorEditorTheme();
+    }
+
+    private void ApplyResultEvaluatorEditorTheme()
+    {
+        if (ResultEvaluatorScriptTextBox is null)
+        {
+            return;
+        }
+
+        var background = ResolveThemeBrush("PanelBackgroundBrush", Color.FromRgb(0x1F, 0x24, 0x29));
+        var foreground = ResolveThemeBrush("PrimaryTextBrush", Color.FromRgb(0xE8, 0xEE, 0xF4));
+        var border = ResolveThemeBrush("InputBorderBrush", Color.FromRgb(0x3A, 0x41, 0x49));
+
+        ResultEvaluatorScriptTextBox.Background = background;
+        ResultEvaluatorScriptTextBox.Foreground = foreground;
+        ResultEvaluatorScriptTextBox.BorderBrush = border;
+        ResultEvaluatorScriptTextBox.BorderThickness = new Thickness(1);
+        ResultEvaluatorScriptTextBox.SyntaxHighlighting = LoadJavaScriptHighlighting(App.IsDarkThemeEnabled());
+    }
+
+    private static IHighlightingDefinition? LoadJavaScriptHighlighting(bool useDarkTheme)
+    {
+        var builtIn = HighlightingManager.Instance.GetDefinition("JavaScript")
+            ?? HighlightingManager.Instance.GetDefinitionByExtension(".js");
+
+        if (builtIn is not null)
+        {
+            return builtIn;
+        }
+
+        var commentColor = useDarkTheme ? "#6A9955" : "#2F7D32";
+        var keywordColor = useDarkTheme ? "#569CD6" : "#005CC5";
+        var stringColor = useDarkTheme ? "#CE9178" : "#A31515";
+        var numberColor = useDarkTheme ? "#B5CEA8" : "#116329";
+        var functionColor = useDarkTheme ? "#DCDCAA" : "#6F42C1";
+
+        const string jsHighlightingXshd = """
+            <?xml version=\"1.0\" encoding=\"utf-8\"?>
+            <SyntaxDefinition name=\"JavaScript\" extensions=\".js\" xmlns=\"http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008\">
+              <Color name=\"Comment\" foreground=\"__COMMENT__\" />
+              <Color name=\"Keyword\" foreground=\"__KEYWORD__\" fontWeight=\"bold\" />
+              <Color name=\"String\" foreground=\"__STRING__\" />
+              <Color name=\"Number\" foreground=\"__NUMBER__\" />
+              <Color name=\"FunctionName\" foreground=\"__FUNCTION__\" />
+
+              <RuleSet>
+                <Span color=\"Comment\" begin=\"//\" end=\"$\" />
+                <Span color=\"Comment\" begin=\"/*\" end=\"*/\" />
+                <Span color=\"String\" begin=\"&quot;\" end=\"&quot;\" escapeCharacter=\"\\\" />
+                <Span color=\"String\" begin=\"'\" end=\"'\" escapeCharacter=\"\\\" />
+                <Span color=\"String\" begin=\"`\" end=\"`\" escapeCharacter=\"\\\" />
+
+                <Words color=\"Keyword\">
+                  <Word>function</Word>
+                  <Word>return</Word>
+                  <Word>if</Word>
+                  <Word>else</Word>
+                  <Word>for</Word>
+                  <Word>while</Word>
+                  <Word>const</Word>
+                  <Word>let</Word>
+                  <Word>var</Word>
+                  <Word>true</Word>
+                  <Word>false</Word>
+                  <Word>null</Word>
+                  <Word>undefined</Word>
+                </Words>
+
+                <Rule color=\"Number\">\b\d+(\.\d+)?\b</Rule>
+                <Rule color=\"FunctionName\">\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()</Rule>
+              </RuleSet>
+            </SyntaxDefinition>
+            """;
+
+        try
+        {
+            var themedXshd = jsHighlightingXshd
+                .Replace("__COMMENT__", commentColor, StringComparison.Ordinal)
+                .Replace("__KEYWORD__", keywordColor, StringComparison.Ordinal)
+                .Replace("__STRING__", stringColor, StringComparison.Ordinal)
+                .Replace("__NUMBER__", numberColor, StringComparison.Ordinal)
+                .Replace("__FUNCTION__", functionColor, StringComparison.Ordinal);
+
+            using var reader = new XmlTextReader(new StringReader(themedXshd));
+            var xshd = HighlightingLoader.LoadXshd(reader);
+            return HighlightingLoader.Load(xshd, HighlightingManager.Instance);
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "Result evaluator JavaScript highlighting load failed");
+            return null;
+        }
     }
 
     private void ApplyConnectorThemeRefresh()
@@ -3499,6 +3655,7 @@ public partial class MainWindow : Window
         InputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         OutputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         VariablesPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
+        ResultEvaluatorPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         AgentsDispatchPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
         AgentRuntimePaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
         GatewaySettingsPaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
@@ -4030,6 +4187,15 @@ public partial class MainWindow : Window
             {
                 OpenVariablesEditor(selectTab: false);
             }
+            else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, ResultEvaluatorPaneTabItem))
+            {
+                if (!_selectedTaskIndex.HasValue || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
+                {
+                    return;
+                }
+
+                OpenResultEvaluatorEditor(_selectedTaskIndex.Value, selectTab: false);
+            }
             else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, AgentsDispatchPaneTabItem))
             {
                 RefreshAgentsDispatchPane();
@@ -4539,6 +4705,22 @@ public partial class MainWindow : Window
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(0, 0, 10, 0),
                     ToolTip = BuildTaskVariableUsageTooltip(variableUsages)
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(task.ResultEvaluatorScript))
+            {
+                bottomGlyphs.Children.Add(new TextBlock
+                {
+                    Text = "ƒ",
+                    FontFamily = cardFontFamily,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Foreground = foregroundBrush,
+                    Opacity = 0.9,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(0, 0, 10, 0),
+                    ToolTip = "Task has a result evaluator script"
                 });
             }
 
@@ -5953,6 +6135,30 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OpenResultEvaluatorEditor(int taskIndex, bool selectTab = true)
+    {
+        if (!TryGetTask(taskIndex, out var task))
+        {
+            return;
+        }
+
+        _portEditorTaskIndex = taskIndex;
+        ResultEvaluatorTitleText.Text = $"Result Evaluator - {task.Name}";
+        var hasSavedScript = !string.IsNullOrWhiteSpace(task.ResultEvaluatorScript);
+        ResultEvaluatorScriptTextBox.Text = hasSavedScript
+            ? task.ResultEvaluatorScript!
+            : DefaultResultEvaluatorScript;
+        ResultEvaluatorStatusText.Text = hasSavedScript
+            ? "Optional JavaScript function evaluate(task) returning { outcome: 'success' | 'failure', message?, reasonCode? }."
+            : "No evaluator is saved for this task yet. Default evaluator code is shown below; click Save Evaluator to persist it.";
+        SaveResultEvaluatorButton.IsEnabled = true;
+
+        if (selectTab)
+        {
+            BottomPaneTabControl.SelectedItem = ResultEvaluatorPaneTabItem;
+        }
+    }
+
     private Grid CreateVariableRowControl(string name, string value)
     {
         var row = new Grid { Margin = new Thickness(0, 0, 0, 6) };
@@ -6139,6 +6345,22 @@ public partial class MainWindow : Window
         groupDefinition.Variables = variables;
         SaveTasksAndRefresh("Save Variables");
         OpenVariablesEditor();
+    }
+
+    private void SaveResultEvaluatorButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_portEditorTaskIndex.HasValue || !TryGetTask(_portEditorTaskIndex.Value, out var task))
+        {
+            LogPortEditorError("Select a task before saving the result evaluator.");
+            return;
+        }
+
+        task.ResultEvaluatorScript = string.IsNullOrWhiteSpace(ResultEvaluatorScriptTextBox.Text)
+            ? null
+            : ResultEvaluatorScriptTextBox.Text;
+
+        SaveTasksAndRefresh("Save Result Evaluator");
+        OpenResultEvaluatorEditor(_portEditorTaskIndex.Value);
     }
 
     private bool TryCollectVariableRows(out Dictionary<string, string> variables, out string error)
@@ -8382,13 +8604,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (IsKeyboardFocusInTextEditor())
+        {
+            // Let text-entry controls (including AvalonEdit) handle copy/paste/delete and other editing keys.
+            return;
+        }
+
         if (_isAgentViewSelected)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
-            {
-                return;
-            }
-
             if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
             {
                 TryDeleteSelectedAgent();
@@ -8411,11 +8634,6 @@ public partial class MainWindow : Window
 
         if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
-            {
-                return;
-            }
-
             if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
             {
                 CopyTask(selectedTaskIndex);
@@ -8427,11 +8645,6 @@ public partial class MainWindow : Window
 
         if (e.Key == Key.V && Keyboard.Modifiers == ModifierKeys.Control)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
-            {
-                return;
-            }
-
             if (PasteTaskIntoSelectedGroup())
             {
                 e.Handled = true;
@@ -8442,11 +8655,6 @@ public partial class MainWindow : Window
 
         if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
-            {
-                return;
-            }
-
             TryDeleteFromCurrentContext();
             e.Handled = true;
 
@@ -8474,17 +8682,12 @@ public partial class MainWindow : Window
 
         if (e.Key == Key.R && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+            if (!IsTaskScrollSurfaceFocused())
             {
                 return;
             }
 
-            if (TaskScrollViewer?.IsKeyboardFocusWithin != true)
-            {
-                return;
-            }
-
-            if (BottomPaneTabControl?.IsKeyboardFocusWithin == true)
+            if (IsBottomPaneFocused())
             {
                 return;
             }
@@ -8508,12 +8711,7 @@ public partial class MainWindow : Window
 
         if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None && _taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
-            {
-                return;
-            }
-
-            if (TaskScrollViewer?.IsKeyboardFocusWithin != true)
+            if (!IsTaskScrollSurfaceFocused())
             {
                 return;
             }
@@ -8530,11 +8728,6 @@ public partial class MainWindow : Window
 
         if (e.Key == Key.E && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
         {
-            if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
-            {
-                return;
-            }
-
             if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
             {
                 EditTask(selectedTaskIndex);
@@ -8549,7 +8742,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (BottomPaneTabControl?.IsKeyboardFocusWithin == true)
+        if (IsBottomPaneFocused())
         {
             return;
         }
@@ -8561,6 +8754,26 @@ public partial class MainWindow : Window
 
         SelectNextVisibleTask(step: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1);
         e.Handled = true;
+    }
+
+    private bool IsKeyboardFocusInTextEditor()
+    {
+        if (Keyboard.FocusedElement is TextBoxBase or TextBox or RichTextBox or ComboBox)
+        {
+            return true;
+        }
+
+        return ResultEvaluatorScriptTextBox?.IsKeyboardFocusWithin == true;
+    }
+
+    private bool IsTaskScrollSurfaceFocused()
+    {
+        return TaskScrollViewer?.IsKeyboardFocusWithin == true;
+    }
+
+    private bool IsBottomPaneFocused()
+    {
+        return BottomPaneTabControl?.IsKeyboardFocusWithin == true;
     }
 
     private bool TryHandleOutputPaneNavigationKey(KeyEventArgs e)
@@ -9055,6 +9268,12 @@ public partial class MainWindow : Window
             if (ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
             {
                 SyncHistoryTabForSelectedTask(task);
+                return;
+            }
+
+            if (ReferenceEquals(BottomPaneTabControl.SelectedItem, ResultEvaluatorPaneTabItem))
+            {
+                OpenResultEvaluatorEditor(taskIndex, selectTab: false);
                 return;
             }
 
@@ -10404,6 +10623,11 @@ public partial class MainWindow : Window
             var shouldWaitForRemoteCompletion = dataflowContext is not null;
             if (!shouldWaitForRemoteCompletion)
             {
+                if (!string.IsNullOrWhiteSpace(effectiveTask.ResultEvaluatorScript))
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Evaluator skipped: remote run is asynchronous for this launch path (no terminal result yet).");
+                }
+
                 CompleteHistoryEntry(historyEntry, TaskRunOutcome.Started, null);
 
                 return new TaskExecutionResult
@@ -10422,6 +10646,7 @@ public partial class MainWindow : Window
             CancellationTokenSource? timeoutCts = null;
             CancellationTokenSource? remoteCompletionWaitCts = null;
             var waitToken = effectiveCancellationToken;
+            var remoteDurationStopwatch = Stopwatch.StartNew();
             if (effectiveTask.TimeoutSeconds > 0)
             {
                 timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(effectiveTask.TimeoutSeconds));
@@ -10471,28 +10696,52 @@ public partial class MainWindow : Window
                 publishedOutputs[produced.Key] = produced.Value;
             }
 
+            var remoteEvaluationInput = new TaskResultEvaluationInput(
+                remoteCompletion.ExitCode,
+                remoteCompletion.StandardOutput,
+                remoteCompletion.StandardError,
+                remoteCompletion.Outcome == TaskRunOutcome.TimedOut,
+                remoteCompletion.Outcome == TaskRunOutcome.Cancelled,
+                remoteDurationStopwatch.ElapsedMilliseconds,
+                effectiveTask.WorkingDirectory);
+
+            LogEvaluatorStartIfConfigured(outputTextBox, task.Name, effectiveTask, remoteEvaluationInput);
+
+            var evaluatedRemoteOutcome = EvaluateTaskOutcome(
+                effectiveTask,
+                remoteEvaluationInput,
+                remoteCompletion.Succeeded,
+                effectiveCancellationToken);
+
+            var isRemoteSuccessful = evaluatedRemoteOutcome.Succeeded;
+            LogEvaluatedOutcome(outputTextBox, task.Name, evaluatedRemoteOutcome);
+
             publishedOutputs = ResolveRuntimeOutputValues(
                 publishedOutputs,
                 remoteCompletion.StandardOutput,
                 remoteCompletion.StandardError,
                 remoteCompletion.ExitCode);
 
-            if (remoteCompletion.Succeeded && publishedOutputs.Count > 0)
+            SetTabStopped(tabContext, isRemoteSuccessful);
+            SetTaskRunState(task, isRemoteSuccessful ? TaskRunState.Succeeded : TaskRunState.Failed);
+
+            if (isRemoteSuccessful && publishedOutputs.Count > 0)
             {
                 AppendPublishedOutputs(outputTextBox, task.Name, publishedOutputs);
                 dataflowContext?.RegisterTaskOutputs(task.Name, publishedOutputs);
             }
 
-            if (!remoteCompletion.Succeeded && !string.IsNullOrWhiteSpace(remoteCompletion.Message))
+            if (!isRemoteSuccessful && !string.IsNullOrWhiteSpace(remoteCompletion.Message))
             {
                 AppendLog(outputTextBox, $"[{task.Name}] Remote step failed: {remoteCompletion.Message}");
             }
 
-            CompleteHistoryEntry(historyEntry, remoteCompletion.Outcome, remoteCompletion.ExitCode);
+            var remoteHistoryOutcome = ResolveHistoryOutcome(remoteCompletion.Outcome, evaluatedRemoteOutcome);
+            CompleteHistoryEntry(historyEntry, remoteHistoryOutcome, remoteCompletion.ExitCode);
 
             return new TaskExecutionResult
             {
-                Succeeded = remoteCompletion.Succeeded,
+                Succeeded = isRemoteSuccessful,
                 ExitCode = remoteCompletion.ExitCode,
                 PublishedOutputs = new Dictionary<string, string>(publishedOutputs, StringComparer.OrdinalIgnoreCase)
             };
@@ -10530,6 +10779,7 @@ public partial class MainWindow : Window
 
         try
         {
+            var localDurationStopwatch = Stopwatch.StartNew();
             var executionResult = await TaskExecutionService.ExecuteAsync(
                 effectiveTask,
                 onOutputLine: (line, isError) =>
@@ -10570,6 +10820,11 @@ public partial class MainWindow : Window
 
             if (!executionResult.WaitedForExit)
             {
+                if (!string.IsNullOrWhiteSpace(effectiveTask.ResultEvaluatorScript))
+                {
+                    AppendLog(outputTextBox, $"[{task.Name}] Evaluator skipped: waitForExit=false (no terminal exit code/output available).");
+                }
+
                 AppendRuntimeOutputCaptureWarningIfNeeded(outputTextBox, task.Name, publishedOutputs, reason: "task is configured to not wait for process exit");
                 publishedOutputs = ResolveRuntimeOutputValues(publishedOutputs, capturedStandardOutput, capturedStandardError, exitCode: null);
                 AppendLog(outputTextBox, $"[{task.Name}] Process started (PID {executionResult.ProcessId}). Not waiting for exit.");
@@ -10615,6 +10870,26 @@ public partial class MainWindow : Window
                 AppendLog(outputTextBox, $"[{task.Name}] Exit code {executionResult.ExitCode} ignored because ignoreExitCode=true.");
             }
 
+            var localEvaluationInput = new TaskResultEvaluationInput(
+                executionResult.ExitCode,
+                capturedStandardOutput,
+                capturedStandardError,
+                executionResult.Outcome == TaskExecutionOutcome.TimedOut,
+                executionResult.Outcome == TaskExecutionOutcome.Cancelled,
+                localDurationStopwatch.ElapsedMilliseconds,
+                effectiveTask.WorkingDirectory);
+
+            LogEvaluatorStartIfConfigured(outputTextBox, task.Name, effectiveTask, localEvaluationInput);
+
+            var evaluatedLocalOutcome = EvaluateTaskOutcome(
+                effectiveTask,
+                localEvaluationInput,
+                isSuccessfulExit,
+                effectiveCancellationToken);
+
+            isSuccessfulExit = evaluatedLocalOutcome.Succeeded;
+            LogEvaluatedOutcome(outputTextBox, task.Name, evaluatedLocalOutcome);
+
             if (executionResult.Outcome == TaskExecutionOutcome.TimedOut)
             {
                 AppendLog(outputTextBox, $"[{task.Name}] {executionResult.FailureMessage}");
@@ -10635,7 +10910,8 @@ public partial class MainWindow : Window
 
             SetTabStopped(tabContext, isSuccessfulExit);
             SetTaskRunState(task, isSuccessfulExit ? TaskRunState.Succeeded : TaskRunState.Failed);
-            CompleteHistoryEntry(historyEntry, MapOutcome(executionResult.Outcome), executionResult.ExitCode);
+            var localHistoryOutcome = ResolveHistoryOutcome(MapOutcome(executionResult.Outcome), evaluatedLocalOutcome);
+            CompleteHistoryEntry(historyEntry, localHistoryOutcome, executionResult.ExitCode);
 
             if (!executionResult.CanCaptureOutput)
             {
@@ -10795,6 +11071,104 @@ public partial class MainWindow : Window
             TaskExecutionOutcome.TimedOut => TaskRunOutcome.TimedOut,
             TaskExecutionOutcome.Cancelled => TaskRunOutcome.Cancelled,
             _ => TaskRunOutcome.LaunchFailed
+        };
+    }
+
+    private static TaskRunOutcome ResolveHistoryOutcome(TaskRunOutcome executionOutcome, EvaluatedTaskOutcome evaluatedOutcome)
+    {
+        if (!evaluatedOutcome.Applied)
+        {
+            return executionOutcome;
+        }
+
+        return evaluatedOutcome.Succeeded
+            ? TaskRunOutcome.Succeeded
+            : TaskRunOutcome.FailedNonZeroExit;
+    }
+
+    private void LogEvaluatorStartIfConfigured(
+        RichTextBox outputTextBox,
+        string taskName,
+        LauncherTask task,
+        TaskResultEvaluationInput input)
+    {
+        if (string.IsNullOrWhiteSpace(task.ResultEvaluatorScript))
+        {
+            return;
+        }
+
+        AppendLog(outputTextBox,
+            $"[{taskName}] Running evaluator with exitCode={input.ExitCode?.ToString() ?? "(null)"}, timedOut={input.TimedOut}, cancelled={input.Cancelled}.");
+    }
+
+    private void LogEvaluatedOutcome(
+        RichTextBox outputTextBox,
+        string taskName,
+        EvaluatedTaskOutcome evaluatedOutcome)
+    {
+        if (!evaluatedOutcome.Applied)
+        {
+            return;
+        }
+
+        var evaluatedToken = evaluatedOutcome.Succeeded ? "success" : "failure";
+        var reasonToken = string.IsNullOrWhiteSpace(evaluatedOutcome.ReasonCode)
+            ? string.Empty
+            : $" | reason={evaluatedOutcome.ReasonCode}";
+        AppendLog(outputTextBox, $"[{taskName}] Evaluated outcome: {evaluatedToken}{reasonToken}");
+
+        if (!string.IsNullOrWhiteSpace(evaluatedOutcome.Message))
+        {
+            AppendLog(outputTextBox, $"[{taskName}] Evaluator message: {evaluatedOutcome.Message}");
+        }
+    }
+
+    private static EvaluatedTaskOutcome EvaluateTaskOutcome(
+        LauncherTask task,
+        TaskResultEvaluationInput input,
+        bool defaultSucceeded,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(task.ResultEvaluatorScript))
+        {
+            DebugTraceLog.Write($"[Evaluator] Skipped for task '{task.Name}' because no resultEvaluatorScript is configured.");
+            return new EvaluatedTaskOutcome
+            {
+                Applied = false,
+                Succeeded = defaultSucceeded
+            };
+        }
+
+        DebugTraceLog.Write(
+            $"[Evaluator] Executing for task '{task.Name}' with exitCode={input.ExitCode?.ToString() ?? "(null)"}, timedOut={input.TimedOut}, cancelled={input.Cancelled}, defaultSucceeded={defaultSucceeded}.");
+
+        if (!TaskResultEvaluationService.TryEvaluate(
+                task.ResultEvaluatorScript,
+                input,
+                cancellationToken,
+                out var result,
+                out var error))
+        {
+            DebugTraceLog.Write($"[Evaluator] Failed for task '{task.Name}'. Error='{error}'.");
+            return new EvaluatedTaskOutcome
+            {
+                Applied = true,
+                Succeeded = false,
+                IsEvaluationError = true,
+                Message = string.IsNullOrWhiteSpace(error) ? "Evaluator execution failed." : error,
+                ReasonCode = "EVALUATION_ERROR"
+            };
+        }
+
+        DebugTraceLog.Write(
+            $"[Evaluator] Completed for task '{task.Name}' with outcome='{result.Outcome}', reasonCode='{result.ReasonCode ?? string.Empty}', message='{result.Message ?? string.Empty}'.");
+
+        return new EvaluatedTaskOutcome
+        {
+            Applied = true,
+            Succeeded = string.Equals(result.Outcome, "success", StringComparison.OrdinalIgnoreCase),
+            Message = result.Message,
+            ReasonCode = result.ReasonCode
         };
     }
 

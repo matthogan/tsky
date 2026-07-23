@@ -81,6 +81,7 @@ internal static class DataflowPortResolver
             Name = task.Name,
             Description = task.Description,
             Group = task.Group,
+            ResultEvaluatorScript = task.ResultEvaluatorScript,
             Runner = task.Runner,
             WaitForExit = task.WaitForExit,
             RequiresElevation = task.RequiresElevation,

@@ -30,6 +30,7 @@ public static class TaskVariableService
         CollectPlaceholderNames(task.Name, names);
         CollectPlaceholderNames(task.Description, names);
         CollectPlaceholderNames(task.Group, names);
+        CollectPlaceholderNames(task.ResultEvaluatorScript, names);
         CollectPlaceholderNames(task.CommandLine, names);
         CollectPlaceholderNames(task.Runner, names);
         CollectPlaceholderNames(task.WorkingDirectory, names);
@@ -102,6 +103,7 @@ public static class TaskVariableService
             Name = Expand(task.Name, groupVariables, unresolved),
             Description = Expand(task.Description, groupVariables, unresolved),
             Group = Expand(task.Group, groupVariables, unresolved),
+            ResultEvaluatorScript = Expand(task.ResultEvaluatorScript, groupVariables, unresolved),
             CommandLine = Expand(task.CommandLine, groupVariables, unresolved),
             Runner = Expand(task.Runner, groupVariables, unresolved),
             WorkingDirectory = Expand(task.WorkingDirectory, groupVariables, unresolved),

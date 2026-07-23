@@ -244,6 +244,7 @@ public partial class TaskEditorWindow : Window
             ExecutionTargetMode = source.ExecutionTargetMode,
             TargetAgentId = source.TargetAgentId,
             TargetPoolId = source.TargetPoolId,
+            ResultEvaluatorScript = source.ResultEvaluatorScript,
             CommandLine = source.CommandLine,
             Runner = source.Runner,
             Env = new Dictionary<string, string>(source.Env, StringComparer.OrdinalIgnoreCase),

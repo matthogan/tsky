@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="clr-namespace:tsky"
+    xmlns:avalonedit="http://icsharpcode.net/sharpdevelop/avalonedit"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
@@ -1639,6 +1640,54 @@
                                                 Content="Save Variables"
                                                 Style="{StaticResource HistoryActionButtonStyle}"
                                                 Click="SaveVariablesButton_Click" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem x:Name="ResultEvaluatorPaneTabItem" Header="Result Evaluator">
+                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                            <Border Padding="10"
+                                    CornerRadius="0"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource PanelBorderBrush}"
+                                    BorderThickness="0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock x:Name="ResultEvaluatorTitleText"
+                                               Text="Result Evaluator"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Margin="0,0,0,8" />
+
+                                    <TextBlock x:Name="ResultEvaluatorStatusText"
+                                               Grid.Row="1"
+                                               Text="Optional JavaScript function evaluate(task) returning { outcome: 'success' | 'failure', message?, reasonCode? }."
+                                               FontSize="11"
+                                               Foreground="{DynamicResource SecondaryTextBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,8" />
+
+                                    <avalonedit:TextEditor x:Name="ResultEvaluatorScriptTextBox"
+                                                           Grid.Row="2"
+                                                           FontFamily="{DynamicResource AppMonoFontFamily}"
+                                                           MinHeight="140"
+                                                           Margin="0,0,0,12" />
+
+                                    <StackPanel Grid.Row="3"
+                                                Orientation="Horizontal"
+                                                HorizontalAlignment="Right"
+                                                Margin="0,8,0,0">
+                                        <Button x:Name="SaveResultEvaluatorButton"
+                                                Content="Save Evaluator"
+                                                Style="{StaticResource HistoryActionButtonStyle}"
+                                                Click="SaveResultEvaluatorButton_Click" />
                                     </StackPanel>
                                 </Grid>
                             </Border>

@@ -26,6 +26,8 @@ public sealed class TaskRunSnapshot
 
     public string CommandLine { get; set; } = string.Empty;
 
+    public string? ResultEvaluatorScript { get; set; }
+
     public string Runner { get; set; } = "exe";
 
     public Dictionary<string, string> Env { get; set; } = [];

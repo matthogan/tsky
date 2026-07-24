@@ -2509,6 +2509,10 @@ public partial class MainWindow : Window
         {
             var groupName = group.Name;
             var isFavorited = _favoriteGroups.Contains(groupName);
+            var hasRunningTask = group.Tasks.Any(task => task.State == TaskRunState.Running);
+            var groupRunningBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xA6, 0xF2));
+            var groupDefaultIconBrush = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0));
+            var groupDefaultNameBrush = new SolidColorBrush(Color.FromRgb(0xD0, 0xD7, 0xDE));
 
             var headerButton = new Button
             {
@@ -2538,7 +2542,7 @@ public partial class MainWindow : Window
             {
                 Text = "📁",
                 FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0)),
+                Foreground = hasRunningTask ? groupRunningBrush : groupDefaultIconBrush,
                 Margin = new Thickness(0, 0, 8, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
@@ -2591,7 +2595,7 @@ public partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xD0, 0xD7, 0xDE)),
+                Foreground = groupDefaultNameBrush,
                 Margin = new Thickness(0, 0, 8, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis
             };

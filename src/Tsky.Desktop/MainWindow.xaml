@@ -237,7 +237,7 @@
 
         <Style x:Key="SidebarTreeGroupHeaderButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="#FFD0D7DE" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="8,6" />
@@ -254,10 +254,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="RowBorder" Property="Background" Value="#FF1E252B" />
+                                <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource TabHeaderHoverBackgroundBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="RowBorder" Property="Background" Value="#FF1A2127" />
+                                <Setter TargetName="RowBorder" Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -267,7 +267,7 @@
 
         <Style x:Key="SidebarTreeExpanderStyle" TargetType="Expander">
             <Setter Property="Margin" Value="0,0,0,2" />
-            <Setter Property="Foreground" Value="#FFD0D7DE" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Expander">
@@ -288,7 +288,7 @@
                                 </ToggleButton.Template>
                             </ToggleButton>
                             <Border x:Name="ExpandRegion"
-                                    Background="#FF171D22"
+                                    Background="{DynamicResource TabHeaderBackgroundBrush}"
                                     CornerRadius="0,0,6,6"
                                     Padding="0,0,0,2"
                                     Margin="0,0,0,2"
@@ -308,13 +308,13 @@
         </Style>
 
         <Style x:Key="SidebarBottomSectionStyle" TargetType="Expander">
-            <Setter Property="Foreground" Value="#FF8C959F" />
+            <Setter Property="Foreground" Value="{DynamicResource SecondaryTextBrush}" />
             <Setter Property="Margin" Value="0,2,0,0" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Expander">
                         <StackPanel>
-                            <Border BorderBrush="#FF30363D" BorderThickness="0,1,0,0" Padding="0">
+                            <Border BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="0,1,0,0" Padding="0">
                                 <ToggleButton x:Name="HeaderToggle"
                                               IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
                                               Background="Transparent"
@@ -324,7 +324,7 @@
                                               Content="{TemplateBinding Header}" />
                             </Border>
                             <Border x:Name="SectionContent"
-                                    Background="#FF151A1F"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
                                     Visibility="Collapsed"
                                     Padding="6,4,6,6">
                                 <ContentPresenter ContentSource="Content" />
@@ -385,7 +385,7 @@
         </Style>
 
         <Style x:Key="BottomPaneTabControlStyle" TargetType="TabControl">
-            <Setter Property="Background" Value="#FF1E1E1E" />
+            <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Template">
@@ -396,10 +396,10 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
-                            <Border Grid.Row="0" Background="#FF252526" BorderBrush="#FF3C3C3C" BorderThickness="0,0,0,1">
+                            <Border Grid.Row="0" Background="{DynamicResource TabHeaderBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="0,0,0,1">
                                 <TabPanel IsItemsHost="True" Background="Transparent" Margin="6,0,0,0" />
                             </Border>
-                            <Border Grid.Row="1" Background="#FF1E1E1E" BorderBrush="#FF3C3C3C" BorderThickness="0">
+                            <Border Grid.Row="1" Background="{DynamicResource PanelBackgroundBrush}" BorderBrush="{DynamicResource PanelBorderBrush}" BorderThickness="0">
                                 <ContentPresenter ContentSource="SelectedContent" Margin="0" />
                             </Border>
                         </Grid>
@@ -409,7 +409,7 @@
         </Style>
 
         <Style x:Key="BottomPaneTabItemStyle" TargetType="TabItem">
-            <Setter Property="Foreground" Value="#FFCCCCCC" />
+            <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
             <Setter Property="Background" Value="#00000000" />
             <Setter Property="BorderBrush" Value="#00000000" />
             <Setter Property="Padding" Value="14,7" />
@@ -424,18 +424,18 @@
                             <Border x:Name="ActiveIndicator"
                                     Height="2"
                                     VerticalAlignment="Bottom"
-                                    Background="#FF007ACC"
+                                    Background="{DynamicResource ConnectorFocusedBrush}"
                                     Visibility="Collapsed" />
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="TabBorder" Property="Background" Value="#FF2A2D2E" />
-                                <Setter Property="Foreground" Value="#FFFFFFFF" />
+                                <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource TabHeaderHoverBackgroundBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="TabBorder" Property="Background" Value="#FF1E1E1E" />
+                                <Setter TargetName="TabBorder" Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
                                 <Setter TargetName="ActiveIndicator" Property="Visibility" Value="Visible" />
-                                <Setter Property="Foreground" Value="#FFFFFFFF" />
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.5" />
@@ -841,8 +841,8 @@
         <Border x:Name="SidebarPaneBorder"
                 Grid.Column="0"
                 CornerRadius="12"
-                Background="#FF1B2026"
-                BorderBrush="#FF30363D"
+                Background="{DynamicResource PanelBackgroundBrush}"
+                BorderBrush="{DynamicResource PanelBorderBrush}"
             BorderThickness="0"
                 Padding="10,10,8,8">
             <Grid>
@@ -862,19 +862,19 @@
                         <DockPanel>
                             <TextBlock x:Name="GroupsSectionChevronText"
                                        Text="▼"
-                                       Foreground="#FF6E7681"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
                                        FontSize="9"
                                        Margin="0,0,6,0"
                                        VerticalAlignment="Center" />
                             <TextBlock Text="GROUPS"
-                                       Foreground="#FF8B949E"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
                                        FontSize="10"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center" />
                             <TextBlock x:Name="GroupsHeaderCountText"
                                        DockPanel.Dock="Right"
                                        Text="(0)"
-                                       Foreground="#FFC9A74D"
+                                       Foreground="{DynamicResource ConnectorFocusedBrush}"
                                        FontSize="10"
                                        Margin="8,0,0,0"
                                        MinWidth="32"
@@ -887,22 +887,22 @@
                         <DockPanel Margin="0,0,0,8">
                             <TextBlock x:Name="GroupsSummaryText"
                                        Text="0 groups created"
-                                       Foreground="#FF8B949E"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
                                        FontSize="11"
                                        VerticalAlignment="Center" />
                         </DockPanel>
 
-                        <Border Background="#FF151A1F" CornerRadius="14" Padding="8,4" MinHeight="30">
+                        <Border Background="{DynamicResource TabHeaderBackgroundBrush}" CornerRadius="14" Padding="8,4" MinHeight="30">
                             <DockPanel LastChildFill="True">
                                 <TextBlock Text="🔍"
-                                           Foreground="#FF6E7681"
+                                           Foreground="{DynamicResource SecondaryTextBrush}"
                                            Margin="0,0,6,0"
                                            VerticalAlignment="Center" />
                                 <TextBox x:Name="GroupSearchTextBox"
                                          Background="Transparent"
                                          BorderThickness="0"
-                                         Foreground="#FFB7C0C8"
-                                         CaretBrush="#FFB7C0C8"
+                                         Foreground="{DynamicResource PrimaryTextBrush}"
+                                         CaretBrush="{DynamicResource PrimaryTextBrush}"
                                          Padding="0"
                                          MinHeight="18"
                                          VerticalContentAlignment="Center"
@@ -932,25 +932,25 @@
                         <DockPanel>
                             <TextBlock x:Name="AgentsSectionChevronText"
                                        Text="▶"
-                                       Foreground="#FF6E7681"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
                                        FontSize="9"
                                        Margin="0,0,6,0"
                                        VerticalAlignment="Center" />
                             <TextBlock Text="&#xE716;"
                                        FontFamily="Segoe MDL2 Assets"
-                                       Foreground="#FF8B949E"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
                                        FontSize="12"
                                        Margin="0,0,8,0"
                                        VerticalAlignment="Center" />
                             <TextBlock Text="AGENTS"
-                                       Foreground="#FF8B949E"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
                                        FontSize="10"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center" />
                             <TextBlock x:Name="AgentsHeaderCountText"
                                        DockPanel.Dock="Right"
                                        Text="(0)"
-                                       Foreground="#FFC9A74D"
+                                       Foreground="{DynamicResource ConnectorFocusedBrush}"
                                        FontSize="10"
                                        Margin="8,0,0,0"
                                        MinWidth="32"
@@ -970,17 +970,17 @@
                                 Click="AgentsSidebarButton_Click"
                                 Content="Open Agents View" />
 
-                        <Border Background="#FF151A1F" CornerRadius="14" Padding="8,4" MinHeight="30" Margin="0,4,0,4">
+                                                <Border Background="{DynamicResource TabHeaderBackgroundBrush}" CornerRadius="14" Padding="8,4" MinHeight="30" Margin="0,4,0,4">
                             <DockPanel LastChildFill="True">
                                 <TextBlock Text="🔍"
-                                           Foreground="#FF6E7681"
+                                                                                     Foreground="{DynamicResource SecondaryTextBrush}"
                                            Margin="0,0,6,0"
                                            VerticalAlignment="Center" />
                                 <TextBox x:Name="AgentsSearchTextBox"
                                          Background="Transparent"
                                          BorderThickness="0"
-                                         Foreground="#FFB7C0C8"
-                                         CaretBrush="#FFB7C0C8"
+                                                                                 Foreground="{DynamicResource PrimaryTextBrush}"
+                                                                                 CaretBrush="{DynamicResource PrimaryTextBrush}"
                                          Padding="0"
                                          MinHeight="18"
                                          VerticalContentAlignment="Center"
@@ -1118,7 +1118,7 @@
                             ItemContainerStyle="{StaticResource BottomPaneTabItemStyle}"
                             SelectionChanged="BottomPaneTabControl_SelectionChanged">
                     <TabItem x:Name="OutputPaneTabItem" Header="Task Output">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Grid x:Name="OutputTabHost"
                                   Background="{DynamicResource PanelBackgroundBrush}" />
                         </Grid>
@@ -1134,7 +1134,7 @@
                                 <Setter Property="Height" Value="16" />
                             </Style>
                         </TabItem.Resources>
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border x:Name="HistoryPanelBorder"
                                     Padding="10"
                                     CornerRadius="0"
@@ -1231,7 +1231,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="AgentRuntimePaneTabItem" Header="Agent Runtime" Visibility="Collapsed">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"
@@ -1298,7 +1298,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="GatewaySettingsPaneTabItem" Header="Gateway Settings" Visibility="Collapsed">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"
@@ -1475,7 +1475,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="InputPortsPaneTabItem" Header="Input Ports">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"
@@ -1538,7 +1538,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="OutputPortsPaneTabItem" Header="Output Ports">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"
@@ -1592,7 +1592,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="VariablesPaneTabItem" Header="Variables">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"
@@ -1646,7 +1646,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem x:Name="ResultEvaluatorPaneTabItem" Header="Result Evaluator">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"
@@ -1698,7 +1698,7 @@
                              Visibility="Collapsed"
                              AutomationProperties.Name="Agents Dispatch Tab"
                              AutomationProperties.HelpText="Run the currently selected task on a specific online agent.">
-                        <Grid Background="#FF1E1E1E" Margin="8,8,8,8">
+                        <Grid Background="{DynamicResource AppBackgroundBrush}" Margin="8,8,8,8">
                             <Border Padding="10"
                                     CornerRadius="0"
                                     Background="{DynamicResource PanelBackgroundBrush}"

@@ -25,6 +25,29 @@
     <SolidColorBrush x:Key="ConnectorFocusedBrush" Color="#FFF59E0B" />
     <SolidColorBrush x:Key="InputPortDotBrush" Color="#FF455A64" />
     <SolidColorBrush x:Key="OutputPortDotBrush" Color="#FF009688" />
+    <SolidColorBrush x:Key="ListenerOnBackgroundBrush" Color="#FFCFEED8" />
+    <SolidColorBrush x:Key="ListenerOnBorderBrush" Color="#FF75B68A" />
+    <SolidColorBrush x:Key="ListenerOffBackgroundBrush" Color="#FFF7D9D9" />
+    <SolidColorBrush x:Key="ListenerOffBorderBrush" Color="#FFD89A9A" />
+    <SolidColorBrush x:Key="ListenerPendingBackgroundBrush" Color="#FFF6E8CC" />
+    <SolidColorBrush x:Key="ListenerPendingBorderBrush" Color="#FFD8B676" />
+    <SolidColorBrush x:Key="AgentsDispatchTextBrush" Color="#FF1F2328" />
+    <SolidColorBrush x:Key="AgentsDispatchMutedTextBrush" Color="#FF57606A" />
+    <SolidColorBrush x:Key="AgentsDispatchRowBorderBrush" Color="#22000000" />
+    <SolidColorBrush x:Key="AgentsDispatchRowSelectedBorderBrush" Color="#FF0C8A83" />
+    <SolidColorBrush x:Key="AgentsDispatchRowFocusedBorderBrush" Color="#FFF59E0B" />
+    <SolidColorBrush x:Key="AgentsDispatchRowBackgroundBrush" Color="#FFFFFFFF" />
+    <SolidColorBrush x:Key="AgentsDispatchRowSelectedBackgroundBrush" Color="#FFE6F3F2" />
+    <SolidColorBrush x:Key="AgentsDispatchRowFocusedBackgroundBrush" Color="#FFF3F4F6" />
+    <SolidColorBrush x:Key="AgentsDispatchPlayEnabledBackgroundBrush" Color="#FFB9E8CD" />
+    <SolidColorBrush x:Key="AgentsDispatchPlayEnabledBorderBrush" Color="#FF74BD96" />
+    <SolidColorBrush x:Key="AgentsDispatchPlayDisabledBackgroundBrush" Color="#FFE6E8EB" />
+    <SolidColorBrush x:Key="AgentsDispatchPlayDisabledBorderBrush" Color="#FFD0D7DE" />
+    <SolidColorBrush x:Key="AgentsDispatchValidationErrorBrush" Color="#FFC62828" />
+    <SolidColorBrush x:Key="GraphNodeBackgroundBrush" Color="#FFFFFFFF" />
+    <SolidColorBrush x:Key="GraphNodeDisabledBackgroundBrush" Color="#FFF3F4F6" />
+    <SolidColorBrush x:Key="GraphNodeBorderBrush" Color="#FFD0D7DE" />
+    <SolidColorBrush x:Key="GraphNodeDisabledBorderBrush" Color="#FFC2C8CF" />
     <sys:Double x:Key="PortDotSize">8</sys:Double>
     <sys:Double x:Key="PortDotStrokeThickness">1</sys:Double>
     <Thickness x:Key="PortDotMargin">0,2,0,2</Thickness>

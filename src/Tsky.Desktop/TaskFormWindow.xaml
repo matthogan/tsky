@@ -261,6 +261,8 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
@@ -366,11 +368,21 @@
                     <TextBlock Grid.Row="13" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Timeout (sec)" />
                     <TextBox x:Name="TimeoutSecondsTextBox" Grid.Row="13" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="600" />
 
-                    <TextBlock Grid.Row="14" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
-                    <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="65536" />
+                    <TextBlock Grid.Row="14" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Retries" />
+                    <TextBox x:Name="RetriesTextBox" Grid.Row="14" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="0" />
+
+                    <TextBlock Grid.Row="15"
+                               Grid.Column="1"
+                               Grid.ColumnSpan="2"
+                               Margin="0,0,0,10"
+                               Foreground="{DynamicResource SecondaryTextBrush}"
+                               Text="Backoff is fixed: 1s, 2s, 4s... up to 60s." />
+
+                    <TextBlock Grid.Row="16" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
+                    <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="16" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" Text="65536" />
 
                     <CheckBox x:Name="IsEnabledCheckBox"
-                              Grid.Row="15"
+                              Grid.Row="17"
                               Grid.Column="1"
                               Grid.ColumnSpan="2"
                               Margin="0,0,0,12"
@@ -378,11 +390,11 @@
                               IsChecked="True"
                               Content="Task is enabled" />
 
-                    <TextBlock Grid.Row="16" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
-                    <TextBlock Grid.Row="16" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
+                    <TextBlock Grid.Row="18" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                    <TextBlock Grid.Row="18" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Foreground="{DynamicResource SecondaryTextBrush}" Text="Enter one NAME=VALUE pair per line." />
 
                     <TextBox x:Name="EnvVarsTextBox"
-                             Grid.Row="17"
+                             Grid.Row="19"
                              Grid.Column="0"
                              Grid.ColumnSpan="3"
                              AcceptsReturn="True"

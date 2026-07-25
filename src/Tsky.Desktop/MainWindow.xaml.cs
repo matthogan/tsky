@@ -71,6 +71,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _groupExpandedStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TaskRunState> _taskRunStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CancellationTokenSource> _taskExecutionCancellation = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CancellationTokenSource> _taskRetryCancellation = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupHistoryVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupOutputVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupSidebarVisibility = new(StringComparer.OrdinalIgnoreCase);
@@ -117,6 +118,7 @@ public partial class MainWindow : Window
     private readonly HashSet<int> _invalidPortBindingTaskIndexes = [];
     private readonly DispatcherTimer _sidebarStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private readonly DispatcherTimer _graphRenderDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(45) };
+    private readonly DispatcherTimer _graphAutoPanTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private TaskSurfaceViewMode _taskSurfaceViewMode = TaskSurfaceViewMode.Task;
     private int _sidebarSpinnerFrameIndex;
     private bool _isHandlingBottomPanePortTabSelection;
@@ -130,18 +132,18 @@ public partial class MainWindow : Window
     private Point _graphPointerDownPoint;
     private bool _graphPointerWasDrag;
     private bool _graphPointerActive;
+    private double _graphAutoPanStartHorizontalOffset;
+    private double _graphAutoPanTargetHorizontalOffset;
+    private DateTime _graphAutoPanStartedAtUtc;
+    private bool _graphAutoPanActive;
     private CancellationTokenSource? _gatewayValidationCts;
     private bool _isGatewayToggleInProgress;
     private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
-    private static readonly Brush RibbonListenerOnBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x1F, 0x6F, 0x43));
-    private static readonly Brush RibbonListenerOnBorderBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0xA3, 0x63));
-    private static readonly Brush RibbonListenerOffBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x68, 0x2A, 0x2A));
-    private static readonly Brush RibbonListenerOffBorderBrush = new SolidColorBrush(Color.FromRgb(0xA8, 0x3A, 0x3A));
-    private static readonly Brush RibbonListenerPendingBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x8A, 0x5A, 0x00));
-    private static readonly Brush RibbonListenerPendingBorderBrush = new SolidColorBrush(Color.FromRgb(0xD9, 0x8F, 0x00));
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] SidebarRunningFrames = ["◐", "◓", "◑", "◒"];
     private const double GraphDragThreshold = 6;
+    private const double GraphAutoPanDurationMs = 220;
+    private const double GraphAutoPanDeadZonePx = 2;
     private const string AgentDispatchTelemetryCategory = "AgentDispatch";
     private const string AgentDispatchValidationEvent = "Validation";
     private const string AgentDispatchRequestEvent = "Request";
@@ -155,6 +157,9 @@ public partial class MainWindow : Window
     private const int MaxUiPublishedValueChars = 1500;
     private const int MaxUiStreamLineChars = 6000;
     private const int MaxUiOutputCharsPerRun = 300000;
+    private const int RetryBackoffBaseSeconds = 1;
+    private const int RetryBackoffMaxSeconds = 60;
+    private const string AgentViewOutputHeightCacheKey = "__AGENTS_VIEW__";
     private const string DefaultResultEvaluatorScript = """
         function evaluate(task) {
             if (task.timedOut || task.cancelled) {
@@ -182,17 +187,56 @@ public partial class MainWindow : Window
             };
         }
         """;
-    private static readonly Brush AgentsDispatchRowBorderBrush = new SolidColorBrush(Color.FromRgb(0x36, 0x3A, 0x3E));
-    private static readonly Brush AgentsDispatchRowSelectedBorderBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
-    private static readonly Brush AgentsDispatchRowFocusedBorderBrush = new SolidColorBrush(Color.FromRgb(0x8C, 0xC2, 0xFF));
-    private static readonly Brush AgentsDispatchRowBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x1F, 0x24, 0x29));
-    private static readonly Brush AgentsDispatchRowSelectedBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x23, 0x2A, 0x2B));
-    private static readonly Brush AgentsDispatchRowFocusedBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x26, 0x2D, 0x33));
-    private static readonly Brush AgentsDispatchPlayEnabledBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x19, 0xA8, 0x50));
-    private static readonly Brush AgentsDispatchPlayEnabledBorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0xD7, 0x7A));
-    private static readonly Brush AgentsDispatchPlayDisabledBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x33, 0x37, 0x3C));
-    private static readonly Brush AgentsDispatchPlayDisabledBorderBrush = new SolidColorBrush(Color.FromRgb(0x49, 0x4F, 0x56));
-    private static readonly Brush AgentsDispatchRunningBorderBrush = new SolidColorBrush(Color.FromRgb(0x3A, 0xD7, 0x7A));
+
+    private static class ThemeFallbackPalette
+    {
+        public static readonly Color PrimaryText = Color.FromRgb(0x1F, 0x23, 0x28);
+        public static readonly Color PrimaryTextOnDark = Color.FromRgb(0xF1, 0xF1, 0xF1);
+        public static readonly Color SecondaryText = Color.FromRgb(0x57, 0x60, 0x6A);
+        public static readonly Color TabHeaderSelected = Color.FromRgb(0x3F, 0x3F, 0x46);
+
+        public static readonly Color ListenerPendingBackground = Color.FromRgb(0x9A, 0x6A, 0x10);
+        public static readonly Color ListenerPendingBorder = Color.FromRgb(0xD9, 0xA0, 0x40);
+        public static readonly Color ListenerOnBackground = Color.FromRgb(0x2A, 0x8A, 0x54);
+        public static readonly Color ListenerOnBorder = Color.FromRgb(0x46, 0xBE, 0x79);
+        public static readonly Color ListenerOffBackground = Color.FromRgb(0x8A, 0x3A, 0x3A);
+        public static readonly Color ListenerOffBorder = Color.FromRgb(0xC9, 0x5A, 0x5A);
+
+        public static readonly Color AgentsDispatchText = Color.FromRgb(0xF2, 0xF4, 0xF8);
+        public static readonly Color AgentsDispatchMutedText = Color.FromRgb(0xB8, 0xC1, 0xCC);
+        public static readonly Color AgentsDispatchRowHeaderBorder = Color.FromRgb(0x3D, 0x42, 0x47);
+        public static readonly Color AgentsDispatchPlayEnabledBackground = Color.FromRgb(0x19, 0xA8, 0x50);
+        public static readonly Color AgentsDispatchPlayDisabledBackground = Color.FromRgb(0x33, 0x37, 0x3C);
+        public static readonly Color AgentsDispatchPlayEnabledBorder = Color.FromRgb(0x3A, 0xD7, 0x7A);
+        public static readonly Color AgentsDispatchPlayDisabledBorder = Color.FromRgb(0x49, 0x4F, 0x56);
+        public static readonly Color AgentsDispatchRowFocusedBorder = Color.FromRgb(0x8C, 0xC2, 0xFF);
+        public static readonly Color AgentsDispatchRowSelectedBorder = Color.FromRgb(0x27, 0xF6, 0xC0);
+        public static readonly Color AgentsDispatchRowBorder = Color.FromRgb(0x36, 0x3A, 0x3E);
+        public static readonly Color AgentsDispatchRowFocusedBackground = Color.FromRgb(0x26, 0x2D, 0x33);
+        public static readonly Color AgentsDispatchRowSelectedBackground = Color.FromRgb(0x23, 0x2A, 0x2B);
+        public static readonly Color AgentsDispatchRowBackground = Color.FromRgb(0x1F, 0x24, 0x29);
+        public static readonly Color AgentsDispatchValidationError = Color.FromRgb(0xE1, 0x6A, 0x6A);
+
+        public static readonly Color GraphNodeBackground = Color.FromRgb(0x1F, 0x2A, 0x35);
+        public static readonly Color GraphNodeDisabledBackground = Color.FromRgb(0x20, 0x22, 0x24);
+        public static readonly Color GraphNodeBorder = Color.FromRgb(0x3D, 0x4D, 0x5D);
+        public static readonly Color GraphNodeDisabledBorder = Color.FromRgb(0x4A, 0x4D, 0x50);
+
+        public static readonly Color ConnectorResolved = Color.FromRgb(0x0C, 0x8A, 0x83);
+        public static readonly Color ConnectorUnresolved = Color.FromRgb(0xC6, 0x28, 0x28);
+        public static readonly Color ConnectorFocused = Color.FromRgb(0xF5, 0x9E, 0x0B);
+        public static readonly Color OutputPanelBackground = Color.FromRgb(0x25, 0x25, 0x26);
+        public static readonly Color OutputPanelBorder = Color.FromRgb(0x30, 0x36, 0x3D);
+
+        public static readonly Color StatusRunning = Color.FromRgb(0x1E, 0x88, 0xE5);
+        public static readonly Color StatusSucceeded = Color.FromRgb(0x4C, 0xAF, 0x50);
+        public static readonly Color StatusFailed = Color.FromRgb(0xE5, 0x39, 0x35);
+
+        public static readonly Color LogPassedWord = Color.FromRgb(0x66, 0xBB, 0x6A);
+        public static readonly Color LogFailedWord = Color.FromRgb(0xEF, 0x53, 0x50);
+        public static readonly Color LogTimeoutWord = Color.FromRgb(0xFF, 0xA7, 0x26);
+        public static readonly Color LogCancelledWord = Color.FromRgb(0xAB, 0x47, 0xBC);
+    }
 
     public static readonly RoutedUICommand ToggleHistoryCommand = new(
         "Toggle History",
@@ -598,6 +642,7 @@ public partial class MainWindow : Window
         _userProfileConfigPath = TaskConfiguration.GetUserProfileConfigPath();
         _sidebarStatusTimer.Tick += SidebarStatusTimer_Tick;
         _graphRenderDebounceTimer.Tick += GraphRenderDebounceTimer_Tick;
+        _graphAutoPanTimer.Tick += GraphAutoPanTimer_Tick;
         _agentStatusRefreshTimer.Tick += AgentStatusRefreshTimer_Tick;
         CommandBindings.Add(new CommandBinding(ToggleHistoryCommand, ToggleHistoryCommand_Executed, ToggleViewCommand_CanExecute));
         CommandBindings.Add(new CommandBinding(ToggleOutputCommand, ToggleOutputCommand_Executed, ToggleViewCommand_CanExecute));
@@ -737,6 +782,13 @@ public partial class MainWindow : Window
             ApplyTitleBarTheme(useDarkTheme);
             ApplyConnectorThemeRefresh();
             ApplyResultEvaluatorEditorTheme();
+            UpdateGatewayListenerToggleUi();
+            UpdateAgentsSidebarVisual();
+            UpdateAgentSidebarSelectionVisuals();
+            if (ReferenceEquals(BottomPaneTabControl?.SelectedItem, AgentsDispatchPaneTabItem))
+            {
+                RefreshAgentsDispatchPane();
+            }
         });
     }
 
@@ -874,17 +926,17 @@ public partial class MainWindow : Window
 
     private static Brush GetResolvedConnectorBrush()
     {
-        return new SolidColorBrush(Color.FromRgb(0x00, 0xF5, 0xFF));
+        return ResolveThemeBrush("ConnectorResolvedBrush", ThemeFallbackPalette.ConnectorResolved);
     }
 
     private static Brush GetUnresolvedConnectorBrush()
     {
-        return new SolidColorBrush(Color.FromRgb(0xFF, 0x2D, 0x95));
+        return ResolveThemeBrush("ConnectorUnresolvedBrush", ThemeFallbackPalette.ConnectorUnresolved);
     }
 
     private static Brush GetFocusedConnectorBrush()
     {
-        return new SolidColorBrush(Color.FromRgb(0xD7, 0xFF, 0x00));
+        return ResolveThemeBrush("ConnectorFocusedBrush", ThemeFallbackPalette.ConnectorFocused);
     }
 
     private void ApplyTitleBarTheme(bool useDarkTheme)
@@ -2023,8 +2075,8 @@ public partial class MainWindow : Window
         if (_isGatewayToggleInProgress)
         {
             RibbonGatewayListenerGlyphText.Text = "⌛";
-            RibbonGatewayListenerToggleButton.Background = RibbonListenerPendingBackgroundBrush;
-            RibbonGatewayListenerToggleButton.BorderBrush = RibbonListenerPendingBorderBrush;
+            RibbonGatewayListenerToggleButton.Background = ResolveThemeBrush("ListenerPendingBackgroundBrush", ThemeFallbackPalette.ListenerPendingBackground);
+            RibbonGatewayListenerToggleButton.BorderBrush = ResolveThemeBrush("ListenerPendingBorderBrush", ThemeFallbackPalette.ListenerPendingBorder);
             RibbonGatewayListenerToggleButton.ToolTip = "Listener operation in progress";
             return;
         }
@@ -2032,15 +2084,15 @@ public partial class MainWindow : Window
         if (_agentGatewayHost.IsRunning)
         {
             RibbonGatewayListenerGlyphText.Text = "👂";
-            RibbonGatewayListenerToggleButton.Background = RibbonListenerOnBackgroundBrush;
-            RibbonGatewayListenerToggleButton.BorderBrush = RibbonListenerOnBorderBrush;
+            RibbonGatewayListenerToggleButton.Background = ResolveThemeBrush("ListenerOnBackgroundBrush", ThemeFallbackPalette.ListenerOnBackground);
+            RibbonGatewayListenerToggleButton.BorderBrush = ResolveThemeBrush("ListenerOnBorderBrush", ThemeFallbackPalette.ListenerOnBorder);
             RibbonGatewayListenerToggleButton.ToolTip = "Stop local agent listener";
             return;
         }
 
         RibbonGatewayListenerGlyphText.Text = "🔇";
-        RibbonGatewayListenerToggleButton.Background = RibbonListenerOffBackgroundBrush;
-        RibbonGatewayListenerToggleButton.BorderBrush = RibbonListenerOffBorderBrush;
+        RibbonGatewayListenerToggleButton.Background = ResolveThemeBrush("ListenerOffBackgroundBrush", ThemeFallbackPalette.ListenerOffBackground);
+        RibbonGatewayListenerToggleButton.BorderBrush = ResolveThemeBrush("ListenerOffBorderBrush", ThemeFallbackPalette.ListenerOffBorder);
         RibbonGatewayListenerToggleButton.ToolTip = "Start local agent listener";
     }
 
@@ -2494,6 +2546,15 @@ public partial class MainWindow : Window
         GroupListPanel.Children.Clear();
         _sidebarTaskStateGlyphs.Clear();
 
+        var groupRunningBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xA6, 0xF2));
+        var groupDefaultIconBrush = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0));
+        var groupDefaultNameBrush = ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryText);
+        var mutedTextBrush = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81));
+        var badgeBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38));
+        var badgeForegroundBrush = new SolidColorBrush(Color.FromRgb(0xC9, 0xA7, 0x4D));
+        var favoriteActiveBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+        var taskPreviewTextBrush = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
+
         var searchTerm = GroupSearchTextBox?.Text?.Trim();
 
         if (!string.IsNullOrWhiteSpace(searchTerm))
@@ -2508,18 +2569,16 @@ public partial class MainWindow : Window
         foreach (var group in groups)
         {
             var groupName = group.Name;
+            var isSelectedGroup = string.Equals(groupName, _selectedGroupName, StringComparison.OrdinalIgnoreCase);
             var isFavorited = _favoriteGroups.Contains(groupName);
             var hasRunningTask = group.Tasks.Any(task => task.State == TaskRunState.Running);
-            var groupRunningBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xA6, 0xF2));
-            var groupDefaultIconBrush = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0));
-            var groupDefaultNameBrush = new SolidColorBrush(Color.FromRgb(0xD0, 0xD7, 0xDE));
 
             var headerButton = new Button
             {
                 Style = (Style)Resources["SidebarTreeGroupHeaderButtonStyle"],
                 Tag = groupName,
-                Background = string.Equals(groupName, _selectedGroupName, StringComparison.OrdinalIgnoreCase)
-                    ? new SolidColorBrush(Color.FromRgb(0x11, 0x15, 0x1A))
+                Background = isSelectedGroup
+                    ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
                     : Brushes.Transparent
             };
 
@@ -2531,7 +2590,7 @@ public partial class MainWindow : Window
             var chevronText = new TextBlock
             {
                 Text = group.IsExpanded ? "▼" : "▶",
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                Foreground = mutedTextBrush,
                 FontSize = 10,
                 Margin = new Thickness(0, 0, 8, 0),
                 VerticalAlignment = VerticalAlignment.Center
@@ -2550,7 +2609,7 @@ public partial class MainWindow : Window
 
             var badge = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38)),
+                Background = badgeBackgroundBrush,
                 CornerRadius = new CornerRadius(9),
                 Padding = new Thickness(7, 1, 7, 1),
                 VerticalAlignment = VerticalAlignment.Center,
@@ -2562,7 +2621,7 @@ public partial class MainWindow : Window
                 Text = group.TaskCount.ToString(),
                 FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xC9, 0xA7, 0x4D)),
+                Foreground = badgeForegroundBrush,
                 HorizontalAlignment = HorizontalAlignment.Center
             };
 
@@ -2579,8 +2638,8 @@ public partial class MainWindow : Window
                 {
                     Text = "❤",
                     Foreground = isFavorited
-                        ? new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35))
-                        : new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                        ? favoriteActiveBrush
+                        : mutedTextBrush,
                     FontSize = 13,
                     FontWeight = FontWeights.SemiBold,
                     VerticalAlignment = VerticalAlignment.Center
@@ -2595,7 +2654,9 @@ public partial class MainWindow : Window
                 VerticalAlignment = VerticalAlignment.Center,
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
-                Foreground = groupDefaultNameBrush,
+                Foreground = isSelectedGroup
+                    ? ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryTextOnDark)
+                    : groupDefaultNameBrush,
                 Margin = new Thickness(0, 0, 8, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
@@ -2631,7 +2692,7 @@ public partial class MainWindow : Window
                 var taskText = new TextBlock
                 {
                     Text = preview.Name,
-                    Foreground = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)),
+                    Foreground = taskPreviewTextBrush,
                     FontSize = 11,
                     Margin = new Thickness(6, 0, 0, 0),
                     VerticalAlignment = VerticalAlignment.Center,
@@ -2676,7 +2737,7 @@ public partial class MainWindow : Window
             GroupListPanel.Children.Add(new TextBlock
             {
                 Text = "No groups match your search.",
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                Foreground = mutedTextBrush,
                 Margin = new Thickness(6, 8, 6, 0),
                 FontSize = 11
             });
@@ -2802,7 +2863,7 @@ public partial class MainWindow : Window
                 Text = string.IsNullOrWhiteSpace(searchTerm)
                     ? "No agents configured."
                     : "No agents match your search.",
-                Foreground = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81)),
+                Foreground = ResolveThemeBrush("SecondaryTextBrush", Color.FromRgb(0x57, 0x60, 0x6A)),
                 Margin = new Thickness(8, 2, 8, 2),
                 FontSize = 11,
                 TextWrapping = TextWrapping.Wrap
@@ -2823,8 +2884,8 @@ public partial class MainWindow : Window
             {
                 Text = connected ? "●" : "○",
                 Foreground = connected
-                    ? new SolidColorBrush(Color.FromRgb(0x3A, 0xD7, 0x7A))
-                    : new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)),
+                    ? ResolveThemeBrush("ConnectorResolvedBrush", Color.FromRgb(0x0C, 0x8A, 0x83))
+                    : ResolveThemeBrush("SecondaryTextBrush", ThemeFallbackPalette.SecondaryText),
                 Width = 14,
                 VerticalAlignment = VerticalAlignment.Center,
                 FontSize = 11,
@@ -2835,7 +2896,7 @@ public partial class MainWindow : Window
             var nameText = new TextBlock
             {
                 Text = agent.EffectiveDisplayName,
-                Foreground = new SolidColorBrush(Color.FromRgb(0xD0, 0xD7, 0xDE)),
+                Foreground = ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryText),
                 FontSize = 11,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis
@@ -2876,7 +2937,7 @@ public partial class MainWindow : Window
             }
 
             button.Background = string.Equals(agentId, _selectedAgentId, StringComparison.OrdinalIgnoreCase)
-                ? new SolidColorBrush(Color.FromRgb(0x11, 0x15, 0x1A))
+                ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
                 : Brushes.Transparent;
         }
     }
@@ -2888,6 +2949,7 @@ public partial class MainWindow : Window
             SidebarAgentsExpander.IsExpanded = true;
         }
 
+        CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = true;
         _preferGroupDeleteContext = false;
         StopGraphPanning();
@@ -2908,6 +2970,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = false;
         ApplyBottomPaneTabsForViewMode();
         UpdateAgentsSidebarVisual();
@@ -2921,7 +2984,7 @@ public partial class MainWindow : Window
         }
 
         AgentsSidebarButton.Background = _isAgentViewSelected
-            ? new SolidColorBrush(Color.FromRgb(0x11, 0x15, 0x1A))
+            ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
             : Brushes.Transparent;
     }
 
@@ -3987,15 +4050,17 @@ public partial class MainWindow : Window
 
     private void ApplyOutputVisibility(string groupKey, bool isVisible)
     {
+        var outputHeightCacheKey = ResolveOutputHeightCacheKey(groupKey);
+
         if (!isVisible)
         {
             var currentHeight = OutputRowDefinition.ActualHeight > 0
                 ? OutputRowDefinition.ActualHeight
                 : OutputRowDefinition.Height.Value;
 
-            if (currentHeight > 0)
+            if (currentHeight > 0 && !string.IsNullOrWhiteSpace(outputHeightCacheKey))
             {
-                _groupOutputHeights[groupKey] = currentHeight;
+                _groupOutputHeights[outputHeightCacheKey] = currentHeight;
             }
 
             OutputGridSplitter.Visibility = Visibility.Visible;
@@ -4010,7 +4075,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var restoredHeight = _groupOutputHeights.TryGetValue(groupKey, out var storedHeight) && storedHeight >= MinOutputHeight
+        var restoredHeight = _groupOutputHeights.TryGetValue(outputHeightCacheKey, out var storedHeight) && storedHeight >= MinOutputHeight
             ? storedHeight
             : (_uiState.OutputHeight >= MinOutputHeight ? _uiState.OutputHeight : DefaultOutputHeight);
 
@@ -4027,7 +4092,8 @@ public partial class MainWindow : Window
     private void CacheCurrentOutputHeightForSelectedGroup()
     {
         var selectedGroupKey = NormalizeGroupName(_selectedGroupName);
-        if (string.IsNullOrWhiteSpace(selectedGroupKey))
+        var outputHeightCacheKey = ResolveOutputHeightCacheKey(selectedGroupKey);
+        if (string.IsNullOrWhiteSpace(outputHeightCacheKey))
         {
             return;
         }
@@ -4041,7 +4107,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        _groupOutputHeights[selectedGroupKey] = Math.Max(MinOutputHeight, currentHeight);
+        _groupOutputHeights[outputHeightCacheKey] = Math.Max(MinOutputHeight, currentHeight);
+    }
+
+    private string ResolveOutputHeightCacheKey(string groupKey)
+    {
+        return ResolveOutputHeightCacheKey(_isAgentViewSelected, groupKey);
+    }
+
+    internal static string ResolveOutputHeightCacheKey(bool isAgentViewSelected, string groupKey)
+    {
+        if (isAgentViewSelected)
+        {
+            return AgentViewOutputHeightCacheKey;
+        }
+
+        return groupKey;
     }
 
     private void AnimateRowHeight(RowDefinition rowDefinition, double targetHeight, Action? onCompleted = null)
@@ -4502,7 +4583,7 @@ public partial class MainWindow : Window
 
                 SelectGroup(NormalizeGroupName(replayTask.Group));
 
-                await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: entry.Id);
+                await ExecuteTaskWithRetriesAsync(replayTask, null, isReplay: true, replayFromEntryId: entry.Id);
             }
 
             if (skippedDisabledCount > 0)
@@ -4738,34 +4819,20 @@ public partial class MainWindow : Window
                 includeDataflowFields: false);
             if (variableUsages.Count > 0)
             {
-                bottomGlyphs.Children.Add(new TextBlock
-                {
-                    Text = "𝑥",
-                    FontFamily = new FontFamily("Cambria Math"),
-                    FontSize = 12,
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = foregroundBrush,
-                    Opacity = 0.9,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(0, 0, 10, 0),
-                    ToolTip = BuildTaskVariableUsageTooltip(variableUsages)
-                });
+                bottomGlyphs.Children.Add(CreateTaskCardFooterGlyph(
+                    text: "𝑥",
+                    fontFamily: new FontFamily("Cambria Math"),
+                    foregroundBrush: foregroundBrush,
+                    toolTip: BuildTaskVariableUsageTooltip(variableUsages)));
             }
 
             if (!string.IsNullOrWhiteSpace(task.ResultEvaluatorScript))
             {
-                bottomGlyphs.Children.Add(new TextBlock
-                {
-                    Text = "ƒ",
-                    FontFamily = cardFontFamily,
-                    FontSize = 12,
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = foregroundBrush,
-                    Opacity = 0.9,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(0, 0, 10, 0),
-                    ToolTip = "Task has a result evaluator script"
-                });
+                bottomGlyphs.Children.Add(CreateTaskCardFooterGlyph(
+                    text: "ƒ",
+                    fontFamily: cardFontFamily,
+                    foregroundBrush: foregroundBrush,
+                    toolTip: "Task has a result evaluator script"));
             }
 
             if (importGlyph.Visibility == Visibility.Visible)
@@ -4911,6 +4978,7 @@ public partial class MainWindow : Window
         if (isTaskMode)
         {
             StopGraphPanning();
+            StopGraphAutoPan();
         }
 
         TaskPanel.Visibility = isTaskMode ? Visibility.Visible : Visibility.Collapsed;
@@ -4977,6 +5045,13 @@ public partial class MainWindow : Window
             Canvas.SetLeft(nodeButton, position.X);
             Canvas.SetTop(nodeButton, position.Y);
             TaskGraphCanvas.Children.Add(nodeButton);
+        }
+
+        if (TryGetRunningTaskIndexInVisibleGroup(out var runningTaskIndex))
+        {
+            Dispatcher.BeginInvoke(
+                new Action(() => TryCenterGraphNodeHorizontally(runningTaskIndex, animate: false)),
+                DispatcherPriority.Loaded);
         }
     }
 
@@ -5332,6 +5407,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        StopGraphAutoPan();
+
         if (!Mouse.Capture(TaskGraphCanvas, CaptureMode.SubTree))
         {
             _isGraphPanning = false;
@@ -5389,6 +5466,119 @@ public partial class MainWindow : Window
 
         TaskGraphCanvas.Cursor = _taskSurfaceViewMode == TaskSurfaceViewMode.Graph ? Cursors.Hand : Cursors.Arrow;
         DebugTraceLog.Write($"[GraphPan] Stop offsets=({TaskScrollViewer.HorizontalOffset:F1},{TaskScrollViewer.VerticalOffset:F1})");
+    }
+
+    private void GraphAutoPanTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_graphAutoPanActive)
+        {
+            StopGraphAutoPan();
+            return;
+        }
+
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph || _isAgentViewSelected || _isGraphPanning)
+        {
+            StopGraphAutoPan();
+            return;
+        }
+
+        var viewportWidth = TaskScrollViewer.ViewportWidth;
+        var extentWidth = TaskScrollViewer.ExtentWidth;
+        if (viewportWidth <= 0 || extentWidth <= viewportWidth)
+        {
+            StopGraphAutoPan();
+            return;
+        }
+
+        var elapsedMs = (DateTime.UtcNow - _graphAutoPanStartedAtUtc).TotalMilliseconds;
+        var progress = Math.Max(0.0, Math.Min(1.0, elapsedMs / GraphAutoPanDurationMs));
+        var eased = 1.0 - Math.Pow(1.0 - progress, 3);
+        var nextOffset = _graphAutoPanStartHorizontalOffset
+            + ((_graphAutoPanTargetHorizontalOffset - _graphAutoPanStartHorizontalOffset) * eased);
+
+        TaskScrollViewer.ScrollToHorizontalOffset(nextOffset);
+
+        if (progress >= 1.0 || Math.Abs(TaskScrollViewer.HorizontalOffset - _graphAutoPanTargetHorizontalOffset) <= GraphAutoPanDeadZonePx)
+        {
+            TaskScrollViewer.ScrollToHorizontalOffset(_graphAutoPanTargetHorizontalOffset);
+            StopGraphAutoPan();
+        }
+    }
+
+    private void StopGraphAutoPan()
+    {
+        _graphAutoPanActive = false;
+        _graphAutoPanTimer.Stop();
+    }
+
+    private bool TryGetRunningTaskIndexInVisibleGroup(out int taskIndex)
+    {
+        foreach (var visibleTaskIndex in _visibleTaskIndexes)
+        {
+            if (!TryGetTask(visibleTaskIndex, out var visibleTask))
+            {
+                continue;
+            }
+
+            if (GetTaskRunState(visibleTask) == TaskRunState.Running)
+            {
+                taskIndex = visibleTaskIndex;
+                return true;
+            }
+        }
+
+        taskIndex = -1;
+        return false;
+    }
+
+    private void TryCenterGraphNodeHorizontally(int taskIndex, bool animate)
+    {
+        if (_taskSurfaceViewMode != TaskSurfaceViewMode.Graph || _isAgentViewSelected || _isGraphPanning)
+        {
+            return;
+        }
+
+        if (!_visibleTaskIndexes.Contains(taskIndex) || !_graphNodesByIndex.TryGetValue(taskIndex, out var visual))
+        {
+            return;
+        }
+
+        var viewportWidth = TaskScrollViewer.ViewportWidth;
+        var extentWidth = TaskScrollViewer.ExtentWidth;
+        if (viewportWidth <= 0 || extentWidth <= viewportWidth)
+        {
+            return;
+        }
+
+        var nodeLeft = Canvas.GetLeft(visual.NodeButton);
+        if (double.IsNaN(nodeLeft))
+        {
+            return;
+        }
+
+        var nodeWidth = visual.NodeButton.ActualWidth > 0 ? visual.NodeButton.ActualWidth : GraphNodeWidth;
+        var nodeCenterX = nodeLeft + (nodeWidth / 2);
+        var maxOffset = Math.Max(0, extentWidth - viewportWidth);
+        var desiredOffset = Math.Max(0, Math.Min(maxOffset, nodeCenterX - (viewportWidth / 2)));
+        var currentOffset = TaskScrollViewer.HorizontalOffset;
+
+        if (Math.Abs(desiredOffset - currentOffset) <= GraphAutoPanDeadZonePx)
+        {
+            return;
+        }
+
+        if (!animate)
+        {
+            StopGraphAutoPan();
+            TaskScrollViewer.ScrollToHorizontalOffset(desiredOffset);
+            return;
+        }
+
+        _graphAutoPanStartHorizontalOffset = currentOffset;
+        _graphAutoPanTargetHorizontalOffset = desiredOffset;
+        _graphAutoPanStartedAtUtc = DateTime.UtcNow;
+        _graphAutoPanActive = true;
+        _graphAutoPanTimer.Start();
     }
 
     private void ClearGraphPointerInteraction()
@@ -5519,23 +5709,23 @@ public partial class MainWindow : Window
 
         var stateBrush = state switch
         {
-            TaskRunState.Running => new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0xE5)),
-            TaskRunState.Succeeded => new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)),
-            TaskRunState.Failed => new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35)),
+            TaskRunState.Running => new SolidColorBrush(ThemeFallbackPalette.StatusRunning),
+            TaskRunState.Succeeded => new SolidColorBrush(ThemeFallbackPalette.StatusSucceeded),
+            TaskRunState.Failed => new SolidColorBrush(ThemeFallbackPalette.StatusFailed),
             _ => (Brush)Resources["SecondaryTextBrush"]
         };
 
         var background = IsTaskEnabled(task)
-            ? new SolidColorBrush(Color.FromRgb(0x1F, 0x2A, 0x35))
-            : new SolidColorBrush(Color.FromRgb(0x20, 0x22, 0x24));
+            ? ResolveThemeBrush("GraphNodeBackgroundBrush", ThemeFallbackPalette.GraphNodeBackground)
+            : ResolveThemeBrush("GraphNodeDisabledBackgroundBrush", ThemeFallbackPalette.GraphNodeDisabledBackground);
 
         var isEnabled = IsTaskEnabled(task);
         var isRunning = isEnabled && state == TaskRunState.Running;
         var nodeBorderBrush = isRunning
             ? (Brush)visual.RunningBorderBrush
             : isEnabled
-                ? new SolidColorBrush(Color.FromRgb(0x3D, 0x4D, 0x5D))
-                : new SolidColorBrush(Color.FromRgb(0x4A, 0x4D, 0x50));
+                ? ResolveThemeBrush("GraphNodeBorderBrush", ThemeFallbackPalette.GraphNodeBorder)
+                : ResolveThemeBrush("GraphNodeDisabledBorderBrush", ThemeFallbackPalette.GraphNodeDisabledBorder);
         var nodeBorderThickness = isRunning ? new Thickness(2) : new Thickness(1);
 
         if (isRunning)
@@ -5598,7 +5788,7 @@ public partial class MainWindow : Window
         _selectedTaskIndex = taskIndex;
         ApplyTaskCardSelectionVisuals();
         DebugTraceLog.Write($"[TaskRun] Executing task index={taskIndex}, name='{selectedTask.Name}', group='{selectedTask.Group}', key='{TaskIdentity.BuildKey(selectedTask)}'");
-        await ExecuteTaskAsync(selectedTask, null, isReplay: false);
+        await ExecuteTaskWithRetriesAsync(selectedTask, null, isReplay: false);
         DebugTraceLog.Write($"[TaskRun] ExecuteTaskAsync completed index={taskIndex}, name='{selectedTask.Name}', group='{selectedTask.Group}'");
     }
 
@@ -5722,7 +5912,7 @@ public partial class MainWindow : Window
 
             SelectGroup(NormalizeGroupName(replayTask.Group));
 
-            await ExecuteTaskAsync(replayTask, null, isReplay: true, replayFromEntryId: replayEntry.Id);
+            await ExecuteTaskWithRetriesAsync(replayTask, null, isReplay: true, replayFromEntryId: replayEntry.Id);
         };
 
         var runChainItem = new MenuItem
@@ -5967,6 +6157,10 @@ public partial class MainWindow : Window
 
     private Button CreatePortEditorGlyphButton(bool isInput, int taskIndex)
     {
+        var accentBrush = isInput
+            ? ResolveThemeBrush("InputPortDotBrush", Color.FromRgb(0x45, 0x5A, 0x64))
+            : ResolveThemeBrush("OutputPortDotBrush", Color.FromRgb(0x00, 0x96, 0x88));
+
         var button = new Button
         {
             Content = "+",
@@ -5975,13 +6169,9 @@ public partial class MainWindow : Window
             FontSize = 16,
             FontWeight = FontWeights.Bold,
             Cursor = Cursors.Hand,
-            Background = new SolidColorBrush(Color.FromArgb(205, 12, 24, 36)),
-            Foreground = isInput
-                ? new SolidColorBrush(Color.FromRgb(0x7C, 0xFF, 0x00))
-                : new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xFF)),
-            BorderBrush = isInput
-                ? new SolidColorBrush(Color.FromRgb(0x7C, 0xFF, 0x00))
-                : new SolidColorBrush(Color.FromRgb(0x00, 0xE5, 0xFF)),
+            Background = ResolveThemeBrush("TabHeaderBackgroundBrush", Color.FromRgb(0xF3, 0xF4, 0xF6)),
+            Foreground = accentBrush,
+            BorderBrush = accentBrush,
             BorderThickness = new Thickness(1.3),
             Padding = new Thickness(0),
             HorizontalAlignment = isInput ? HorizontalAlignment.Left : HorizontalAlignment.Right,
@@ -6641,6 +6831,11 @@ public partial class MainWindow : Window
 
     private static StackPanel CreatePortStack(IReadOnlyList<string> portNames, bool isInput)
     {
+        var fillBrush = isInput
+            ? ResolveThemeBrush("InputPortDotBrush", Color.FromRgb(0x45, 0x5A, 0x64))
+            : ResolveThemeBrush("OutputPortDotBrush", Color.FromRgb(0x00, 0x96, 0x88));
+        var strokeBrush = ResolveThemeBrush("PanelBorderBrush", Color.FromArgb(0x22, 0x00, 0x00, 0x00));
+
         var stack = new StackPanel
         {
             Orientation = Orientation.Vertical,
@@ -6661,8 +6856,8 @@ public partial class MainWindow : Window
                 Height = 12,
                 StrokeThickness = 1.5,
                 Margin = new Thickness(0, 2, 0, 2),
-                Fill = new SolidColorBrush(isInput ? Color.FromRgb(0x7C, 0xFF, 0x00) : Color.FromRgb(0x00, 0xE5, 0xFF)),
-                Stroke = new SolidColorBrush(Color.FromRgb(0x12, 0x1E, 0x2A))
+                Fill = fillBrush,
+                Stroke = strokeBrush
             };
 
             stack.Children.Add(dot);
@@ -7279,6 +7474,11 @@ public partial class MainWindow : Window
         if (graphTaskIndex >= 0)
         {
             ApplyGraphNodeStateVisual(graphTaskIndex);
+
+            if (state == TaskRunState.Running)
+            {
+                TryCenterGraphNodeHorizontally(graphTaskIndex, animate: true);
+            }
         }
         UpdateSidebarStatusAnimation();
         RebuildGroupNavigator(GetGroupSidebarItems(GetGroupNames()));
@@ -7450,6 +7650,19 @@ public partial class MainWindow : Window
 
         if (!_taskExecutionCancellation.TryGetValue(stateKey, out var cancellationSource))
         {
+            if (_taskRetryCancellation.TryGetValue(stateKey, out var retryCancellationSource))
+            {
+                if (retryCancellationSource.IsCancellationRequested)
+                {
+                    message = "Cancellation is already in progress.";
+                    return true;
+                }
+
+                retryCancellationSource.Cancel();
+                message = "Cancellation requested. Pending retries were stopped.";
+                return true;
+            }
+
             message = "Task was not cancellable at this stage.";
             return false;
         }
@@ -7470,6 +7683,7 @@ public partial class MainWindow : Window
     private bool HasActiveCancellationHandle(string taskStateKey)
     {
         return _taskExecutionCancellation.ContainsKey(taskStateKey)
+            || _taskRetryCancellation.ContainsKey(taskStateKey)
             || _taskRemoteAttempts.ContainsKey(taskStateKey);
     }
 
@@ -7493,9 +7707,9 @@ public partial class MainWindow : Window
     {
         return state switch
         {
-            TaskRunState.Running => new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0xE5)),
-            TaskRunState.Succeeded => new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50)),
-            TaskRunState.Failed => new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35)),
+            TaskRunState.Running => new SolidColorBrush(ThemeFallbackPalette.StatusRunning),
+            TaskRunState.Succeeded => new SolidColorBrush(ThemeFallbackPalette.StatusSucceeded),
+            TaskRunState.Failed => new SolidColorBrush(ThemeFallbackPalette.StatusFailed),
             _ => (Brush)Resources["SecondaryTextBrush"]
         };
     }
@@ -8444,6 +8658,7 @@ public partial class MainWindow : Window
             RequiresElevation = task.RequiresElevation,
             IgnoreExitCode = task.IgnoreExitCode,
             TimeoutSeconds = task.TimeoutSeconds,
+            Retries = task.Retries,
             KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = task.MaxCapturedOutputChars,
             IsEnabled = task.IsEnabled,
@@ -8761,7 +8976,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            await ExecuteTaskAsync(selectedTask, null, isReplay: false);
+            await ExecuteTaskWithRetriesAsync(selectedTask, null, isReplay: false);
             e.Handled = true;
             return;
         }
@@ -9118,6 +9333,7 @@ public partial class MainWindow : Window
             RequiresElevation = source.RequiresElevation,
             IgnoreExitCode = source.IgnoreExitCode,
             TimeoutSeconds = source.TimeoutSeconds,
+            Retries = source.Retries,
             KillProcessTreeOnCancel = source.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = source.MaxCapturedOutputChars,
             IsEnabled = source.IsEnabled,
@@ -9459,7 +9675,7 @@ public partial class MainWindow : Window
             Text = "Agent",
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            Foreground = ResolveThemeBrush("AgentsDispatchTextBrush", ThemeFallbackPalette.AgentsDispatchText),
             Margin = new Thickness(0, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = TextWrapping.NoWrap,
@@ -9472,7 +9688,7 @@ public partial class MainWindow : Window
             Text = "State",
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            Foreground = ResolveThemeBrush("AgentsDispatchTextBrush", ThemeFallbackPalette.AgentsDispatchText),
             Margin = new Thickness(0, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = TextWrapping.NoWrap,
@@ -9486,7 +9702,7 @@ public partial class MainWindow : Window
         return new Border
         {
             Padding = new Thickness(8, 2, 8, 4),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x3D, 0x42, 0x47)),
+            BorderBrush = ResolveThemeBrush("AgentsDispatchRowBorderBrush", ThemeFallbackPalette.AgentsDispatchRowHeaderBorder),
             BorderThickness = new Thickness(0, 0, 0, 1),
             Child = headerGrid
         };
@@ -9516,8 +9732,7 @@ public partial class MainWindow : Window
             Text = agentDisplayName,
             FontSize = 12,
             FontWeight = FontWeights.SemiBold,
-            // Use an explicit bright foreground here to avoid theme/resource contrast issues.
-            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            Foreground = ResolveThemeBrush("AgentsDispatchTextBrush", ThemeFallbackPalette.AgentsDispatchText),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 10, 0),
             TextWrapping = TextWrapping.NoWrap,
@@ -9530,7 +9745,7 @@ public partial class MainWindow : Window
         {
             Text = GetAgentDispatchStateSummary(agent, transientState, activeAttemptCount),
             FontSize = 11,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xF2, 0xF4, 0xF8)),
+            Foreground = ResolveThemeBrush("AgentsDispatchMutedTextBrush", ThemeFallbackPalette.AgentsDispatchMutedText),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 10, 0),
             TextWrapping = TextWrapping.NoWrap,
@@ -9548,13 +9763,9 @@ public partial class MainWindow : Window
             MinWidth = 36,
             FontFamily = new FontFamily("Segoe MDL2 Assets"),
             FontSize = 14,
-            IsEnabled = canPlay,
-            Background = canPlay ? AgentsDispatchPlayEnabledBackgroundBrush : AgentsDispatchPlayDisabledBackgroundBrush,
-            BorderBrush = canPlay ? AgentsDispatchPlayEnabledBorderBrush : AgentsDispatchPlayDisabledBorderBrush,
-            Foreground = Brushes.White,
-            Opacity = canPlay ? 1.0 : 0.65,
             Tag = new AgentDispatchCommand { AgentId = agent.AgentId, RunChain = false }
         };
+        ApplyAgentDispatchActionButtonVisual(playButton, canPlay);
         playButton.ToolTip = $"Run selected task on {agentDisplayName}";
         AutomationProperties.SetName(playButton, $"Play task on agent {agentDisplayName}");
         AutomationProperties.SetHelpText(playButton, canPlay
@@ -9563,7 +9774,7 @@ public partial class MainWindow : Window
         playButton.Click += AgentDispatchPlayButton_Click;
         Grid.SetColumn(playButton, 2);
 
-        var canRunChain = canDispatchToAgent && !isRowLocked;
+        var canRunChain = canPlay;
         var chainButton = new Button
         {
             Content = "Chain",
@@ -9572,13 +9783,9 @@ public partial class MainWindow : Window
             MinWidth = 52,
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
-            IsEnabled = canRunChain,
-            Background = canRunChain ? AgentsDispatchPlayEnabledBackgroundBrush : AgentsDispatchPlayDisabledBackgroundBrush,
-            BorderBrush = canRunChain ? AgentsDispatchPlayEnabledBorderBrush : AgentsDispatchPlayDisabledBorderBrush,
-            Foreground = Brushes.White,
-            Opacity = canRunChain ? 1.0 : 0.65,
             Tag = new AgentDispatchCommand { AgentId = agent.AgentId, RunChain = true }
         };
+        ApplyAgentDispatchActionButtonVisual(chainButton, canRunChain);
         chainButton.ToolTip = $"Run task chain from selected task on {agentDisplayName}";
         AutomationProperties.SetName(chainButton, $"Run chain on agent {agentDisplayName}");
         AutomationProperties.SetHelpText(chainButton, canRunChain
@@ -9605,15 +9812,9 @@ public partial class MainWindow : Window
         {
             Padding = new Thickness(8, 8, 8, 8),
             CornerRadius = new CornerRadius(0),
-            BorderBrush = isSelected
-                ? AgentsDispatchRowSelectedBorderBrush
-                : isActivelyRunning
-                    ? AgentsDispatchRunningBorderBrush
-                    : AgentsDispatchRowBorderBrush,
+            BorderBrush = ResolveDispatchRowBorderBrush(isSelected, isFocused: false, isActivelyRunning),
             BorderThickness = isSelected ? new Thickness(2) : new Thickness(1),
-            Background = isSelected
-                ? AgentsDispatchRowSelectedBackgroundBrush
-                : AgentsDispatchRowBackgroundBrush,
+            Background = ResolveDispatchRowBackgroundBrush(isSelected, isFocused: false),
             Tag = agent.AgentId,
             Focusable = true,
             Child = row
@@ -9787,17 +9988,54 @@ public partial class MainWindow : Window
         var isSelected = string.Equals(_selectedDispatchAgentId, rowAgentId, StringComparison.OrdinalIgnoreCase);
         var isFocused = row.IsKeyboardFocused || row.IsKeyboardFocusWithin;
 
-        if (isSelected)
+        row.BorderBrush = ResolveDispatchRowBorderBrush(isSelected, isFocused, isActivelyRunning: false);
+        row.BorderThickness = isSelected ? new Thickness(2) : new Thickness(1);
+        row.Background = ResolveDispatchRowBackgroundBrush(isSelected, isFocused);
+    }
+
+    private void ApplyAgentDispatchActionButtonVisual(Button button, bool isEnabled)
+    {
+        button.IsEnabled = isEnabled;
+        button.Background = isEnabled
+            ? ResolveThemeBrush("AgentsDispatchPlayEnabledBackgroundBrush", ThemeFallbackPalette.AgentsDispatchPlayEnabledBackground)
+            : ResolveThemeBrush("AgentsDispatchPlayDisabledBackgroundBrush", ThemeFallbackPalette.AgentsDispatchPlayDisabledBackground);
+        button.BorderBrush = isEnabled
+            ? ResolveThemeBrush("AgentsDispatchPlayEnabledBorderBrush", ThemeFallbackPalette.AgentsDispatchPlayEnabledBorder)
+            : ResolveThemeBrush("AgentsDispatchPlayDisabledBorderBrush", ThemeFallbackPalette.AgentsDispatchPlayDisabledBorder);
+        button.Foreground = ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryTextOnDark);
+        button.Opacity = isEnabled ? 1.0 : 0.65;
+    }
+
+    private Brush ResolveDispatchRowBorderBrush(bool isSelected, bool isFocused, bool isActivelyRunning)
+    {
+        if (isFocused)
         {
-            row.BorderBrush = isFocused ? AgentsDispatchRowFocusedBorderBrush : AgentsDispatchRowSelectedBorderBrush;
-            row.BorderThickness = new Thickness(2);
-            row.Background = isFocused ? AgentsDispatchRowFocusedBackgroundBrush : AgentsDispatchRowSelectedBackgroundBrush;
-            return;
+            return ResolveThemeBrush("AgentsDispatchRowFocusedBorderBrush", ThemeFallbackPalette.AgentsDispatchRowFocusedBorder);
         }
 
-        row.BorderBrush = isFocused ? AgentsDispatchRowFocusedBorderBrush : AgentsDispatchRowBorderBrush;
-        row.BorderThickness = new Thickness(1);
-        row.Background = isFocused ? AgentsDispatchRowFocusedBackgroundBrush : AgentsDispatchRowBackgroundBrush;
+        if (isSelected)
+        {
+            return ResolveThemeBrush("AgentsDispatchRowSelectedBorderBrush", ThemeFallbackPalette.AgentsDispatchRowSelectedBorder);
+        }
+
+        if (isActivelyRunning)
+        {
+            return ResolveThemeBrush("AgentsDispatchPlayEnabledBorderBrush", ThemeFallbackPalette.AgentsDispatchPlayEnabledBorder);
+        }
+
+        return ResolveThemeBrush("AgentsDispatchRowBorderBrush", ThemeFallbackPalette.AgentsDispatchRowBorder);
+    }
+
+    private Brush ResolveDispatchRowBackgroundBrush(bool isSelected, bool isFocused)
+    {
+        if (isFocused)
+        {
+            return ResolveThemeBrush("AgentsDispatchRowFocusedBackgroundBrush", ThemeFallbackPalette.AgentsDispatchRowFocusedBackground);
+        }
+
+        return isSelected
+            ? ResolveThemeBrush("AgentsDispatchRowSelectedBackgroundBrush", ThemeFallbackPalette.AgentsDispatchRowSelectedBackground)
+            : ResolveThemeBrush("AgentsDispatchRowBackgroundBrush", ThemeFallbackPalette.AgentsDispatchRowBackground);
     }
 
     private List<AgentDefinition> GetOrderedAgentsForDispatch()
@@ -9943,7 +10181,7 @@ public partial class MainWindow : Window
 
         SetAgentTransientExecutionState(agent.AgentId, AgentTransientExecutionState.Dispatching, "play_clicked");
 
-        var result = await ExecuteTaskAsync(task, null, isReplay: false, forcedExecutionTargetSelection: dispatchSelection);
+        var result = await ExecuteTaskWithRetriesAsync(task, null, isReplay: false, forcedExecutionTargetSelection: dispatchSelection);
         if (result.Succeeded)
         {
             SetAgentsDispatchValidationMessage($"Dispatch requested: '{task.Name}' -> {GetAgentDisplayName(agent)}.", isError: false);
@@ -10157,8 +10395,8 @@ public partial class MainWindow : Window
 
         AgentsDispatchValidationText.Text = message;
         AgentsDispatchValidationText.Foreground = isError
-            ? new SolidColorBrush(Color.FromRgb(0xE1, 0x6A, 0x6A))
-            : (Brush)Resources["SecondaryTextBrush"];
+            ? ResolveThemeBrush("AgentsDispatchValidationErrorBrush", ThemeFallbackPalette.AgentsDispatchValidationError)
+            : ResolveThemeBrush("SecondaryTextBrush", ThemeFallbackPalette.SecondaryText);
     }
 
     private void UpdateRibbonTaskActionState()
@@ -10440,7 +10678,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        await ExecuteTaskAsync(task, button, isReplay: false);
+        await ExecuteTaskWithRetriesAsync(task, button, isReplay: false);
     }
 
     private async Task<bool> RunTaskChainFromTaskAsync(int startTaskIndex, ExecutionTargetSelection? forcedExecutionTargetSelection = null)
@@ -10478,7 +10716,7 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            var result = await ExecuteTaskAsync(
+            var result = await ExecuteTaskWithRetriesAsync(
                 taskInfo.Task,
                 null,
                 isReplay: false,
@@ -10493,6 +10731,90 @@ public partial class MainWindow : Window
         }
 
         return true;
+    }
+
+    private static TimeSpan ComputeRetryBackoffDelay(int retryNumber)
+    {
+        // retryNumber is 1-based (first retry is 1 second), then exponential up to a fixed cap.
+        var exponent = Math.Max(0, Math.Min(30, retryNumber - 1));
+        var seconds = Math.Min(RetryBackoffMaxSeconds, RetryBackoffBaseSeconds * (1L << exponent));
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    private async Task<TaskExecutionResult> ExecuteTaskWithRetriesAsync(
+        LauncherTask task,
+        Button? sourceButton,
+        bool isReplay,
+        string? replayFromEntryId = null,
+        DataflowContext? dataflowContext = null,
+        string? chainStepLabel = null,
+        CancellationToken externalCancellationToken = default,
+        ExecutionTargetSelection? forcedExecutionTargetSelection = null)
+    {
+        var configuredRetries = Math.Max(0, task.Retries);
+        if (configuredRetries == 0)
+        {
+            return await ExecuteTaskAsync(
+                task,
+                sourceButton,
+                isReplay,
+                replayFromEntryId,
+                dataflowContext,
+                chainStepLabel,
+                externalCancellationToken,
+                forcedExecutionTargetSelection);
+        }
+
+        var taskStateKey = GetTaskStateKey(task);
+        using var retryCancellationSource = new CancellationTokenSource();
+        using var linkedRetryCancellationSource = externalCancellationToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(retryCancellationSource.Token, externalCancellationToken)
+            : null;
+
+        var effectiveRetryToken = linkedRetryCancellationSource?.Token ?? retryCancellationSource.Token;
+        _taskRetryCancellation[taskStateKey] = retryCancellationSource;
+
+        try
+        {
+            var totalAttempts = configuredRetries + 1;
+            for (var attempt = 1; attempt <= totalAttempts; attempt++)
+            {
+                if (attempt > 1)
+                {
+                    DebugTraceLog.Write($"[TaskRun] Retrying task '{task.Name}' attempt {attempt}/{totalAttempts}.");
+                }
+
+                var result = await ExecuteTaskAsync(
+                    task,
+                    sourceButton,
+                    isReplay,
+                    replayFromEntryId,
+                    dataflowContext,
+                    chainStepLabel,
+                    effectiveRetryToken,
+                    forcedExecutionTargetSelection);
+
+                if (result.Succeeded || attempt >= totalAttempts || effectiveRetryToken.IsCancellationRequested)
+                {
+                    return result;
+                }
+
+                var delay = ComputeRetryBackoffDelay(attempt);
+                DebugTraceLog.Write($"[TaskRun] Task '{task.Name}' retry delay {delay.TotalSeconds:F0}s before attempt {attempt + 1}/{totalAttempts}.");
+                await Task.Delay(delay, effectiveRetryToken);
+            }
+        }
+        catch (OperationCanceledException) when (effectiveRetryToken.IsCancellationRequested)
+        {
+            DebugTraceLog.Write($"[TaskRun] Retry sequence cancelled for task '{task.Name}'.");
+            return new TaskExecutionResult { Succeeded = false, ExitCode = null };
+        }
+        finally
+        {
+            _taskRetryCancellation.Remove(taskStateKey);
+        }
+
+        return new TaskExecutionResult { Succeeded = false, ExitCode = null };
     }
 
     private async Task<TaskExecutionResult> ExecuteTaskAsync(
@@ -11359,8 +11681,7 @@ public partial class MainWindow : Window
         {
             if (!tabContext.RunItemExpander.IsExpanded)
             {
-                tabContext.RunItemContainer.BorderThickness = new Thickness(1);
-                tabContext.RunItemContainer.Opacity = 0.86;
+                    ApplyRunItemInactiveVisual(tabContext.RunItemContainer);
             }
         };
 
@@ -11450,8 +11771,8 @@ public partial class MainWindow : Window
 
         var listPaneBorder = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(0x17, 0x1D, 0x22)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0x30, 0x36, 0x3D)),
+            Background = ResolveThemeBrush("PanelBackgroundBrush", ThemeFallbackPalette.OutputPanelBackground),
+            BorderBrush = ResolveThemeBrush("PanelBorderBrush", ThemeFallbackPalette.OutputPanelBorder),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(8),
@@ -11502,8 +11823,8 @@ public partial class MainWindow : Window
         tabContext.SpinnerTimer.Stop();
         tabContext.StatusText.Text = succeeded ? "●" : "✖";
         tabContext.StatusText.Foreground = succeeded
-            ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50))
-            : new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            ? new SolidColorBrush(ThemeFallbackPalette.StatusSucceeded)
+            : new SolidColorBrush(ThemeFallbackPalette.StatusFailed);
     }
 
     private void ExpandOutputRun(TaskTabContext runContext)
@@ -11515,13 +11836,39 @@ public partial class MainWindow : Window
             if (!ReferenceEquals(run, runContext))
             {
                 run.RunItemExpander.IsExpanded = false;
-                run.RunItemContainer.BorderThickness = new Thickness(1);
-                run.RunItemContainer.Opacity = 0.86;
+                ApplyRunItemInactiveVisual(run.RunItemContainer);
             }
         }
 
-        runContext.RunItemContainer.BorderThickness = new Thickness(2);
-        runContext.RunItemContainer.Opacity = 1.0;
+        ApplyRunItemActiveVisual(runContext.RunItemContainer);
+    }
+
+    private static TextBlock CreateTaskCardFooterGlyph(string text, FontFamily fontFamily, Brush foregroundBrush, string toolTip)
+    {
+        return new TextBlock
+        {
+            Text = text,
+            FontFamily = fontFamily,
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = foregroundBrush,
+            Opacity = 0.9,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0),
+            ToolTip = toolTip
+        };
+    }
+
+    private static void ApplyRunItemInactiveVisual(Border container)
+    {
+        container.BorderThickness = new Thickness(1);
+        container.Opacity = 0.86;
+    }
+
+    private static void ApplyRunItemActiveVisual(Border container)
+    {
+        container.BorderThickness = new Thickness(2);
+        container.Opacity = 1.0;
     }
 
     private void UpdateOutputListPlaceholder(OutputGroupPanelContext panel)
@@ -12220,13 +12567,13 @@ public partial class MainWindow : Window
     }
 
     private static readonly Brush TimestampBrush = new SolidColorBrush(Color.FromRgb(0x9A, 0xA6, 0xB2));
-    private static readonly Brush StdoutTagBrush = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
-    private static readonly Brush StderrTagBrush = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
-    private static readonly Brush ValidationTagBrush = new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0xE5));
+    private static readonly Brush StdoutTagBrush = new SolidColorBrush(ThemeFallbackPalette.StatusSucceeded);
+    private static readonly Brush StderrTagBrush = new SolidColorBrush(ThemeFallbackPalette.StatusFailed);
+    private static readonly Brush ValidationTagBrush = new SolidColorBrush(ThemeFallbackPalette.StatusRunning);
     private static readonly Brush GenericTagBrush = new SolidColorBrush(Color.FromRgb(0x26, 0xC6, 0xDA));
-    private static readonly Brush PassedWordBrush = new SolidColorBrush(Color.FromRgb(0x66, 0xBB, 0x6A));
-    private static readonly Brush FailedWordBrush = new SolidColorBrush(Color.FromRgb(0xEF, 0x53, 0x50));
-    private static readonly Brush TimeoutWordBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xA7, 0x26));
-    private static readonly Brush CancelledWordBrush = new SolidColorBrush(Color.FromRgb(0xAB, 0x47, 0xBC));
+    private static readonly Brush PassedWordBrush = new SolidColorBrush(ThemeFallbackPalette.LogPassedWord);
+    private static readonly Brush FailedWordBrush = new SolidColorBrush(ThemeFallbackPalette.LogFailedWord);
+    private static readonly Brush TimeoutWordBrush = new SolidColorBrush(ThemeFallbackPalette.LogTimeoutWord);
+    private static readonly Brush CancelledWordBrush = new SolidColorBrush(ThemeFallbackPalette.LogCancelledWord);
     private static readonly Regex OutcomeWordRegex = new(@"\b(passed|failed|timeout|timed\s*out|cancelled|canceled)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 }

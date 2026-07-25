@@ -111,6 +111,7 @@ public static class TaskVariableService
             RequiresElevation = task.RequiresElevation,
             IgnoreExitCode = task.IgnoreExitCode,
             TimeoutSeconds = task.TimeoutSeconds,
+            Retries = task.Retries,
             KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = task.MaxCapturedOutputChars,
             IsEnabled = task.IsEnabled,

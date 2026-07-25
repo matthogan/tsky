@@ -75,6 +75,7 @@ public sealed class RunHistoryService
             RequiresElevation = snapshot.RequiresElevation,
             IgnoreExitCode = snapshot.IgnoreExitCode,
             TimeoutSeconds = snapshot.TimeoutSeconds,
+            Retries = snapshot.Retries,
             KillProcessTreeOnCancel = snapshot.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = snapshot.MaxCapturedOutputChars,
             Env = new Dictionary<string, string>(snapshot.Env, StringComparer.OrdinalIgnoreCase)
@@ -119,6 +120,7 @@ public sealed class RunHistoryService
             RequiresElevation = task.RequiresElevation,
             IgnoreExitCode = task.IgnoreExitCode,
             TimeoutSeconds = task.TimeoutSeconds,
+            Retries = task.Retries,
             KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = task.MaxCapturedOutputChars,
             Env = new Dictionary<string, string>(task.Env, StringComparer.OrdinalIgnoreCase)

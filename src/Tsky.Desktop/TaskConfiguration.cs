@@ -421,6 +421,7 @@ public sealed class TaskConfiguration
             || !TryValidateBooleanProperty(task, "killProcessTreeOnCancel", out error)
             || !TryValidateIntegerProperty(task, "timeoutSeconds", out error)
             || !TryValidateIntegerProperty(task, "maxCapturedOutputChars", out error)
+            || !TryValidateNonNegativeIntegerProperty(task, "retries", out error)
             || !TryValidateStringDictionary(task, "env", out error)
             || !TryValidateStringDictionary(task, "inputs", out error)
             || !TryValidateStringDictionary(task, "inputBindings", out error)
@@ -543,6 +544,27 @@ public sealed class TaskConfiguration
         if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out _))
         {
             error = $"{propertyName} must be an integer.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateNonNegativeIntegerProperty(JsonElement obj, string propertyName, out string error)
+    {
+        if (!TryValidateIntegerProperty(obj, propertyName, out error))
+        {
+            return false;
+        }
+
+        if (!TryGetPropertyIgnoreCase(obj, propertyName, out var value))
+        {
+            return true;
+        }
+
+        if (!value.TryGetInt32(out var integerValue) || integerValue < 0)
+        {
+            error = $"{propertyName} must be greater than or equal to 0.";
             return false;
         }
 
@@ -698,6 +720,7 @@ public sealed class TaskConfiguration
         task.ExecutionTargetMode = NormalizeTargetMode(task.ExecutionTargetMode);
         task.TargetAgentId = string.IsNullOrWhiteSpace(task.TargetAgentId) ? null : task.TargetAgentId.Trim();
         task.TargetPoolId = string.IsNullOrWhiteSpace(task.TargetPoolId) ? null : task.TargetPoolId.Trim();
+        task.Retries = Math.Max(0, task.Retries);
         task.Env ??= [];
         task.Inputs ??= [];
         task.InputBindings ??= [];
@@ -920,6 +943,8 @@ public sealed class LauncherTask
     public bool IgnoreExitCode { get; set; }
 
     public int TimeoutSeconds { get; set; } = 600;
+
+    public int Retries { get; set; }
 
     public bool KillProcessTreeOnCancel { get; set; } = true;
 

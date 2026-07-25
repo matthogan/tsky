@@ -65,6 +65,7 @@ public partial class TaskEditorWindow : Window
                      CommandLineTextBox,
                      WorkingDirectoryTextBox,
                      TimeoutSecondsTextBox,
+                     RetriesTextBox,
                      MaxCapturedOutputCharsTextBox,
                      EnvVarsTextBox
                  })
@@ -123,6 +124,7 @@ public partial class TaskEditorWindow : Window
         RequiresElevationCheckBox.IsChecked = task.RequiresElevation;
         IgnoreExitCodeCheckBox.IsChecked = task.IgnoreExitCode;
         TimeoutSecondsTextBox.Text = task.TimeoutSeconds.ToString();
+        RetriesTextBox.Text = Math.Max(0, task.Retries).ToString();
         KillProcessTreeOnCancelCheckBox.IsChecked = task.KillProcessTreeOnCancel;
         MaxCapturedOutputCharsTextBox.Text = task.MaxCapturedOutputChars.ToString();
         IsEnabledCheckBox.IsChecked = task.IsEnabled;
@@ -212,6 +214,13 @@ public partial class TaskEditorWindow : Window
             return null;
         }
 
+        if (!TryParseNonNegativeInt(RetriesTextBox.Text, "Retries", out var retries, out var retriesError))
+        {
+            AppMessageBox.Show(this, retriesError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RetriesTextBox.Focus();
+            return null;
+        }
+
         var runner = (RunnerComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "exe";
 
         var mergedTask = CloneTask(_structuredBaselineTask);
@@ -226,6 +235,7 @@ public partial class TaskEditorWindow : Window
         mergedTask.RequiresElevation = RequiresElevationCheckBox.IsChecked == true;
         mergedTask.IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked == true;
         mergedTask.TimeoutSeconds = timeoutSeconds;
+        mergedTask.Retries = retries;
         mergedTask.KillProcessTreeOnCancel = KillProcessTreeOnCancelCheckBox.IsChecked != false;
         mergedTask.MaxCapturedOutputChars = maxCapturedOutputChars;
         mergedTask.IsEnabled = IsEnabledCheckBox.IsChecked != false;
@@ -253,6 +263,7 @@ public partial class TaskEditorWindow : Window
             RequiresElevation = source.RequiresElevation,
             IgnoreExitCode = source.IgnoreExitCode,
             TimeoutSeconds = source.TimeoutSeconds,
+            Retries = source.Retries,
             KillProcessTreeOnCancel = source.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = source.MaxCapturedOutputChars,
             IsEnabled = source.IsEnabled,
@@ -378,6 +389,20 @@ public partial class TaskEditorWindow : Window
         if (!int.TryParse(text.Trim(), out value) || value <= 0)
         {
             error = $"{fieldName} must be a positive integer.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseNonNegativeInt(string text, string fieldName, out int value, out string error)
+    {
+        value = 0;
+        error = string.Empty;
+
+        if (!int.TryParse(text.Trim(), out value) || value < 0)
+        {
+            error = $"{fieldName} must be a non-negative integer.";
             return false;
         }
 

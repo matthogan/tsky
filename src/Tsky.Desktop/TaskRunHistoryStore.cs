@@ -42,6 +42,8 @@ public sealed class TaskRunSnapshot
 
     public int TimeoutSeconds { get; set; } = 600;
 
+    public int Retries { get; set; }
+
     public bool KillProcessTreeOnCancel { get; set; } = true;
 
     public int MaxCapturedOutputChars { get; set; } = 65536;

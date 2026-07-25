@@ -312,6 +312,8 @@
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
@@ -428,20 +430,29 @@
                         <TextBlock Grid.Row="10" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Timeout (sec)" />
                         <TextBox x:Name="TimeoutSecondsTextBox" Grid.Row="10" Grid.Column="1" Margin="0,0,0,10" Height="32" />
 
-                        <TextBlock Grid.Row="11" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
-                        <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="11" Grid.Column="1" Margin="0,0,0,10" Height="32" />
+                        <TextBlock Grid.Row="11" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Retries" />
+                        <TextBox x:Name="RetriesTextBox" Grid.Row="11" Grid.Column="1" Margin="0,0,0,10" Height="32" />
+
+                        <TextBlock Grid.Row="12"
+                                   Grid.Column="1"
+                                   Margin="0,0,0,10"
+                                   Foreground="{DynamicResource SecondaryTextBrush}"
+                                   Text="Backoff is fixed: 1s, 2s, 4s... up to 60s." />
+
+                        <TextBlock Grid.Row="13" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Max Output Chars" />
+                        <TextBox x:Name="MaxCapturedOutputCharsTextBox" Grid.Row="13" Grid.Column="1" Margin="0,0,0,10" Height="32" />
 
                         <CheckBox x:Name="IsEnabledCheckBox"
-                                  Grid.Row="12"
+                                  Grid.Row="14"
                                   Grid.Column="1"
                                   Margin="0,0,0,12"
                                   VerticalAlignment="Center"
                                   IsChecked="True"
                                   Content="Task is enabled" />
 
-                        <TextBlock Grid.Row="13" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
+                        <TextBlock Grid.Row="15" Grid.Column="0" Margin="0,0,12,8" VerticalAlignment="Top" Text="Env Vars" />
                         <TextBox x:Name="EnvVarsTextBox"
-                                 Grid.Row="13"
+                                 Grid.Row="15"
                                  Grid.Column="1"
                                  AcceptsReturn="True"
                                  VerticalScrollBarVisibility="Auto"

@@ -201,6 +201,61 @@ public sealed class TaskConfigurationSchemaTests
     }
 
     [Fact]
+    public void TryValidateSchema_AllowsNonNegativeRetries()
+    {
+        var json = """
+        {
+          "schemaVersion": 1,
+          "groups": [
+            {
+              "name": "General",
+              "tasks": [
+                {
+                  "name": "Retryable",
+                  "commandLine": "echo hi",
+                  "runner": "cmd",
+                  "retries": 3
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        var valid = TaskConfiguration.TryValidateSchema(json, out var error);
+
+        Assert.True(valid, error);
+    }
+
+    [Fact]
+    public void TryValidateSchema_FailsForNegativeRetries()
+    {
+        var json = """
+        {
+          "schemaVersion": 1,
+          "groups": [
+            {
+              "name": "General",
+              "tasks": [
+                {
+                  "name": "Retryable",
+                  "commandLine": "echo hi",
+                  "runner": "cmd",
+                  "retries": -1
+                }
+              ]
+            }
+          ]
+        }
+        """;
+
+        var valid = TaskConfiguration.TryValidateSchema(json, out var error);
+
+        Assert.False(valid);
+        Assert.Contains("retries", error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Save_DoesNotPersistUnknownLegacyProperty_InTasksJson()
     {
       var tempPath = Path.Combine(Path.GetTempPath(), $"tsky-schema-legacy-save-{Guid.NewGuid():N}.json");

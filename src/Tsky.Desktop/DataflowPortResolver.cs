@@ -87,6 +87,7 @@ internal static class DataflowPortResolver
             RequiresElevation = task.RequiresElevation,
             IgnoreExitCode = task.IgnoreExitCode,
             TimeoutSeconds = task.TimeoutSeconds,
+            Retries = task.Retries,
             KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = task.MaxCapturedOutputChars,
             CommandLine = ResolveValue(task.CommandLine, resolvedInputs, context, trace, unresolvedPlaceholders, "commandLine"),

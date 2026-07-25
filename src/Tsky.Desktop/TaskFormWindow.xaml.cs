@@ -43,6 +43,7 @@ public partial class TaskFormWindow : Window
                      CommandLineTextBox,
                      WorkingDirectoryTextBox,
                      TimeoutSecondsTextBox,
+                     RetriesTextBox,
                      MaxCapturedOutputCharsTextBox,
                      EnvVarsTextBox
                  })
@@ -146,6 +147,13 @@ public partial class TaskFormWindow : Window
             return;
         }
 
+        if (!TryParseNonNegativeInt(RetriesTextBox.Text, "Retries", out var retries, out var retriesError))
+        {
+            AppMessageBox.Show(this, retriesError, "Validation", MessageBoxButton.OK, MessageBoxImage.Warning);
+            RetriesTextBox.Focus();
+            return;
+        }
+
         var runner = (RunnerComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "exe";
 
         Task = new LauncherTask
@@ -160,6 +168,7 @@ public partial class TaskFormWindow : Window
             RequiresElevation = RequiresElevationCheckBox.IsChecked == true,
             IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked == true,
             TimeoutSeconds = timeoutSeconds,
+            Retries = retries,
             KillProcessTreeOnCancel = KillProcessTreeOnCancelCheckBox.IsChecked != false,
             MaxCapturedOutputChars = maxCapturedOutputChars,
             IsEnabled = IsEnabledCheckBox.IsChecked != false,
@@ -213,6 +222,20 @@ public partial class TaskFormWindow : Window
         if (!int.TryParse(text.Trim(), out value) || value <= 0)
         {
             error = $"{fieldName} must be a positive integer.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseNonNegativeInt(string text, string fieldName, out int value, out string error)
+    {
+        value = 0;
+        error = string.Empty;
+
+        if (!int.TryParse(text.Trim(), out value) || value < 0)
+        {
+            error = $"{fieldName} must be a non-negative integer.";
             return false;
         }
 

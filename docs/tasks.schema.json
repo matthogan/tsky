@@ -45,6 +45,7 @@
         "requiresElevation": { "type": "boolean" },
         "ignoreExitCode": { "type": "boolean" },
         "timeoutSeconds": { "type": "integer" },
+        "retries": { "type": "integer", "minimum": 0 },
         "killProcessTreeOnCancel": { "type": "boolean" },
         "maxCapturedOutputChars": { "type": "integer" },
         "isEnabled": { "type": "boolean" },

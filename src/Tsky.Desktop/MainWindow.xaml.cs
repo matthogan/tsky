@@ -83,6 +83,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, Button> _sidebarAgentButtonsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
     private readonly Dictionary<string, Grid> _agentCardsById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Grid> _schedulerCardsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, GraphNodeVisual> _graphNodesByIndex = [];
     private readonly Dictionary<string, TaskRunningOverlayVisual> _taskRunningOverlays = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ConnectorVisual> _connectorVisuals = [];
@@ -95,6 +96,9 @@ public partial class MainWindow : Window
     private readonly DataflowGraphService _dataflowGraphService = new();
     private readonly AgentRegistryService _agentRegistryService = new();
     private readonly AgentGatewaySettingsService _agentGatewaySettingsService = new();
+    private SchedulerConfiguration _schedulerConfiguration = new();
+    private List<SchedulerRunHistoryEntry> _schedulerRunHistory = [];
+    private readonly SchedulerRunHistoryService _schedulerRunHistoryService;
     private AgentRegistry _agentRegistry = new();
     private AgentGatewaySettings _agentGatewaySettings = new();
     private readonly AgentGatewayHost _agentGatewayHost;
@@ -109,7 +113,9 @@ public partial class MainWindow : Window
     private readonly Dictionary<RichTextBox, OutputBudgetState> _outputBudgetByTextBox = new();
     private readonly DispatcherTimer _agentStatusRefreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool _isAgentViewSelected;
+    private bool _isSchedulerViewSelected;
     private string? _selectedAgentId;
+    private string? _selectedScheduledItemId;
     private string? _selectedDispatchAgentId;
     private bool _isReplayingHistoryBatch;
     private bool _isHistoryDetailsVisible = true;
@@ -137,6 +143,9 @@ public partial class MainWindow : Window
     private DateTime _graphAutoPanStartedAtUtc;
     private bool _graphAutoPanActive;
     private CancellationTokenSource? _gatewayValidationCts;
+    private CancellationTokenSource? _schedulerPollerCancellationSource;
+    private Task? _schedulerPollerTask;
+    private readonly Dictionary<string, DateTime> _schedulerOccurrenceLedger = new(StringComparer.OrdinalIgnoreCase);
     private bool _isGatewayToggleInProgress;
     private static readonly Brush RibbonHistoryActiveBrush = new SolidColorBrush(Color.FromRgb(0x27, 0xF6, 0xC0));
     private static readonly string[] RunningIndicatorFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -160,6 +169,9 @@ public partial class MainWindow : Window
     private const int RetryBackoffBaseSeconds = 1;
     private const int RetryBackoffMaxSeconds = 60;
     private const string AgentViewOutputHeightCacheKey = "__AGENTS_VIEW__";
+    private const string SchedulerViewOutputHeightCacheKey = "__SCHEDULER_VIEW__";
+    private const string SchedulerOutputGroupName = "__SCHEDULER__";
+    private const int MaxSchedulerHistoryEntries = 500;
     private const string DefaultResultEvaluatorScript = """
         function evaluate(task) {
             if (task.timedOut || task.cancelled) {
@@ -346,6 +358,13 @@ public partial class MainWindow : Window
         public required Border SelectionBorder { get; init; }
         public required Border InvalidBindingBorder { get; init; }
         public required Button TaskButton { get; init; }
+    }
+
+    private sealed class ScheduledItemCardVisual
+    {
+        public required string ScheduledItemId { get; init; }
+
+        public required Border SelectionBorder { get; init; }
     }
 
     private sealed class GraphNodeVisual
@@ -611,6 +630,34 @@ public partial class MainWindow : Window
         public override string ToString() => DisplayText;
     }
 
+    private sealed class SchedulerHistoryListItem
+    {
+        public required SchedulerRunHistoryEntry Entry { get; init; }
+
+        public string DisplayText
+        {
+            get
+            {
+                var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+                var statusText = Entry.Outcome switch
+                {
+                    TaskRunOutcome.Succeeded => "OK",
+                    TaskRunOutcome.Started => "BG",
+                    TaskRunOutcome.IgnoredNonZeroExit => "IGN",
+                    TaskRunOutcome.FailedNonZeroExit => "ERR",
+                    TaskRunOutcome.LaunchFailed => "LAUNCH",
+                    TaskRunOutcome.TimedOut => "TIME",
+                    TaskRunOutcome.Cancelled => "CXL",
+                    _ => "RUN"
+                };
+
+                return $"{localTime}  {statusText}  {Entry.ScheduledItemDisplayName}";
+            }
+        }
+
+        public override string ToString() => DisplayText;
+    }
+
     private static readonly Color[] PastelPalette =
     [
         Color.FromRgb(0x56, 0xCC, 0xF2),
@@ -657,6 +704,10 @@ public partial class MainWindow : Window
         Closing += MainWindow_Closing;
         _runHistory = TaskRunHistoryStore.Load();
         _runHistoryService = new RunHistoryService(_runHistory, MaxRunHistoryEntries);
+        _schedulerConfiguration = SchedulerConfigurationStore.Load();
+        ResetSchedulerRuntimeStateOnStartup();
+        _schedulerRunHistory = SchedulerRunHistoryStore.Load();
+        _schedulerRunHistoryService = new SchedulerRunHistoryService(_schedulerRunHistory, MaxSchedulerHistoryEntries);
         TaskScrollViewer.ScrollChanged += TaskScrollViewer_ScrollChanged;
         TaskScrollViewer.MouseRightButtonUp += TaskScrollViewer_MouseRightButtonUp;
         TaskScrollViewer.SizeChanged += (_, _) =>
@@ -700,6 +751,7 @@ public partial class MainWindow : Window
         _agentStatusRefreshTimer.Start();
 
         LoadTaskButtons();
+        StartSchedulerPoller();
         ConfigureResultEvaluatorEditor();
         UpdateTaskSurfaceToggleUi();
         SyncTaskSurfaceToViewport();
@@ -784,6 +836,7 @@ public partial class MainWindow : Window
             ApplyResultEvaluatorEditorTheme();
             UpdateGatewayListenerToggleUi();
             UpdateAgentsSidebarVisual();
+            UpdateSchedulerSidebarVisual();
             UpdateAgentSidebarSelectionVisuals();
             if (ReferenceEquals(BottomPaneTabControl?.SelectedItem, AgentsDispatchPaneTabItem))
             {
@@ -990,6 +1043,7 @@ public partial class MainWindow : Window
         _sidebarStatusTimer.Stop();
         _graphRenderDebounceTimer.Stop();
         _agentStatusRefreshTimer.Stop();
+        StopSchedulerPoller();
         CommandManager.RemovePreviewExecutedHandler(this, CommandManager_PreviewExecuted);
         _ = _agentGatewayHost.StopAsync();
         PersistUiState();
@@ -2503,7 +2557,9 @@ public partial class MainWindow : Window
         GroupsHeaderCountText.Text = $"({groupNames.Count})";
         GroupsSummaryText.Text = $"{groupNames.Count} groups created";
         AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
+        SchedulerHeaderCountText.Text = $"({_schedulerConfiguration.Items.Count})";
         UpdateAgentsSidebarVisual();
+        UpdateSchedulerSidebarVisual();
         RebuildAgentsSidebarList();
         if (groupNames.Count == 0)
         {
@@ -2522,6 +2578,16 @@ public partial class MainWindow : Window
         if (_isAgentViewSelected)
         {
             RenderAgentsView();
+            ApplyGroupViewState();
+            UpdateRibbonTaskActionState();
+            return;
+        }
+
+        if (_isSchedulerViewSelected)
+        {
+            RenderSchedulerView();
+            ShowSelectedGroupOutputTabControl();
+            RefreshHistoryView();
             ApplyGroupViewState();
             UpdateRibbonTaskActionState();
             return;
@@ -2550,7 +2616,7 @@ public partial class MainWindow : Window
         var groupDefaultIconBrush = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0));
         var groupDefaultNameBrush = ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryText);
         var selectedGroupNameBrush = App.IsDarkThemeEnabled()
-            ? new SolidColorBrush(Color.FromRgb(0x7D, 0x85, 0x90))
+            ? new SolidColorBrush(Color.FromRgb(0x95, 0xA0, 0xAA))
             : ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryText);
         var mutedTextBrush = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81));
         var badgeBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38));
@@ -2796,9 +2862,30 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SidebarSchedulerExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (SchedulerSectionChevronText is not null)
+        {
+            SchedulerSectionChevronText.Text = "▼";
+        }
+    }
+
+    private void SidebarSchedulerExpander_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (SchedulerSectionChevronText is not null)
+        {
+            SchedulerSectionChevronText.Text = "▶";
+        }
+    }
+
     private void AgentsSidebarButton_Click(object sender, RoutedEventArgs e)
     {
         SelectAgentsView();
+    }
+
+    private void SchedulerSidebarButton_Click(object sender, RoutedEventArgs e)
+    {
+        SelectSchedulerView();
     }
 
     private void SidebarAgentRowButton_Click(object sender, RoutedEventArgs e)
@@ -2954,6 +3041,7 @@ public partial class MainWindow : Window
 
         CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = true;
+        _isSchedulerViewSelected = false;
         _preferGroupDeleteContext = false;
         StopGraphPanning();
         ClearGraphPointerInteraction();
@@ -2963,20 +3051,47 @@ public partial class MainWindow : Window
         UpdateSelectedAgentRuntimePanel();
         UpdateAgentSidebarSelectionVisuals();
         UpdateAgentsSidebarVisual();
+        UpdateSchedulerSidebarVisual();
+        UpdateRibbonTaskActionState();
+    }
+
+    private void SelectSchedulerView()
+    {
+        if (SidebarSchedulerExpander is not null && !SidebarSchedulerExpander.IsExpanded)
+        {
+            SidebarSchedulerExpander.IsExpanded = true;
+        }
+
+        CacheCurrentOutputHeightForSelectedGroup();
+        _isAgentViewSelected = false;
+        _isSchedulerViewSelected = true;
+        _preferGroupDeleteContext = false;
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+        RenderSchedulerView();
+        ShowSelectedGroupOutputTabControl();
+        RefreshHistoryView();
+        ApplyGroupViewState();
+        ApplyBottomPaneTabsForViewMode();
+        UpdateAgentsSidebarVisual();
+        UpdateSchedulerSidebarVisual();
         UpdateRibbonTaskActionState();
     }
 
     private void SelectTasksView()
     {
-        if (!_isAgentViewSelected)
+        if (!_isAgentViewSelected && !_isSchedulerViewSelected)
         {
             return;
         }
 
         CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = false;
+        _isSchedulerViewSelected = false;
         ApplyBottomPaneTabsForViewMode();
         UpdateAgentsSidebarVisual();
+        UpdateSchedulerSidebarVisual();
+        UpdateRibbonTaskActionState();
     }
 
     private void UpdateAgentsSidebarVisual()
@@ -2989,6 +3104,372 @@ public partial class MainWindow : Window
         AgentsSidebarButton.Background = _isAgentViewSelected
             ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
             : Brushes.Transparent;
+    }
+
+    private void UpdateSchedulerSidebarVisual()
+    {
+        if (SchedulerSidebarButton is null)
+        {
+            return;
+        }
+
+        SchedulerSidebarButton.Background = _isSchedulerViewSelected
+            ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
+            : Brushes.Transparent;
+    }
+
+    private void RenderSchedulerView()
+    {
+        TaskPanel.Children.Clear();
+        TaskGraphCanvas.Children.Clear();
+        TaskGraphEdgeOverlay.Children.Clear();
+        TaskConnectorOverlay.Children.Clear();
+        _taskCardsByIndex.Clear();
+        _agentCardsById.Clear();
+        _schedulerCardsById.Clear();
+        _graphNodesByIndex.Clear();
+        _taskRunningOverlays.Clear();
+        _visibleTaskIndexes.Clear();
+        _selectedTaskIndex = null;
+        TaskPanel.AllowDrop = false;
+        SyncTaskSurfaceToViewport();
+        ApplyTaskSurfaceModeVisibility();
+
+        var scheduledItems = _schedulerConfiguration.Items
+            .OrderBy(item => item.TriggerAtUtc)
+            .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        GroupTitleText.Text = "Scheduler";
+        GroupMetaText.Text = $"{scheduledItems.Count} scheduled item(s)";
+        EmptyStateText.Text = "No scheduled items yet. Use the Schedule menu action from a task or group.";
+        EmptyStateText.Visibility = scheduledItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (scheduledItems.Count == 0)
+        {
+            _selectedScheduledItemId = null;
+            UpdateSchedulerSidebarVisual();
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_selectedScheduledItemId)
+            || !scheduledItems.Any(item => string.Equals(item.Id, _selectedScheduledItemId, StringComparison.OrdinalIgnoreCase)))
+        {
+            _selectedScheduledItemId = scheduledItems[0].Id;
+        }
+
+        for (var index = 0; index < scheduledItems.Count; index++)
+        {
+            TaskPanel.Children.Add(CreateScheduledItemCard(scheduledItems[index], PastelPalette[index % PastelPalette.Length]));
+        }
+
+        ApplySchedulerCardSelectionVisuals();
+    }
+
+    private Grid CreateScheduledItemCard(ScheduledItem item, Color cardColor)
+    {
+        var foregroundBrush = GetReadableTextBrush(cardColor);
+        var cardFontFamily = TryFindResource("CardUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
+        var card = new Grid
+        {
+            Width = 195,
+            Height = 195,
+            Margin = new Thickness(0, 0, 21, 21)
+        };
+
+        var selectionBorder = new Border
+        {
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            IsHitTestVisible = false
+        };
+        selectionBorder.SetResourceReference(Border.BorderBrushProperty, "ConnectorFocusedBrush");
+
+        var body = new Grid();
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = item.DisplayName,
+            FontWeight = FontWeights.Bold,
+            FontFamily = cardFontFamily,
+            FontSize = 16,
+            Foreground = foregroundBrush,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxHeight = 44
+        };
+
+        var titleBar = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(28, 18, 30, 42)),
+            Padding = new Thickness(10, 8, 42, 8),
+            Child = title
+        };
+        Grid.SetRow(titleBar, 0);
+
+        var details = new TextBlock
+        {
+            Text = BuildScheduledItemCardSummary(item),
+            FontFamily = cardFontFamily,
+            FontSize = 12.5,
+            Foreground = foregroundBrush,
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.92,
+            MaxHeight = 92
+        };
+        var detailContainer = new Border
+        {
+            Padding = new Thickness(12, 10, 12, 10),
+            Child = details
+        };
+        Grid.SetRow(detailContainer, 1);
+
+        var footer = new TextBlock
+        {
+            Text = BuildScheduledItemCardFooter(item),
+            FontFamily = cardFontFamily,
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = foregroundBrush,
+            Opacity = 0.86,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(10, 0, 42, 8),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetRow(footer, 2);
+
+        body.Children.Add(titleBar);
+        body.Children.Add(detailContainer);
+        body.Children.Add(footer);
+
+        var button = new Button
+        {
+            Content = body,
+            Tag = item.Id,
+            Style = (Style)Resources["TaskCardButtonStyle"],
+            Background = new SolidColorBrush(cardColor),
+            Foreground = foregroundBrush,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+            Opacity = item.IsEnabled ? 1.0 : 0.66
+        };
+        button.Click += ScheduledItemCardButton_Click;
+        button.PreviewMouseRightButtonUp += ScheduledItemCardButton_PreviewMouseRightButtonUp;
+
+        var menuButton = new Button
+        {
+            Content = "⋮",
+            Tag = item.Id,
+            Style = (Style)Resources["TaskMenuButtonStyle"],
+            Background = new SolidColorBrush(cardColor),
+            BorderBrush = new SolidColorBrush(cardColor),
+            Foreground = foregroundBrush
+        };
+        menuButton.Click += ScheduledItemMenuButton_Click;
+
+        card.Tag = new ScheduledItemCardVisual
+        {
+            ScheduledItemId = item.Id,
+            SelectionBorder = selectionBorder
+        };
+        card.Children.Add(button);
+        card.Children.Add(selectionBorder);
+        card.Children.Add(menuButton);
+        _schedulerCardsById[item.Id] = card;
+        return card;
+    }
+
+    private static string BuildScheduledItemCardSummary(ScheduledItem item)
+    {
+        var targetLabel = item.TargetKind == ScheduledTargetKind.GroupChainSnapshot
+            ? "Group chain snapshot"
+            : "Task snapshot";
+        var nextRunUtc = item.NextRunAtUtc ?? item.TriggerAtUtc;
+        var triggerLabel = nextRunUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var modeLabel = item.IsRecurring ? "repeatable" : "one-shot";
+        var stateLabel = item.IsEnabled ? "enabled" : "disabled";
+        var lastOutcomeLabel = string.IsNullOrWhiteSpace(item.LastRunOutcome)
+            ? "last: never"
+            : $"last: {item.LastRunOutcome}";
+        return $"{targetLabel}\n{triggerLabel}\n{modeLabel} · {stateLabel}\n{lastOutcomeLabel}";
+    }
+
+    private static string BuildScheduledItemCardFooter(ScheduledItem item)
+    {
+        var windowSeconds = Math.Max(10, item.TriggerWindowSeconds);
+        if (item.IsRunning)
+        {
+            return $"running · ±{windowSeconds}s window";
+        }
+
+        if (item.LastCompletedAtUtc.HasValue)
+        {
+            return $"last {item.LastCompletedAtUtc.Value.ToLocalTime():HH:mm:ss} · ±{windowSeconds}s";
+        }
+
+        return $"±{windowSeconds}s window";
+    }
+
+    private void ScheduledItemCardButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string scheduledItemId })
+        {
+            return;
+        }
+
+        _selectedScheduledItemId = scheduledItemId;
+        ApplySchedulerCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+    }
+
+    private void ScheduledItemCardButton_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Button { Tag: string scheduledItemId } button)
+        {
+            return;
+        }
+
+        _selectedScheduledItemId = scheduledItemId;
+        ApplySchedulerCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+        OpenContextMenuAtPointer(CreateScheduledItemContextMenu(scheduledItemId), button);
+        e.Handled = true;
+    }
+
+    private void ScheduledItemMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string scheduledItemId } button)
+        {
+            return;
+        }
+
+        _selectedScheduledItemId = scheduledItemId;
+        ApplySchedulerCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+        OpenContextMenuAtButton(CreateScheduledItemContextMenu(scheduledItemId), button);
+    }
+
+    private ContextMenu CreateScheduledItemContextMenu(string scheduledItemId)
+    {
+        var menu = CreateRibbonContextMenu();
+        var item = FindScheduledItem(scheduledItemId);
+
+        var editItem = new MenuItem
+        {
+            Header = "Edit...",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = item is not null
+        };
+        editItem.Click += (_, _) =>
+        {
+            _selectedScheduledItemId = scheduledItemId;
+            EditScheduledItem(scheduledItemId);
+        };
+
+        var toggleEnabledItem = new MenuItem
+        {
+            Header = item?.IsEnabled == true ? "Disable" : "Enable",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = item is not null
+        };
+        toggleEnabledItem.Click += (_, _) =>
+        {
+            _selectedScheduledItemId = scheduledItemId;
+            ToggleScheduledItemEnabled(scheduledItemId);
+        };
+
+        var deleteItem = new MenuItem
+        {
+            Header = "Delete",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = item is not null
+        };
+        deleteItem.Click += (_, _) =>
+        {
+            _selectedScheduledItemId = scheduledItemId;
+            TryDeleteSelectedScheduledItem();
+        };
+
+        menu.Items.Add(editItem);
+        menu.Items.Add(toggleEnabledItem);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(deleteItem);
+        return menu;
+    }
+
+    private void EditScheduledItem(string scheduledItemId)
+    {
+        var item = FindScheduledItem(scheduledItemId);
+        if (item is null)
+        {
+            AppMessageBox.Show(this, "The selected scheduled item is no longer available.", "Edit Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var editor = new SchedulerItemEditorWindow(item, isNew: false) { Owner = this };
+        if (editor.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var updated = editor.ScheduledItem;
+        var targetIndex = _schedulerConfiguration.Items.FindIndex(candidate =>
+            string.Equals(candidate.Id, item.Id, StringComparison.OrdinalIgnoreCase));
+        if (targetIndex < 0)
+        {
+            AppMessageBox.Show(this, "The selected scheduled item is no longer available.", "Edit Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _schedulerConfiguration.Items[targetIndex] = updated;
+        _selectedScheduledItemId = updated.Id;
+        SaveSchedulerAndRefresh("Edit Scheduled Item");
+    }
+
+    private void ToggleScheduledItemEnabled(string scheduledItemId)
+    {
+        var item = FindScheduledItem(scheduledItemId);
+        if (item is null)
+        {
+            AppMessageBox.Show(this, "The selected scheduled item is no longer available.", "Enable/Disable Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        item.IsEnabled = !item.IsEnabled;
+        if (!item.IsEnabled)
+        {
+            item.IsRunning = false;
+        }
+
+        item.NextRunAtUtc = item.IsEnabled
+            ? SchedulerTimingService.TryResolveNextRunUtc(item, DateTime.UtcNow)
+            : null;
+        SaveSchedulerAndRefresh("Enable/Disable Scheduled Item");
+    }
+
+    private ScheduledItem? FindScheduledItem(string scheduledItemId)
+    {
+        return _schedulerConfiguration.Items.FirstOrDefault(item =>
+            string.Equals(item.Id, scheduledItemId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void ApplySchedulerCardSelectionVisuals()
+    {
+        foreach (var card in _schedulerCardsById.Values)
+        {
+            if (card.Tag is not ScheduledItemCardVisual visual)
+            {
+                continue;
+            }
+
+            visual.SelectionBorder.BorderThickness =
+                string.Equals(visual.ScheduledItemId, _selectedScheduledItemId, StringComparison.OrdinalIgnoreCase)
+                    ? new Thickness(2)
+                    : new Thickness(0);
+        }
     }
 
     private void RenderAgentsView()
@@ -3644,6 +4125,12 @@ public partial class MainWindow : Window
 
     private void RibbonHistoryButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isSchedulerViewSelected)
+        {
+            BottomPaneTabControl.SelectedItem = HistoryPaneTabItem;
+            return;
+        }
+
         if (!ViewHistoryMenuItem.IsEnabled)
         {
             return;
@@ -3655,6 +4142,12 @@ public partial class MainWindow : Window
 
     private void ToggleHistoryCommand_Executed(object sender, ExecutedRoutedEventArgs e)
     {
+        if (_isSchedulerViewSelected)
+        {
+            BottomPaneTabControl.SelectedItem = HistoryPaneTabItem;
+            return;
+        }
+
         if (!ViewHistoryMenuItem.IsEnabled)
         {
             return;
@@ -3677,7 +4170,7 @@ public partial class MainWindow : Window
 
     private void ToggleViewCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        e.CanExecute = !string.IsNullOrWhiteSpace(_selectedGroupName);
+        e.CanExecute = _isSchedulerViewSelected || !string.IsNullOrWhiteSpace(_selectedGroupName);
     }
 
     private void ApplyGroupViewState()
@@ -3723,16 +4216,30 @@ public partial class MainWindow : Window
         }
 
         var inAgentView = _isAgentViewSelected;
+        var inSchedulerView = _isSchedulerViewSelected;
+
         OutputPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
-        InputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
-        OutputPortsPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
-        VariablesPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
-        ResultEvaluatorPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
-        AgentsDispatchPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
+        HistoryPaneTabItem.Visibility = Visibility.Visible;
+        InputPortsPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
+        OutputPortsPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
+        VariablesPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
+        ResultEvaluatorPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
+        AgentsDispatchPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
         AgentRuntimePaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
         GatewaySettingsPaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
 
         UpdateGatewaySettingsPanel();
+
+        if (inSchedulerView)
+        {
+            if (!ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPaneTabItem)
+                && !ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
+            {
+                BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
+            }
+
+            return;
+        }
 
         if (inAgentView)
         {
@@ -3973,16 +4480,30 @@ public partial class MainWindow : Window
         if (isVisible)
         {
             SidebarPaneBorder.Visibility = Visibility.Visible;
-            var targetWidth = _uiState.SidebarWidth;
+
+            var currentWidth = GetCurrentColumnWidth(SidebarColumnDefinition);
+            var hasUsableCurrentWidth = !double.IsNaN(currentWidth) && currentWidth >= MinSidebarWidth;
+
+            var targetWidth = hasUsableCurrentWidth
+                ? currentWidth
+                : _uiState.SidebarWidth;
+
             if (double.IsNaN(targetWidth) || targetWidth < MinSidebarWidth)
             {
                 targetWidth = DefaultSidebarWidth;
             }
 
             targetWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, targetWidth));
+            _uiState.SidebarWidth = targetWidth;
             AnimateColumnWidth(SidebarColumnDefinition, targetWidth);
             AnimateColumnWidth(SidebarSpacerColumnDefinition, 12, RecalibrateTaskScrollViewport);
             return;
+        }
+
+        var persistedWidthCandidate = GetCurrentColumnWidth(SidebarColumnDefinition);
+        if (!double.IsNaN(persistedWidthCandidate) && persistedWidthCandidate >= MinSidebarWidth)
+        {
+            _uiState.SidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, persistedWidthCandidate));
         }
 
         SidebarPaneBorder.Visibility = Visibility.Visible;
@@ -4115,6 +4636,11 @@ public partial class MainWindow : Window
 
     private string ResolveOutputHeightCacheKey(string groupKey)
     {
+        if (_isSchedulerViewSelected)
+        {
+            return SchedulerViewOutputHeightCacheKey;
+        }
+
         return ResolveOutputHeightCacheKey(_isAgentViewSelected, groupKey);
     }
 
@@ -4211,6 +4737,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isSchedulerViewSelected)
+        {
+            RibbonHistoryButton.IsEnabled = true;
+            RibbonHistoryButton.ClearValue(Control.ForegroundProperty);
+            return;
+        }
+
         RibbonHistoryButton.IsEnabled = ViewHistoryMenuItem.IsEnabled;
         if (HasHistoryForSelectedGroup())
         {
@@ -4224,6 +4757,11 @@ public partial class MainWindow : Window
 
     private bool HasHistoryForSelectedGroup()
     {
+        if (_isSchedulerViewSelected)
+        {
+            return _schedulerRunHistory.Count > 0;
+        }
+
         if (string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             return false;
@@ -4234,7 +4772,12 @@ public partial class MainWindow : Window
 
     private void BottomPaneTabControl_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is not TabControl || string.IsNullOrWhiteSpace(_selectedGroupName))
+        if (sender is not TabControl)
+        {
+            return;
+        }
+
+        if (!_isAgentViewSelected && !_isSchedulerViewSelected && string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             return;
         }
@@ -4244,7 +4787,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var groupKey = NormalizeGroupName(_selectedGroupName);
+        var groupKey = _isSchedulerViewSelected ? SchedulerOutputGroupName : NormalizeGroupName(_selectedGroupName);
         var isHistorySelected = ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem);
 
         _groupHistoryVisibility[groupKey] = isHistorySelected;
@@ -4327,9 +4870,23 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isSchedulerViewSelected)
+        {
+            var schedulerItems = _schedulerRunHistory
+                .OrderByDescending(entry => entry.StartedAtUtc)
+                .Take(150)
+                .Select(entry => new SchedulerHistoryListItem { Entry = entry })
+                .ToList();
+
+            HistoryListBox.ItemsSource = schedulerItems;
+            UpdateHistoryPreview();
+            UpdateHistoryActionState();
+            return;
+        }
+
         IEnumerable<TaskRunHistoryEntry> filtered = _runHistory;
 
-        if (!string.IsNullOrWhiteSpace(_selectedGroupName))
+        if (!_isSchedulerViewSelected && !string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             filtered = filtered.Where(entry => string.Equals(entry.Snapshot.Group, _selectedGroupName, StringComparison.OrdinalIgnoreCase));
         }
@@ -4441,6 +4998,64 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isSchedulerViewSelected)
+        {
+            var selectedSchedulerItems = GetSelectedSchedulerHistoryItems();
+            if (selectedSchedulerItems.Count == 0)
+            {
+                if (HistoryListBox.Items.Count == 0)
+                {
+                    HistoryDetailsTextBox.Text = "No scheduler run history is available yet.";
+                    return;
+                }
+
+                HistoryDetailsTextBox.Text = "Select a scheduler history item to view details.";
+                return;
+            }
+
+            var schedulerEntry = selectedSchedulerItems[0].Entry;
+            var schedulerBuilder = new StringBuilder();
+
+            if (selectedSchedulerItems.Count > 1)
+            {
+                schedulerBuilder.AppendLine($"{selectedSchedulerItems.Count} items selected. Showing details for the first selected item.");
+                schedulerBuilder.AppendLine();
+            }
+
+            var schedulerStartedLocal = schedulerEntry.StartedAtUtc.ToLocalTime();
+            schedulerBuilder.AppendLine($"Scheduled Item: {schedulerEntry.ScheduledItemDisplayName}");
+            schedulerBuilder.AppendLine($"Item ID: {schedulerEntry.ScheduledItemId}");
+            schedulerBuilder.AppendLine($"Target: {schedulerEntry.TargetKind}");
+            schedulerBuilder.AppendLine($"Status: {schedulerEntry.Outcome}");
+            schedulerBuilder.AppendLine($"Occurrence: {schedulerEntry.OccurrenceUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+            schedulerBuilder.AppendLine($"Started: {schedulerStartedLocal:yyyy-MM-dd HH:mm:ss}");
+
+            if (schedulerEntry.CompletedAtUtc.HasValue)
+            {
+                var completedLocal = schedulerEntry.CompletedAtUtc.Value.ToLocalTime();
+                schedulerBuilder.AppendLine($"Completed: {completedLocal:yyyy-MM-dd HH:mm:ss}");
+                schedulerBuilder.AppendLine($"Duration: {(completedLocal - schedulerStartedLocal).TotalSeconds:F1}s");
+            }
+
+            schedulerBuilder.AppendLine($"Snapshot task count: {schedulerEntry.SnapshotTaskCount}");
+
+            if (schedulerEntry.ExitCode.HasValue)
+            {
+                schedulerBuilder.AppendLine($"Exit code: {schedulerEntry.ExitCode.Value}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(schedulerEntry.Message))
+            {
+                schedulerBuilder.AppendLine();
+                schedulerBuilder.AppendLine("Message");
+                schedulerBuilder.AppendLine(schedulerEntry.Message);
+            }
+
+            HistoryDetailsTextBox.Text = schedulerBuilder.ToString().TrimEnd();
+            HistoryDetailsTextBox.ScrollToHome();
+            return;
+        }
+
         var selectedItems = GetSelectedTaskHistoryItems();
         if (selectedItems.Count == 0)
         {
@@ -4509,7 +5124,8 @@ public partial class MainWindow : Window
     {
         var selectedTaskItems = GetSelectedTaskHistoryItems();
         var selectedAgentItems = GetSelectedAgentHistoryItems();
-        var hasSelection = selectedTaskItems.Count > 0 || selectedAgentItems.Count > 0;
+        var selectedSchedulerItems = GetSelectedSchedulerHistoryItems();
+        var hasSelection = selectedTaskItems.Count > 0 || selectedAgentItems.Count > 0 || selectedSchedulerItems.Count > 0;
         var hasReplayableSelection = selectedTaskItems.Count > 0;
 
         ReplaySelectedButton.IsEnabled = hasReplayableSelection && !_isReplayingHistoryBatch;
@@ -4526,6 +5142,22 @@ public partial class MainWindow : Window
         }
 
         if (HistoryListBox.SelectedItem is HistoryListItem singleSelection)
+        {
+            selectedItems.Add(singleSelection);
+        }
+
+        return selectedItems;
+    }
+
+    private List<SchedulerHistoryListItem> GetSelectedSchedulerHistoryItems()
+    {
+        var selectedItems = HistoryListBox.SelectedItems.OfType<SchedulerHistoryListItem>().ToList();
+        if (selectedItems.Count > 0)
+        {
+            return selectedItems;
+        }
+
+        if (HistoryListBox.SelectedItem is SchedulerHistoryListItem singleSelection)
         {
             selectedItems.Add(singleSelection);
         }
@@ -4976,7 +5608,7 @@ public partial class MainWindow : Window
 
     private void ApplyTaskSurfaceModeVisibility()
     {
-        var isTaskMode = _isAgentViewSelected || _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
+        var isTaskMode = _isAgentViewSelected || _isSchedulerViewSelected || _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
 
         if (isTaskMode)
         {
@@ -5836,6 +6468,13 @@ public partial class MainWindow : Window
         };
         pasteItem.Click += (_, _) => PasteCopiedGroup();
 
+        var scheduleGroupItem = new MenuItem
+        {
+            Header = "Schedule Group Chain...",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        scheduleGroupItem.Click += (_, _) => ScheduleGroupSnapshot(groupName);
+
         var deleteItem = new MenuItem
         {
             Header = "Delete Group",
@@ -5850,6 +6489,7 @@ public partial class MainWindow : Window
 
         menu.Items.Add(copyItem);
         menu.Items.Add(pasteItem);
+        menu.Items.Add(scheduleGroupItem);
         menu.Items.Add(new Separator());
         menu.Items.Add(deleteItem);
         return menu;
@@ -5893,6 +6533,13 @@ public partial class MainWindow : Window
         pasteItem.Click += (_, _) => PasteTaskIntoSelectedGroup();
 
         var replayEntry = GetLastSnapshotEntry(_currentConfiguration.Tasks[taskIndex]);
+        var scheduleItem = new MenuItem
+        {
+            Header = "Schedule...",
+            Style = (Style)Resources["AppMenuItemStyle"]
+        };
+        scheduleItem.Click += (_, _) => ScheduleTaskSnapshot(taskIndex);
+
         var replayItem = new MenuItem
         {
             Header = "Replay Last Snapshot",
@@ -5943,11 +6590,59 @@ public partial class MainWindow : Window
         menu.Items.Add(copyItem);
         menu.Items.Add(pasteItem);
         menu.Items.Add(new Separator());
+        menu.Items.Add(scheduleItem);
         menu.Items.Add(replayItem);
         menu.Items.Add(runChainItem);
         menu.Items.Add(new Separator());
         menu.Items.Add(deleteItem);
         return menu;
+    }
+
+    private void ScheduleTaskSnapshot(int taskIndex)
+    {
+        if (!TryGetTask(taskIndex, out var task))
+        {
+            AppMessageBox.Show(this, TaskUnavailableMessage, "Schedule Task", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var scheduledItem = SchedulerSnapshotFactory.CreateTaskItem(task, DateTime.UtcNow.AddMinutes(1));
+        var editor = new SchedulerItemEditorWindow(scheduledItem, isNew: true) { Owner = this };
+        if (editor.ShowDialog() != true)
+        {
+            return;
+        }
+
+        scheduledItem = editor.ScheduledItem;
+        _schedulerConfiguration.Items.Add(scheduledItem);
+        _selectedScheduledItemId = scheduledItem.Id;
+        SaveSchedulerAndRefresh("Schedule Task");
+    }
+
+    private void ScheduleGroupSnapshot(string groupName)
+    {
+        var normalizedGroup = NormalizeGroupName(groupName);
+        var tasksInGroup = _currentConfiguration.Tasks
+            .Where(task => string.Equals(NormalizeGroupName(task.Group), normalizedGroup, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (tasksInGroup.Count == 0)
+        {
+            AppMessageBox.Show(this, $"Group '{normalizedGroup}' has no tasks to schedule.", "Schedule Group Chain", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var scheduledItem = SchedulerSnapshotFactory.CreateGroupChainItem(normalizedGroup, tasksInGroup, DateTime.UtcNow.AddMinutes(1));
+        var editor = new SchedulerItemEditorWindow(scheduledItem, isNew: true) { Owner = this };
+        if (editor.ShowDialog() != true)
+        {
+            return;
+        }
+
+        scheduledItem = editor.ScheduledItem;
+        _schedulerConfiguration.Items.Add(scheduledItem);
+        _selectedScheduledItemId = scheduledItem.Id;
+        SaveSchedulerAndRefresh("Schedule Group Chain");
     }
 
     private ContextMenu CreateMainViewContextMenu()
@@ -6014,6 +6709,20 @@ public partial class MainWindow : Window
             agentMenu.Items.Add(new Separator());
             agentMenu.Items.Add(deleteItem);
             return agentMenu;
+        }
+
+        if (_isSchedulerViewSelected)
+        {
+            var schedulerMenu = CreateRibbonContextMenu();
+            var deleteItem = new MenuItem
+            {
+                Header = "Delete",
+                IsEnabled = !string.IsNullOrWhiteSpace(_selectedScheduledItemId),
+                Style = (Style)Resources["AppMenuItemStyle"]
+            };
+            deleteItem.Click += (_, _) => TryDeleteSelectedScheduledItem();
+            schedulerMenu.Items.Add(deleteItem);
+            return schedulerMenu;
         }
 
         var menu = CreateRibbonContextMenu();
@@ -8029,6 +8738,12 @@ public partial class MainWindow : Window
 
     private void RibbonDeleteTaskButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isSchedulerViewSelected)
+        {
+            TryDeleteSelectedScheduledItem();
+            return;
+        }
+
         if (_isAgentViewSelected)
         {
             TryDeleteSelectedAgent();
@@ -8063,6 +8778,18 @@ public partial class MainWindow : Window
 
     private void RibbonToggleTaskEnabledButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isSchedulerViewSelected)
+        {
+            if (string.IsNullOrWhiteSpace(_selectedScheduledItemId))
+            {
+                AppMessageBox.Show(this, "No scheduled item is selected.", "Enable/Disable Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            ToggleScheduledItemEnabled(_selectedScheduledItemId);
+            return;
+        }
+
         if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
         {
             AppMessageBox.Show(this, "No tasks are available in the current group.", "Enable/Disable Task", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -8940,6 +9667,21 @@ public partial class MainWindow : Window
             }
         }
 
+        if (_isSchedulerViewSelected)
+        {
+            if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                TryDeleteSelectedScheduledItem();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key is Key.C or Key.V or Key.R or Key.E)
+            {
+                return;
+            }
+        }
+
         if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
         {
             if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
@@ -9185,6 +9927,12 @@ public partial class MainWindow : Window
 
     private void TryDeleteFromCurrentContext()
     {
+        if (_isSchedulerViewSelected)
+        {
+            TryDeleteSelectedScheduledItem();
+            return;
+        }
+
         if (_isAgentViewSelected)
         {
             TryDeleteSelectedAgent();
@@ -9198,6 +9946,39 @@ public partial class MainWindow : Window
         }
 
         TryDeleteSelectedTask();
+    }
+
+    private void TryDeleteSelectedScheduledItem()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedScheduledItemId))
+        {
+            AppMessageBox.Show(this, "No scheduled item is selected.", "Delete Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var selected = FindScheduledItem(_selectedScheduledItemId);
+        if (selected is null)
+        {
+            AppMessageBox.Show(this, "The selected scheduled item is no longer available.", "Delete Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var result = AppMessageBox.Show(
+            this,
+            $"Delete scheduled item '{selected.DisplayName}'?",
+            "Delete Scheduled Item",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        _schedulerConfiguration.Items.RemoveAll(item =>
+            string.Equals(item.Id, selected.Id, StringComparison.OrdinalIgnoreCase));
+        _selectedScheduledItemId = _schedulerConfiguration.Items.FirstOrDefault()?.Id;
+        SaveSchedulerAndRefresh("Delete Scheduled Item");
     }
 
     private void TryDeleteSelectedTask()
@@ -10496,10 +11277,26 @@ public partial class MainWindow : Window
 
     private void UpdateRibbonTaskActionState()
     {
-        if (RibbonToggleTaskEnabledButton is null || RibbonToggleTaskEnabledLabel is null || RibbonRunChainButton is null)
+        if (RibbonToggleTaskEnabledButton is null
+            || RibbonToggleTaskEnabledLabel is null
+            || RibbonRunChainButton is null
+            || RibbonAddTaskButton is null
+            || RibbonEditTaskButton is null
+            || RibbonDeleteTaskButton is null
+            || RibbonGroupsDropDownButton is null
+            || RibbonTaskSurfaceToggleButton is null
+            || RibbonShareButton is null
+            || RibbonImportButton is null)
         {
             return;
         }
+
+        RibbonAddTaskButton.IsEnabled = true;
+        RibbonEditTaskButton.IsEnabled = true;
+        RibbonDeleteTaskButton.IsEnabled = true;
+        RibbonGroupsDropDownButton.IsEnabled = true;
+        RibbonShareButton.IsEnabled = true;
+        RibbonImportButton.IsEnabled = true;
 
         if (_isAgentViewSelected)
         {
@@ -10510,6 +11307,28 @@ public partial class MainWindow : Window
             RibbonToggleTaskEnabledButton.IsEnabled = false;
             RibbonToggleTaskEnabledLabel.Text = "Enable";
             RibbonTaskSurfaceToggleButton.IsEnabled = false;
+            return;
+        }
+
+        if (_isSchedulerViewSelected)
+        {
+            RibbonAddActionLabel.Text = "Add";
+            RibbonEditActionLabel.Text = "Edit";
+            RibbonDeleteActionLabel.Text = "Delete";
+            RibbonRunChainButton.IsEnabled = false;
+            RibbonTaskSurfaceToggleButton.IsEnabled = false;
+
+            var selectedScheduledItem = string.IsNullOrWhiteSpace(_selectedScheduledItemId)
+                ? null
+                : FindScheduledItem(_selectedScheduledItemId);
+            RibbonToggleTaskEnabledButton.IsEnabled = selectedScheduledItem is not null;
+            RibbonToggleTaskEnabledLabel.Text = selectedScheduledItem?.IsEnabled == true ? "Disable" : "Enable";
+
+            RibbonAddTaskButton.IsEnabled = false;
+            RibbonEditTaskButton.IsEnabled = false;
+            RibbonGroupsDropDownButton.IsEnabled = false;
+            RibbonShareButton.IsEnabled = false;
+            RibbonImportButton.IsEnabled = false;
             return;
         }
 
@@ -10710,6 +11529,367 @@ public partial class MainWindow : Window
             DebugTraceLog.Write(ex, $"[Persist] TryPersistConfiguration failed. Title='{errorTitle}'");
             AppMessageBox.Show(this, $"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
+        }
+    }
+
+    private void SaveSchedulerAndRefresh(string errorTitle)
+    {
+        try
+        {
+            SchedulerConfigurationStore.Save(_schedulerConfiguration);
+            _schedulerConfiguration = SchedulerConfigurationStore.Load();
+            SchedulerHeaderCountText.Text = $"({_schedulerConfiguration.Items.Count})";
+
+            if (_isSchedulerViewSelected)
+            {
+                RenderSchedulerView();
+            }
+
+            UpdateSchedulerSidebarVisual();
+            UpdateRibbonTaskActionState();
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, $"[Scheduler] SaveSchedulerAndRefresh failed. Title='{errorTitle}'");
+            AppMessageBox.Show(this, $"Failed to save scheduler configuration.\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void ResetSchedulerRuntimeStateOnStartup()
+    {
+        var updated = false;
+        foreach (var item in _schedulerConfiguration.Items)
+        {
+            if (!item.IsRunning)
+            {
+                continue;
+            }
+
+            item.IsRunning = false;
+            item.NextRunAtUtc = item.IsEnabled
+                ? SchedulerTimingService.TryResolveNextRunUtc(item, DateTime.UtcNow)
+                : null;
+            updated = true;
+        }
+
+        if (!updated)
+        {
+            return;
+        }
+
+        try
+        {
+            SchedulerConfigurationStore.Save(_schedulerConfiguration);
+            _schedulerConfiguration = SchedulerConfigurationStore.Load();
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[Scheduler] Failed to reset stale runtime state on startup.");
+        }
+    }
+
+    private void StartSchedulerPoller()
+    {
+        if (_schedulerPollerCancellationSource is { IsCancellationRequested: false }
+            && _schedulerPollerTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        _schedulerPollerCancellationSource?.Cancel();
+        _schedulerPollerCancellationSource?.Dispose();
+
+        var cancellationSource = new CancellationTokenSource();
+        _schedulerPollerCancellationSource = cancellationSource;
+        _schedulerPollerTask = Task.Run(() => SchedulerPollLoopAsync(cancellationSource.Token), cancellationSource.Token);
+    }
+
+    private void StopSchedulerPoller()
+    {
+        var cancellationSource = _schedulerPollerCancellationSource;
+        _schedulerPollerCancellationSource = null;
+
+        if (cancellationSource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellationSource.Cancel();
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, "[Scheduler] StopSchedulerPoller cancellation failed.");
+        }
+        finally
+        {
+            cancellationSource.Dispose();
+            _schedulerPollerTask = null;
+        }
+    }
+
+    private async Task SchedulerPollLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Dispatcher
+                    .InvokeAsync(() => PollSchedulerDueItemsAsync(cancellationToken), DispatcherPriority.Background)
+                    .Task
+                    .Unwrap();
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                DebugTraceLog.Write(ex, "[Scheduler] Poll loop iteration failed.");
+            }
+
+            var pollIntervalSeconds = SchedulerTimingService.NormalizePollIntervalSeconds(_schedulerConfiguration.PollIntervalSeconds);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(pollIntervalSeconds), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private async Task PollSchedulerDueItemsAsync(CancellationToken cancellationToken)
+    {
+        if (_schedulerConfiguration.Items.Count == 0)
+        {
+            return;
+        }
+
+        TrimSchedulerOccurrenceLedger(DateTime.UtcNow);
+
+        var dueCandidates = _schedulerConfiguration.Items
+            .OrderBy(item => item.NextRunAtUtc ?? item.TriggerAtUtc)
+            .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var candidate in dueCandidates)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var nowUtc = DateTime.UtcNow;
+
+            if (!SchedulerTimingService.TryResolveDueOccurrence(candidate, nowUtc, out var occurrenceUtc, out var occurrenceToken))
+            {
+                continue;
+            }
+
+            if (string.Equals(candidate.LastOccurrenceToken, occurrenceToken, StringComparison.OrdinalIgnoreCase)
+                || _schedulerOccurrenceLedger.ContainsKey(occurrenceToken))
+            {
+                continue;
+            }
+
+            _schedulerOccurrenceLedger[occurrenceToken] = occurrenceUtc;
+            await ExecuteScheduledItemAsync(candidate.Id, occurrenceUtc, occurrenceToken, cancellationToken);
+        }
+    }
+
+    private async Task ExecuteScheduledItemAsync(
+        string scheduledItemId,
+        DateTime occurrenceUtc,
+        string occurrenceToken,
+        CancellationToken cancellationToken)
+    {
+        var item = FindScheduledItem(scheduledItemId);
+        if (item is null || !item.IsEnabled || item.IsRunning)
+        {
+            return;
+        }
+
+        var executionTasks = BuildScheduledExecutionTasks(item)
+            .Where(IsTaskEnabled)
+            .ToList();
+
+        var triggeredAtUtc = DateTime.UtcNow;
+        item.IsRunning = true;
+        item.LastTriggeredAtUtc = triggeredAtUtc;
+        item.LastOccurrenceToken = occurrenceToken;
+        item.LastRunOutcome = TaskRunOutcome.Running.ToString();
+        item.LastRunMessage = null;
+        item.NextRunAtUtc = item.IsRecurring
+            ? SchedulerTimingService.TryResolveNextRunUtc(item, occurrenceUtc.AddSeconds(1))
+            : null;
+
+        var historyEntry = _schedulerRunHistoryService.StartEntry(item, occurrenceUtc);
+        if (_isSchedulerViewSelected && ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
+        {
+            RefreshHistoryView();
+        }
+
+        SaveSchedulerAndRefresh("Scheduler Poller");
+
+        var outcome = TaskRunOutcome.Succeeded;
+        var exitCode = (int?)null;
+        var message = executionTasks.Count == 0
+            ? "No enabled snapshot tasks were available to execute."
+            : null;
+
+        try
+        {
+            if (executionTasks.Count == 0)
+            {
+                outcome = TaskRunOutcome.LaunchFailed;
+            }
+            else
+            {
+                var dataflowContext = new DataflowContext();
+                for (var index = 0; index < executionTasks.Count; index++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var snapshotTask = executionTasks[index];
+                    var chainStepLabel = executionTasks.Count > 1
+                        ? $"{index + 1}/{executionTasks.Count}"
+                        : null;
+
+                    var runResult = await ExecuteTaskWithRetriesAsync(
+                        snapshotTask,
+                        null,
+                        isReplay: false,
+                        dataflowContext: dataflowContext,
+                        chainStepLabel: chainStepLabel,
+                        externalCancellationToken: cancellationToken);
+
+                    exitCode = runResult.ExitCode;
+                    if (runResult.Succeeded)
+                    {
+                        continue;
+                    }
+
+                    outcome = exitCode.HasValue
+                        ? TaskRunOutcome.FailedNonZeroExit
+                        : TaskRunOutcome.LaunchFailed;
+
+                    var taskName = string.IsNullOrWhiteSpace(snapshotTask.Name)
+                        ? "(unnamed snapshot task)"
+                        : snapshotTask.Name.Trim();
+                    message = exitCode.HasValue
+                        ? $"Snapshot task '{taskName}' failed with exit code {exitCode.Value}."
+                        : $"Snapshot task '{taskName}' failed.";
+                    break;
+                }
+
+                if (outcome == TaskRunOutcome.Succeeded)
+                {
+                    message = executionTasks.Count == 1
+                        ? "Scheduled snapshot completed successfully."
+                        : $"Scheduled chain completed successfully ({executionTasks.Count} task(s)).";
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            outcome = TaskRunOutcome.Cancelled;
+            message = "Scheduler execution cancelled.";
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, $"[Scheduler] Scheduled item '{scheduledItemId}' execution failed.");
+            outcome = TaskRunOutcome.LaunchFailed;
+            message = ex.Message;
+        }
+        finally
+        {
+            _schedulerRunHistoryService.CompleteEntry(historyEntry, outcome, exitCode, message);
+            if (_isSchedulerViewSelected && ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
+            {
+                RefreshHistoryView();
+            }
+
+            var latestItem = FindScheduledItem(scheduledItemId);
+            if (latestItem is not null)
+            {
+                latestItem.IsRunning = false;
+                latestItem.LastTriggeredAtUtc ??= triggeredAtUtc;
+                latestItem.LastCompletedAtUtc = DateTime.UtcNow;
+                latestItem.LastOccurrenceToken = occurrenceToken;
+                latestItem.LastRunOutcome = outcome.ToString();
+                latestItem.LastRunMessage = message;
+
+                if (!latestItem.IsRecurring)
+                {
+                    latestItem.IsEnabled = false;
+                    latestItem.NextRunAtUtc = null;
+                }
+                else
+                {
+                    latestItem.NextRunAtUtc = latestItem.IsEnabled
+                        ? SchedulerTimingService.TryResolveNextRunUtc(latestItem, DateTime.UtcNow)
+                        : null;
+                }
+            }
+
+            SaveSchedulerAndRefresh("Scheduler Poller");
+        }
+    }
+
+    private static List<LauncherTask> BuildScheduledExecutionTasks(ScheduledItem item)
+    {
+        if (item.TargetKind == ScheduledTargetKind.TaskSnapshot)
+        {
+            if (item.TaskSnapshot is null)
+            {
+                return [];
+            }
+
+            return [SchedulerSnapshotFactory.CloneAsLocalSnapshot(item.TaskSnapshot)];
+        }
+
+        if (item.ChainSnapshot.Count == 0)
+        {
+            return [];
+        }
+
+        return item.ChainSnapshot
+            .Select(SchedulerSnapshotFactory.CloneAsLocalSnapshot)
+            .ToList();
+    }
+
+    private void TrimSchedulerOccurrenceLedger(DateTime nowUtc)
+    {
+        var cutoffUtc = nowUtc.AddHours(-6);
+        var staleKeys = _schedulerOccurrenceLedger
+            .Where(pair => pair.Value < cutoffUtc)
+            .Select(pair => pair.Key)
+            .ToList();
+
+        foreach (var staleKey in staleKeys)
+        {
+            _schedulerOccurrenceLedger.Remove(staleKey);
+        }
+
+        const int maxLedgerEntries = 4096;
+        if (_schedulerOccurrenceLedger.Count <= maxLedgerEntries)
+        {
+            return;
+        }
+
+        var overflowKeys = _schedulerOccurrenceLedger
+            .OrderBy(pair => pair.Value)
+            .Take(_schedulerOccurrenceLedger.Count - maxLedgerEntries)
+            .Select(pair => pair.Key)
+            .ToList();
+
+        foreach (var overflowKey in overflowKeys)
+        {
+            _schedulerOccurrenceLedger.Remove(overflowKey);
         }
     }
 
@@ -11835,12 +13015,7 @@ public partial class MainWindow : Window
 
     private OutputGroupPanelContext GetOrCreateSelectedGroupOutputPanel()
     {
-        var groupName = _selectedGroupName;
-        if (string.IsNullOrWhiteSpace(groupName))
-        {
-            groupName = "General";
-            _selectedGroupName = groupName;
-        }
+        var groupName = ResolveOutputPanelGroupKey();
 
         if (_groupOutputPanels.TryGetValue(groupName, out var existingPanel))
         {
@@ -11900,6 +13075,23 @@ public partial class MainWindow : Window
         return panelContext;
     }
 
+    private string ResolveOutputPanelGroupKey()
+    {
+        if (_isSchedulerViewSelected)
+        {
+            return SchedulerOutputGroupName;
+        }
+
+        var groupName = _selectedGroupName;
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            groupName = "General";
+            _selectedGroupName = groupName;
+        }
+
+        return groupName;
+    }
+
     private void ShowSelectedGroupOutputTabControl()
     {
         foreach (var panel in _groupOutputPanels.Values)
@@ -11907,7 +13099,7 @@ public partial class MainWindow : Window
             panel.RootGrid.Visibility = Visibility.Collapsed;
         }
 
-        if (string.IsNullOrWhiteSpace(_selectedGroupName))
+        if (!_isSchedulerViewSelected && string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             return;
         }

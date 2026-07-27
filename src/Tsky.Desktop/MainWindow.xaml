@@ -706,7 +706,7 @@
 
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
-                            <Button Style="{StaticResource RibbonAddCommandButtonStyle}" Click="RibbonAddTaskButton_Click">
+                            <Button x:Name="RibbonAddTaskButton" Style="{StaticResource RibbonAddCommandButtonStyle}" Click="RibbonAddTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
                                     <TextBlock x:Name="RibbonAddActionLabel" Text="Add" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
@@ -715,7 +715,7 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="16,0,0,0">
-                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonEditTaskButton_Click">
+                            <Button x:Name="RibbonEditTaskButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Click="RibbonEditTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE70F;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
                                     <TextBlock x:Name="RibbonEditActionLabel" Text="Edit" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
@@ -727,7 +727,7 @@
                                     <TextBlock x:Name="RibbonToggleTaskEnabledLabel" Text="Enable" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
-                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonDeleteTaskButton_Click">
+                            <Button x:Name="RibbonDeleteTaskButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Margin="8,0,0,0" Click="RibbonDeleteTaskButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
                                     <TextBlock x:Name="RibbonDeleteActionLabel" Text="Delete" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
@@ -742,7 +742,7 @@
                                     <TextBlock Text="Run Chain" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
                                 </StackPanel>
                             </Button>
-                            <Button Style="{StaticResource RibbonCommandHoverAccentStyle}" Width="80" Margin="8,0,0,0" Click="RibbonGroupsDropDownButton_Click">
+                            <Button x:Name="RibbonGroupsDropDownButton" Style="{StaticResource RibbonCommandHoverAccentStyle}" Width="80" Margin="8,0,0,0" Click="RibbonGroupsDropDownButton_Click">
                                 <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
                                     <TextBlock Text="&#xE8FA;" FontFamily="Segoe MDL2 Assets" FontSize="16" HorizontalAlignment="Center" />
                                     <TextBlock Text="Groups ▼" FontSize="11" Margin="0,4,0,0" HorizontalAlignment="Center" />
@@ -849,6 +849,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
@@ -997,6 +998,57 @@
                                       MaxHeight="240">
                             <StackPanel x:Name="SidebarAgentsListPanel" />
                         </ScrollViewer>
+                    </StackPanel>
+                </Expander>
+
+                <Expander x:Name="SidebarSchedulerExpander"
+                          Grid.Row="3"
+                          Style="{StaticResource SidebarBottomSectionStyle}"
+                          IsExpanded="False"
+                          Margin="0,6,0,0"
+                          Expanded="SidebarSchedulerExpander_Expanded"
+                          Collapsed="SidebarSchedulerExpander_Collapsed">
+                    <Expander.Header>
+                        <DockPanel>
+                            <TextBlock x:Name="SchedulerSectionChevronText"
+                                       Text="▶"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       FontSize="9"
+                                       Margin="0,0,6,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="&#xE823;"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       FontSize="12"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="SCHEDULER"
+                                       Foreground="{DynamicResource SidebarSectionHeaderBrush}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="SchedulerHeaderCountText"
+                                       DockPanel.Dock="Right"
+                                       Text="(0)"
+                                       Foreground="{DynamicResource ConnectorFocusedBrush}"
+                                       FontSize="10"
+                                       Margin="8,0,0,0"
+                                       MinWidth="32"
+                                       TextAlignment="Right"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Expander.Header>
+
+                    <StackPanel>
+                        <Button x:Name="SchedulerSidebarButton"
+                                Padding="8,7"
+                                HorizontalContentAlignment="Stretch"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="0"
+                                Style="{StaticResource SidebarTreeGroupHeaderButtonStyle}"
+                                Click="SchedulerSidebarButton_Click"
+                                Content="Open Scheduler View" />
                     </StackPanel>
                 </Expander>
 

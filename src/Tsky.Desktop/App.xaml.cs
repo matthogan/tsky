@@ -71,6 +71,7 @@ public partial class App : System.Windows.Application
 		SetBrush("AppBackgroundBrush", useDarkTheme ? "#FF1E1E1E" : "#FFF7F7F8");
 		SetBrush("PrimaryTextBrush", useDarkTheme ? "#FFF1F1F1" : "#FF1F2328");
 		SetBrush("SecondaryTextBrush", useDarkTheme ? "#FFC9D1D9" : "#FF57606A");
+		SetBrush("SidebarSectionHeaderBrush", useDarkTheme ? "#FF6E7681" : "#FF57606A");
 		SetBrush("PanelBackgroundBrush", useDarkTheme ? "#FF252526" : "#FFFFFFFF");
 		SetBrush("PanelBorderBrush", useDarkTheme ? "#55FFFFFF" : "#22000000");
 		SetBrush("InputBorderBrush", useDarkTheme ? "#33FFFFFF" : "#16000000");
@@ -84,7 +85,7 @@ public partial class App : System.Windows.Application
 		SetBrush("ConnectorResolvedBrush", useDarkTheme ? "#FF57D3C8" : "#FF0C8A83");
 		SetBrush("ConnectorUnresolvedBrush", useDarkTheme ? "#FFFF7878" : "#FFC62828");
 		SetBrush("ConnectorFocusedBrush", useDarkTheme ? "#FFFFD166" : "#FFF59E0B");
-		SetBrush("InputPortDotBrush", useDarkTheme ? "#FF9FB8C6" : "#FF455A64");
+		SetBrush("InputPortDotBrush", useDarkTheme ? "#FF7CFF00" : "#FF455A64");
 		SetBrush("OutputPortDotBrush", useDarkTheme ? "#FF67E8D9" : "#FF009688");
 		SetBrush("ListenerOnBackgroundBrush", useDarkTheme ? "#FF2A8A54" : "#FFCFEED8");
 		SetBrush("ListenerOnBorderBrush", useDarkTheme ? "#FF46BE79" : "#FF75B68A");

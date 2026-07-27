@@ -10,6 +10,7 @@
     <SolidColorBrush x:Key="AppBackgroundBrush" Color="#FFF7F7F8" />
     <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FF1F2328" />
     <SolidColorBrush x:Key="SecondaryTextBrush" Color="#FF57606A" />
+    <SolidColorBrush x:Key="SidebarSectionHeaderBrush" Color="#FF57606A" />
     <SolidColorBrush x:Key="PanelBackgroundBrush" Color="#FFFFFFFF" />
     <SolidColorBrush x:Key="PanelBorderBrush" Color="#22000000" />
     <SolidColorBrush x:Key="InputBorderBrush" Color="#16000000" />

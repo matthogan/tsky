@@ -867,7 +867,7 @@
                                        Margin="0,0,6,0"
                                        VerticalAlignment="Center" />
                             <TextBlock Text="GROUPS"
-                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       Foreground="{DynamicResource SidebarSectionHeaderBrush}"
                                        FontSize="10"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center" />
@@ -943,7 +943,7 @@
                                        Margin="0,0,8,0"
                                        VerticalAlignment="Center" />
                             <TextBlock Text="AGENTS"
-                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       Foreground="{DynamicResource SidebarSectionHeaderBrush}"
                                        FontSize="10"
                                        FontWeight="SemiBold"
                                        VerticalAlignment="Center" />

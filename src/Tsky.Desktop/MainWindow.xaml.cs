@@ -2549,6 +2549,9 @@ public partial class MainWindow : Window
         var groupRunningBrush = new SolidColorBrush(Color.FromRgb(0x22, 0xA6, 0xF2));
         var groupDefaultIconBrush = new SolidColorBrush(Color.FromRgb(0x9C, 0xA6, 0xB0));
         var groupDefaultNameBrush = ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryText);
+        var selectedGroupNameBrush = App.IsDarkThemeEnabled()
+            ? new SolidColorBrush(Color.FromRgb(0x7D, 0x85, 0x90))
+            : ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryText);
         var mutedTextBrush = new SolidColorBrush(Color.FromRgb(0x6E, 0x76, 0x81));
         var badgeBackgroundBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x31, 0x38));
         var badgeForegroundBrush = new SolidColorBrush(Color.FromRgb(0xC9, 0xA7, 0x4D));
@@ -2655,7 +2658,7 @@ public partial class MainWindow : Window
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = isSelectedGroup
-                    ? ResolveThemeBrush("PrimaryTextBrush", ThemeFallbackPalette.PrimaryTextOnDark)
+                    ? selectedGroupNameBrush
                     : groupDefaultNameBrush,
                 Margin = new Thickness(0, 0, 8, 0),
                 TextTrimming = TextTrimming.CharacterEllipsis
@@ -4931,7 +4934,7 @@ public partial class MainWindow : Window
             StackPanel? leftPorts = null;
             if (inputPorts.Count > 0)
             {
-                leftPorts = CreatePortStack(inputPorts, isInput: true);
+                leftPorts = CreatePortStack(inputPorts, isInput: true, task.Inputs, task.InputBindings);
             }
 
             var outputPorts = GetOutputPortNames(task);
@@ -6829,7 +6832,11 @@ public partial class MainWindow : Window
             .ToList();
     }
 
-    private static StackPanel CreatePortStack(IReadOnlyList<string> portNames, bool isInput)
+    private static StackPanel CreatePortStack(
+        IReadOnlyList<string> portNames,
+        bool isInput,
+        IReadOnlyDictionary<string, string>? inputDefaults = null,
+        IReadOnlyDictionary<string, string>? inputBindings = null)
     {
         var fillBrush = isInput
             ? ResolveThemeBrush("InputPortDotBrush", Color.FromRgb(0x45, 0x5A, 0x64))
@@ -6842,16 +6849,20 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = isInput ? HorizontalAlignment.Left : HorizontalAlignment.Right,
             Margin = isInput ? new Thickness(4, 0, 0, 0) : new Thickness(0, 0, 4, 0),
-            IsHitTestVisible = false
+            IsHitTestVisible = isInput
         };
 
         Panel.SetZIndex(stack, 15);
 
         foreach (var portName in portNames)
         {
+            var toolTipText = isInput
+                ? BuildInputPortIndicatorToolTip(portName, inputDefaults, inputBindings)
+                : portName;
+
             var dot = new Ellipse
             {
-                ToolTip = portName,
+                ToolTip = toolTipText,
                 Width = 12,
                 Height = 12,
                 StrokeThickness = 1.5,
@@ -6864,6 +6875,31 @@ public partial class MainWindow : Window
         }
 
         return stack;
+    }
+
+    private static string BuildInputPortIndicatorToolTip(
+        string portName,
+        IReadOnlyDictionary<string, string>? inputDefaults,
+        IReadOnlyDictionary<string, string>? inputBindings)
+    {
+        var normalizedPortName = string.IsNullOrWhiteSpace(portName)
+            ? "(Unnamed Input)"
+            : portName.Trim();
+
+        var rawDefaultValue = string.Empty;
+        var hasDefault = inputDefaults is not null && inputDefaults.TryGetValue(normalizedPortName, out rawDefaultValue);
+        var defaultValue = hasDefault ? rawDefaultValue ?? string.Empty : string.Empty;
+        var defaultDisplay = string.IsNullOrEmpty(defaultValue) ? "(blank)" : defaultValue;
+
+        var rawBindingValue = string.Empty;
+        var hasBinding = inputBindings is not null && inputBindings.TryGetValue(normalizedPortName, out rawBindingValue);
+        var bindingValue = hasBinding ? (rawBindingValue ?? string.Empty).Trim() : string.Empty;
+        var bindingDisplay = string.IsNullOrWhiteSpace(bindingValue) ? "(none)" : bindingValue;
+
+        return string.Join(Environment.NewLine,
+            $"Input: {normalizedPortName}",
+            $"Default: {defaultDisplay}",
+            $"Binding: {bindingDisplay}");
     }
 
     private void ScheduleConnectorRefresh()
@@ -9469,6 +9505,65 @@ public partial class MainWindow : Window
         }
     }
 
+    private void EnsureSelectedTaskVisibleInMainPanel()
+    {
+        if (!TryGetSelectedVisibleTaskIndex(out var taskIndex))
+        {
+            return;
+        }
+
+        if (_taskSurfaceViewMode == TaskSurfaceViewMode.Graph)
+        {
+            // Graph mode nodes are canvas-positioned; force a current render so the node map is available.
+            RenderSelectedGroupTasks();
+
+            if (_graphNodesByIndex.TryGetValue(taskIndex, out var graphNode))
+            {
+                graphNode.NodeButton.BringIntoView();
+                TryCenterGraphNodeHorizontally(taskIndex, animate: false);
+                graphNode.NodeButton.Focus();
+            }
+
+            return;
+        }
+
+        if (_taskCardsByIndex.TryGetValue(taskIndex, out var card))
+        {
+            card.BringIntoView();
+        }
+
+        FocusSelectedTaskCard();
+    }
+
+    private void SelectTaskInMainPanel(string groupName, int fallbackTaskIndex, string? preferredTaskIdentityKey)
+    {
+        var normalizedGroupName = NormalizeGroupName(groupName);
+        if (!string.Equals(_selectedGroupName, normalizedGroupName, StringComparison.OrdinalIgnoreCase))
+        {
+            SelectGroup(normalizedGroupName);
+        }
+
+        var selectedIndex = -1;
+        if (!string.IsNullOrWhiteSpace(preferredTaskIdentityKey))
+        {
+            selectedIndex = _currentConfiguration.Tasks.FindIndex(task =>
+                string.Equals(GetTaskIdentityKey(task), preferredTaskIdentityKey, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (selectedIndex < 0 && IsValidTaskIndex(fallbackTaskIndex))
+        {
+            selectedIndex = fallbackTaskIndex;
+        }
+
+        if (selectedIndex >= 0)
+        {
+            _selectedTaskIndex = selectedIndex;
+        }
+
+        ApplyTaskCardSelectionVisuals();
+        EnsureSelectedTaskVisibleInMainPanel();
+    }
+
     private bool TryGetSelectedVisibleTaskIndex(out int taskIndex)
     {
         taskIndex = -1;
@@ -10467,6 +10562,9 @@ public partial class MainWindow : Window
             return;
         }
 
+        var originalGroupName = NormalizeGroupName(selectedTask.Group);
+        var originalTaskIdentityKey = GetTaskIdentityKey(selectedTask);
+
         var taskJson = TaskConfiguration.SerializeTask(selectedTask);
         var existingGroups = _currentConfiguration.Tasks
             .Select(task => NormalizeGroupName(task.Group))
@@ -10477,18 +10575,25 @@ public partial class MainWindow : Window
 
         if (editorWindow.ShowDialog() != true)
         {
+            SelectTaskInMainPanel(originalGroupName, taskIndex, originalTaskIdentityKey);
             return;
         }
 
         if (!TaskConfiguration.TryDeserializeTask(editorWindow.TaskJsonText, out var updatedTask, out var parseError))
         {
             AppMessageBox.Show(this, $"Could not save task because the JSON is invalid.\n\n{parseError}", "Task Editor", MessageBoxButton.OK, MessageBoxImage.Error);
+            SelectTaskInMainPanel(originalGroupName, taskIndex, originalTaskIdentityKey);
             return;
         }
 
         _currentConfiguration.Tasks[taskIndex] = updatedTask;
+        var updatedGroupName = NormalizeGroupName(updatedTask.Group);
+        var updatedTaskIdentityKey = GetTaskIdentityKey(updatedTask);
+        _selectedGroupName = updatedGroupName;
+        _selectedTaskIndex = taskIndex;
 
         SaveTasksAndRefresh(TaskEditorTitle);
+        SelectTaskInMainPanel(updatedGroupName, taskIndex, updatedTaskIdentityKey);
     }
 
     private void DeleteTask(int taskIndex)

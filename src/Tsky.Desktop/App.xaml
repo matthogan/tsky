@@ -24,6 +24,7 @@
     <SolidColorBrush x:Key="ConnectorResolvedBrush" Color="#FF0C8A83" />
     <SolidColorBrush x:Key="ConnectorUnresolvedBrush" Color="#FFC62828" />
     <SolidColorBrush x:Key="ConnectorFocusedBrush" Color="#FFF59E0B" />
+    <SolidColorBrush x:Key="TaskCardSelectionBrush" Color="#FF005A9C" />
     <SolidColorBrush x:Key="InputPortDotBrush" Color="#FF455A64" />
     <SolidColorBrush x:Key="OutputPortDotBrush" Color="#FF009688" />
     <SolidColorBrush x:Key="ListenerOnBackgroundBrush" Color="#FFCFEED8" />

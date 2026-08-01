@@ -44,6 +44,7 @@ public partial class MainWindow : Window
     private const double DefaultHistoryListPaneRatio = 0.4;
     private const double MinHistoryListPaneRatio = 0.2;
     private const double MaxHistoryListPaneRatio = 0.8;
+    private const double SelectedTaskBorderThickness = 3;
     private const string TaskEditorTitle = "Task Editor";
     private const string TaskUnavailableMessage = "The selected task is no longer available.";
     private const int MaxRunHistoryEntries = 300;
@@ -237,6 +238,7 @@ public partial class MainWindow : Window
         public static readonly Color ConnectorResolved = Color.FromRgb(0x0C, 0x8A, 0x83);
         public static readonly Color ConnectorUnresolved = Color.FromRgb(0xC6, 0x28, 0x28);
         public static readonly Color ConnectorFocused = Color.FromRgb(0xF5, 0x9E, 0x0B);
+        public static readonly Color TaskCardSelection = Color.FromRgb(0x00, 0x5A, 0x9C);
         public static readonly Color OutputPanelBackground = Color.FromRgb(0x25, 0x25, 0x26);
         public static readonly Color OutputPanelBorder = Color.FromRgb(0x30, 0x36, 0x3D);
 
@@ -990,6 +992,11 @@ public partial class MainWindow : Window
     private static Brush GetFocusedConnectorBrush()
     {
         return ResolveThemeBrush("ConnectorFocusedBrush", ThemeFallbackPalette.ConnectorFocused);
+    }
+
+    private static Brush GetTaskCardSelectionBrush()
+    {
+        return ResolveThemeBrush("TaskCardSelectionBrush", ThemeFallbackPalette.TaskCardSelection);
     }
 
     private void ApplyTitleBarTheme(bool useDarkTheme)
@@ -2434,10 +2441,15 @@ public partial class MainWindow : Window
     {
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
 
-        _uiState.WindowWidth = Math.Max(MinWidth, bounds.Width);
-        _uiState.WindowHeight = Math.Max(MinHeight, bounds.Height);
-        _uiState.WindowLeft = bounds.Left;
-        _uiState.WindowTop = bounds.Top;
+        var boundedWidth = CoerceFiniteOrDefault(bounds.Width, DefaultWindowWidth);
+        var boundedHeight = CoerceFiniteOrDefault(bounds.Height, DefaultWindowHeight);
+        _uiState.WindowWidth = Math.Max(MinWidth, boundedWidth);
+        _uiState.WindowHeight = Math.Max(MinHeight, boundedHeight);
+
+        var boundedLeft = CoerceFiniteOrDefault(bounds.Left, SystemParameters.VirtualScreenLeft);
+        var boundedTop = CoerceFiniteOrDefault(bounds.Top, SystemParameters.VirtualScreenTop);
+        _uiState.WindowLeft = boundedLeft;
+        _uiState.WindowTop = boundedTop;
         _uiState.IsMaximized = WindowState == WindowState.Maximized;
 
         var height = OutputRowDefinition.ActualHeight;
@@ -2446,8 +2458,11 @@ public partial class MainWindow : Window
             height = OutputRowDefinition.Height.Value;
         }
 
-        _uiState.OutputHeight = Math.Max(MinOutputHeight, height);
-        _uiState.SidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, SidebarColumnDefinition.ActualWidth));
+        var persistedHeight = CoerceFiniteOrDefault(height, DefaultOutputHeight);
+        _uiState.OutputHeight = Math.Max(MinOutputHeight, persistedHeight);
+
+        var sidebarWidth = CoerceFiniteOrDefault(SidebarColumnDefinition.ActualWidth, DefaultSidebarWidth);
+        _uiState.SidebarWidth = Math.Min(MaxSidebarWidth, Math.Max(MinSidebarWidth, sidebarWidth));
 
         if (_isHistoryDetailsVisible)
         {
@@ -2479,10 +2494,15 @@ public partial class MainWindow : Window
 
         // Preserve dialog-specific persisted dimensions written during this app session.
         var currentPersistedState = UiStateStore.Load();
-        _uiState.AddTaskDialogWidth = currentPersistedState.AddTaskDialogWidth;
-        _uiState.AddTaskDialogHeight = currentPersistedState.AddTaskDialogHeight;
+        _uiState.AddTaskDialogWidth = CoerceFiniteOrDefault(currentPersistedState.AddTaskDialogWidth, 760);
+        _uiState.AddTaskDialogHeight = CoerceFiniteOrDefault(currentPersistedState.AddTaskDialogHeight, 860);
 
         UiStateStore.Save(_uiState);
+    }
+
+    private static double CoerceFiniteOrDefault(double value, double fallback)
+    {
+        return double.IsFinite(value) ? value : fallback;
     }
 
     private void LoadGroupOrderingFromUiState()
@@ -5325,7 +5345,7 @@ public partial class MainWindow : Window
                 CornerRadius = new CornerRadius(0),
                 IsHitTestVisible = false
             };
-            selectionBorder.SetResourceReference(Border.BorderBrushProperty, "ConnectorFocusedBrush");
+            selectionBorder.SetResourceReference(Border.BorderBrushProperty, "TaskCardSelectionBrush");
 
             var invalidBindingBorder = new Border
             {
@@ -5898,7 +5918,7 @@ public partial class MainWindow : Window
         {
             CornerRadius = new CornerRadius(12),
             BorderThickness = new Thickness(0),
-            BorderBrush = GetFocusedConnectorBrush(),
+            BorderBrush = GetTaskCardSelectionBrush(),
             Child = nodeBorder
         };
 
@@ -6396,7 +6416,7 @@ public partial class MainWindow : Window
         visual.StateText.Foreground = stateBrush;
 
         var isSelected = _selectedTaskIndex.HasValue && _selectedTaskIndex.Value == taskIndex;
-        visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(2) : new Thickness(0);
+        visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(SelectedTaskBorderThickness) : new Thickness(0);
     }
 
     private async Task RunTaskByIndexAsync(int taskIndex)
@@ -8494,6 +8514,7 @@ public partial class MainWindow : Window
 
         var newTask = window.Task;
         var newTaskIdentityKey = GetTaskIdentityKey(newTask);
+        var selectedTaskIndex = -1;
         var existingIndex = _currentConfiguration.Tasks.FindIndex(task =>
             string.Equals(GetTaskIdentityKey(task), newTaskIdentityKey, StringComparison.OrdinalIgnoreCase));
 
@@ -8511,15 +8532,20 @@ public partial class MainWindow : Window
             }
 
             _currentConfiguration.Tasks[existingIndex] = newTask;
+            selectedTaskIndex = existingIndex;
         }
         else
         {
             _currentConfiguration.Tasks.Add(newTask);
+            selectedTaskIndex = _currentConfiguration.Tasks.Count - 1;
         }
 
-        _selectedGroupName = NormalizeGroupName(newTask.Group);
+        var selectedGroupName = NormalizeGroupName(newTask.Group);
+        _selectedGroupName = selectedGroupName;
+        _selectedTaskIndex = selectedTaskIndex;
 
         SaveTasksAndRefresh(TaskEditorTitle);
+        SelectTaskInMainPanel(selectedGroupName, selectedTaskIndex, newTaskIdentityKey);
         RefreshHistoryView();
     }
 
@@ -10374,7 +10400,15 @@ public partial class MainWindow : Window
             }
 
             var isSelected = _selectedTaskIndex.HasValue && visual.TaskIndex == _selectedTaskIndex.Value;
-            visual.SelectionBorder.BorderThickness = isSelected ? new Thickness(2) : new Thickness(0);
+            if (isSelected)
+            {
+                visual.SelectionBorder.BorderBrush = BuildTaskSelectionBorderBrush(visual.TaskButton.Background);
+                visual.SelectionBorder.BorderThickness = new Thickness(SelectedTaskBorderThickness);
+            }
+            else
+            {
+                visual.SelectionBorder.BorderThickness = new Thickness(0);
+            }
         }
 
         foreach (var taskIndex in _graphNodesByIndex.Keys)
@@ -10384,6 +10418,177 @@ public partial class MainWindow : Window
 
         UpdateRibbonTaskActionState();
         SyncBottomPaneForSelectedTask();
+    }
+
+    private static Brush BuildTaskSelectionBorderBrush(Brush? taskCardBackground)
+    {
+        if (taskCardBackground is not SolidColorBrush solidCardBrush)
+        {
+            return GetTaskCardSelectionBrush();
+        }
+
+        var contrastingColor = BuildContrastingSelectionColor(solidCardBrush.Color);
+        return new SolidColorBrush(contrastingColor);
+    }
+
+    private static Color BuildContrastingSelectionColor(Color cardColor)
+    {
+        // Neon-only per-card strategy:
+        // - warm/yellow/orange/red cards -> electric blue/cyan highlights
+        // - cool/blue/green cards -> neon yellow/lime highlights
+        // Keep brightness high in all cases (no dark fallback).
+        var (hue, _, _) = RgbToHsv(cardColor);
+        var isWarmCardHue = hue < 96d || hue >= 330d;
+        var hueCandidates = isWarmCardHue
+            ? new[] { 208d, 198d, 220d, 188d }
+            : new[] { 58d, 66d, 50d, 74d };
+
+        var valueCandidates = new[] { 1.0d, 0.98d, 0.95d };
+        const double saturation = 1.0d;
+        const double minimumPreferredContrast = 1.75d;
+
+        Color bestCandidate = HsvToRgb(hueCandidates[0], saturation, valueCandidates[0]);
+        var bestContrast = GetContrastRatio(cardColor, bestCandidate);
+
+        foreach (var candidateHue in hueCandidates)
+        {
+            foreach (var candidateValue in valueCandidates)
+            {
+                var candidate = HsvToRgb(candidateHue, saturation, candidateValue);
+                var contrast = GetContrastRatio(cardColor, candidate);
+
+                if (contrast > bestContrast)
+                {
+                    bestCandidate = candidate;
+                    bestContrast = contrast;
+                }
+
+                if (contrast >= minimumPreferredContrast)
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        // Keep fallback neon + bright; choose best candidate already tested.
+        return bestCandidate;
+    }
+
+    private static (double Hue, double Saturation, double Value) RgbToHsv(Color color)
+    {
+        var red = color.R / 255d;
+        var green = color.G / 255d;
+        var blue = color.B / 255d;
+
+        var max = Math.Max(red, Math.Max(green, blue));
+        var min = Math.Min(red, Math.Min(green, blue));
+        var delta = max - min;
+
+        var hue = 0d;
+        if (delta > 0)
+        {
+            if (Math.Abs(max - red) < double.Epsilon)
+            {
+                hue = 60d * (((green - blue) / delta) % 6d);
+            }
+            else if (Math.Abs(max - green) < double.Epsilon)
+            {
+                hue = 60d * (((blue - red) / delta) + 2d);
+            }
+            else
+            {
+                hue = 60d * (((red - green) / delta) + 4d);
+            }
+        }
+
+        if (hue < 0)
+        {
+            hue += 360d;
+        }
+
+        var saturation = max <= 0 ? 0 : delta / max;
+        var value = max;
+        return (hue, saturation, value);
+    }
+
+    private static Color HsvToRgb(double hue, double saturation, double value)
+    {
+        var normalizedHue = ((hue % 360d) + 360d) % 360d;
+        var chroma = value * saturation;
+        var huePrime = normalizedHue / 60d;
+        var x = chroma * (1d - Math.Abs((huePrime % 2d) - 1d));
+
+        double redPrime;
+        double greenPrime;
+        double bluePrime;
+
+        if (huePrime < 1)
+        {
+            redPrime = chroma;
+            greenPrime = x;
+            bluePrime = 0;
+        }
+        else if (huePrime < 2)
+        {
+            redPrime = x;
+            greenPrime = chroma;
+            bluePrime = 0;
+        }
+        else if (huePrime < 3)
+        {
+            redPrime = 0;
+            greenPrime = chroma;
+            bluePrime = x;
+        }
+        else if (huePrime < 4)
+        {
+            redPrime = 0;
+            greenPrime = x;
+            bluePrime = chroma;
+        }
+        else if (huePrime < 5)
+        {
+            redPrime = x;
+            greenPrime = 0;
+            bluePrime = chroma;
+        }
+        else
+        {
+            redPrime = chroma;
+            greenPrime = 0;
+            bluePrime = x;
+        }
+
+        var match = value - chroma;
+        var red = (byte)Math.Round((redPrime + match) * 255d);
+        var green = (byte)Math.Round((greenPrime + match) * 255d);
+        var blue = (byte)Math.Round((bluePrime + match) * 255d);
+
+        return Color.FromRgb(red, green, blue);
+    }
+
+    private static double GetContrastRatio(Color first, Color second)
+    {
+        var firstLuminance = GetRelativeLuminance(first);
+        var secondLuminance = GetRelativeLuminance(second);
+        var lighter = Math.Max(firstLuminance, secondLuminance);
+        var darker = Math.Min(firstLuminance, secondLuminance);
+        return (lighter + 0.05d) / (darker + 0.05d);
+    }
+
+    private static double GetRelativeLuminance(Color color)
+    {
+        var red = ToLinearChannel(color.R / 255d);
+        var green = ToLinearChannel(color.G / 255d);
+        var blue = ToLinearChannel(color.B / 255d);
+        return (0.2126d * red) + (0.7152d * green) + (0.0722d * blue);
+    }
+
+    private static double ToLinearChannel(double channel)
+    {
+        return channel <= 0.04045d
+            ? channel / 12.92d
+            : Math.Pow((channel + 0.055d) / 1.055d, 2.4d);
     }
 
     private void SyncBottomPaneForSelectedTask()

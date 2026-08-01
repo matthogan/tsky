@@ -85,6 +85,7 @@ public partial class App : System.Windows.Application
 		SetBrush("ConnectorResolvedBrush", useDarkTheme ? "#FF57D3C8" : "#FF0C8A83");
 		SetBrush("ConnectorUnresolvedBrush", useDarkTheme ? "#FFFF7878" : "#FFC62828");
 		SetBrush("ConnectorFocusedBrush", useDarkTheme ? "#FFFFD166" : "#FFF59E0B");
+		SetBrush("TaskCardSelectionBrush", useDarkTheme ? "#FF9CDCFE" : "#FF005A9C");
 		SetBrush("InputPortDotBrush", useDarkTheme ? "#FF7CFF00" : "#FF455A64");
 		SetBrush("OutputPortDotBrush", useDarkTheme ? "#FF67E8D9" : "#FF009688");
 		SetBrush("ListenerOnBackgroundBrush", useDarkTheme ? "#FF2A8A54" : "#FFCFEED8");

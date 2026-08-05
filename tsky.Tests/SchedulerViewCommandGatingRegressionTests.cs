@@ -1,6 +1,8 @@
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace tsky.Tests;
 
@@ -165,6 +167,99 @@ public sealed class SchedulerViewCommandGatingRegressionTests
         });
     }
 
+    [Fact]
+    public async Task SelectSchedulerView_ViewOutputToggle_IsScopedToSchedulerKey()
+    {
+        using var persistenceScope = new SchedulerPersistenceScope();
+        SeedSchedulerWithSingleEnabledItem();
+
+        await _fixture.InvokeAsync(() =>
+        {
+            var window = new MainWindow();
+            try
+            {
+                InvokePrivateVoid(window, "StopSchedulerPoller");
+
+                SetPrivateField(window, "_selectedGroupName", "LeakGroup");
+                var outputVisibility = GetPrivateField<Dictionary<string, bool>>(window, "_groupOutputVisibility");
+                outputVisibility["LeakGroup"] = true;
+                outputVisibility["__SCHEDULER__"] = true;
+
+                InvokePrivateVoid(window, "SelectSchedulerView");
+                window.ViewOutputMenuItem.IsChecked = false;
+                InvokePrivateVoid(window, "ViewOutputMenuItem_Click", window.ViewOutputMenuItem, new RoutedEventArgs());
+
+                Assert.True(outputVisibility["LeakGroup"]);
+                Assert.False(outputVisibility["__SCHEDULER__"]);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task SelectSchedulerView_KeyE_IsHandledBySchedulerEditPath()
+    {
+        using var persistenceScope = new SchedulerPersistenceScope();
+        var scheduledItemId = SeedSchedulerWithSingleEnabledItem();
+
+        await _fixture.InvokeAsync(() =>
+        {
+            var window = new MainWindow();
+            DispatcherTimer? closeDialogTimer = null;
+            try
+            {
+                InvokePrivateVoid(window, "StopSchedulerPoller");
+                InvokePrivateVoid(window, "SelectSchedulerView");
+                SetPrivateField(window, "_selectedScheduledItemId", scheduledItemId);
+                window.Show();
+                window.UpdateLayout();
+
+                // Ensure modal editor dialogs opened by the edit path are closed during the test.
+                closeDialogTimer = new DispatcherTimer(DispatcherPriority.Background, window.Dispatcher)
+                {
+                    Interval = TimeSpan.FromMilliseconds(25)
+                };
+                closeDialogTimer.Tick += (_, _) =>
+                {
+                    foreach (Window candidate in Application.Current?.Windows ?? [])
+                    {
+                        if (candidate.GetType().Name == "SchedulerItemEditorWindow")
+                        {
+                            candidate.Close();
+                            break;
+                        }
+                    }
+                };
+                closeDialogTimer.Start();
+
+                var keyEvent = new KeyEventArgs(
+                    Keyboard.PrimaryDevice,
+                    PresentationSource.FromVisual(window)!,
+                    0,
+                    Key.E)
+                {
+                    RoutedEvent = Keyboard.PreviewKeyDownEvent
+                };
+
+                InvokePrivateVoid(window, "MainWindow_PreviewKeyDown", window, keyEvent);
+
+                Assert.True(keyEvent.Handled);
+            }
+            finally
+            {
+                closeDialogTimer?.Stop();
+                window.Close();
+            }
+
+            return Task.CompletedTask;
+        });
+    }
+
     private static string SeedSchedulerWithSingleEnabledItem()
     {
         var seedTask = new LauncherTask
@@ -197,5 +292,27 @@ public sealed class SchedulerViewCommandGatingRegressionTests
             ?? throw new InvalidOperationException($"Method '{methodName}' was not found.");
 
         _ = method.Invoke(instance, args);
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' was not found.");
+
+        var value = field.GetValue(instance);
+        if (value is not T typed)
+        {
+            throw new InvalidOperationException($"Field '{fieldName}' is not of type {typeof(T).Name}.");
+        }
+
+        return typed;
+    }
+
+    private static void SetPrivateField(object instance, string fieldName, object value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Field '{fieldName}' was not found.");
+
+        field.SetValue(instance, value);
     }
 }

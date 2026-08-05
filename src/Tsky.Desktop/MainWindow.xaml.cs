@@ -4538,18 +4538,14 @@ public partial class MainWindow : Window
 
     private void ViewGroupsMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var groupKey = _isTemplateViewSelected
-            ? TemplatesOutputGroupName
-            : NormalizeGroupName(_selectedGroupName);
+        var groupKey = ResolveViewStateGroupKey();
         _groupSidebarVisibility[groupKey] = ViewGroupsMenuItem.IsChecked;
         ApplyGroupViewState();
     }
 
     private void ViewHistoryMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var groupKey = _isTemplateViewSelected
-            ? TemplatesOutputGroupName
-            : NormalizeGroupName(_selectedGroupName);
+        var groupKey = ResolveViewStateGroupKey();
         if (ViewHistoryMenuItem.IsChecked)
         {
             ViewOutputMenuItem.IsChecked = true;
@@ -4562,9 +4558,7 @@ public partial class MainWindow : Window
 
     private void ViewOutputMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var groupKey = _isTemplateViewSelected
-            ? TemplatesOutputGroupName
-            : NormalizeGroupName(_selectedGroupName);
+        var groupKey = ResolveViewStateGroupKey();
         _groupOutputVisibility[groupKey] = ViewOutputMenuItem.IsChecked;
 
         if (!ViewOutputMenuItem.IsChecked)
@@ -4628,9 +4622,7 @@ public partial class MainWindow : Window
 
     private void ApplyGroupViewState()
     {
-        var groupKey = _isTemplateViewSelected
-            ? TemplatesOutputGroupName
-            : NormalizeGroupName(_selectedGroupName);
+        var groupKey = ResolveViewStateGroupKey();
 
         if (!_groupSidebarVisibility.TryGetValue(groupKey, out var sidebarVisible))
         {
@@ -4667,6 +4659,21 @@ public partial class MainWindow : Window
         ApplyOutputVisibility(groupKey, outputVisible);
         UpdateViewMenuState(sidebarVisible, historyVisible, outputVisible);
         ApplyBottomPaneTabsForViewMode();
+    }
+
+    private string ResolveViewStateGroupKey()
+    {
+        if (_isSchedulerViewSelected)
+        {
+            return SchedulerOutputGroupName;
+        }
+
+        if (_isTemplateViewSelected)
+        {
+            return TemplatesOutputGroupName;
+        }
+
+        return NormalizeGroupName(_selectedGroupName);
     }
 
     private void ApplyBottomPaneTabsForViewMode()
@@ -10462,7 +10469,14 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (e.Key is Key.C or Key.V or Key.R or Key.E)
+            if (e.Key == Key.E && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
+            {
+                TryEditSelectedScheduledItem();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key is Key.C or Key.V or Key.R)
             {
                 return;
             }
@@ -10833,6 +10847,17 @@ public partial class MainWindow : Window
             string.Equals(item.Id, selected.Id, StringComparison.OrdinalIgnoreCase));
         _selectedScheduledItemId = _schedulerConfiguration.Items.FirstOrDefault()?.Id;
         SaveSchedulerAndRefresh("Delete Scheduled Item");
+    }
+
+    private void TryEditSelectedScheduledItem()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedScheduledItemId))
+        {
+            AppMessageBox.Show(this, "No scheduled item is selected.", "Edit Scheduled Item", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        EditScheduledItem(_selectedScheduledItemId);
     }
 
     private void TryDeleteSelectedTask()

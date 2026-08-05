@@ -13647,7 +13647,7 @@ public partial class MainWindow : Window
         paragraph.Inlines.Add(new Run(Environment.NewLine + Environment.NewLine));
         if (shouldAutoScroll)
         {
-            outputTextBox.ScrollToEnd();
+            ScrollOutputToEnd(outputTextBox);
         }
     }
 
@@ -13686,7 +13686,7 @@ public partial class MainWindow : Window
         AppendPlainText(outputTextBox, Environment.NewLine + Environment.NewLine);
         if (shouldAutoScroll)
         {
-            outputTextBox.ScrollToEnd();
+            ScrollOutputToEnd(outputTextBox);
         }
     }
 
@@ -13718,7 +13718,7 @@ public partial class MainWindow : Window
         paragraph.Inlines.Add(new Run(Environment.NewLine + Environment.NewLine));
         if (shouldAutoScroll)
         {
-            outputTextBox.ScrollToEnd();
+            ScrollOutputToEnd(outputTextBox);
         }
     }
 
@@ -13773,14 +13773,28 @@ public partial class MainWindow : Window
             && receipt.Message.Contains("Timed out sending frame to agent", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool ShouldAutoScrollOutput(RichTextBox outputTextBox)
+    private bool ShouldAutoScrollOutput(RichTextBox outputTextBox)
     {
         if (outputTextBox.IsKeyboardFocusWithin && !outputTextBox.Selection.IsEmpty)
         {
             return false;
         }
 
-        var scrollViewer = FindVisualDescendant<ScrollViewer>(outputTextBox);
+        if (TryGetOutputTabContext(outputTextBox, out var tabContext)
+            && TryGetOutputRunBottomOffset(tabContext, out var runBottomOffset))
+        {
+            var panelScrollViewer = tabContext.HostOutputPanel.RunListScrollViewer;
+            if (panelScrollViewer.ScrollableHeight <= 0 || panelScrollViewer.ViewportHeight <= 0)
+            {
+                return true;
+            }
+
+            const double panelAutoScrollThreshold = 8;
+            var viewportBottom = panelScrollViewer.VerticalOffset + panelScrollViewer.ViewportHeight;
+            return viewportBottom >= runBottomOffset - panelAutoScrollThreshold;
+        }
+
+        var scrollViewer = FindVisualAncestor<ScrollViewer>(outputTextBox);
         if (scrollViewer is null)
         {
             return true;
@@ -13793,6 +13807,48 @@ public partial class MainWindow : Window
 
         const double autoScrollThreshold = 6;
         return scrollViewer.VerticalOffset >= scrollViewer.ScrollableHeight - autoScrollThreshold;
+    }
+
+    private void ScrollOutputToEnd(RichTextBox outputTextBox)
+    {
+        outputTextBox.ScrollToEnd();
+
+        if (!TryGetOutputTabContext(outputTextBox, out var tabContext))
+        {
+            return;
+        }
+
+        var panelScrollViewer = tabContext.HostOutputPanel.RunListScrollViewer;
+        if (!TryGetOutputRunBottomOffset(tabContext, out var runBottomOffset) || panelScrollViewer.ViewportHeight <= 0)
+        {
+            panelScrollViewer.ScrollToBottom();
+            return;
+        }
+
+        var targetVerticalOffset = Math.Max(0, runBottomOffset - panelScrollViewer.ViewportHeight);
+        panelScrollViewer.ScrollToVerticalOffset(targetVerticalOffset);
+    }
+
+    private static bool TryGetOutputRunBottomOffset(TaskTabContext tabContext, out double runBottomOffset)
+    {
+        runBottomOffset = 0;
+
+        var panelScrollViewer = tabContext.HostOutputPanel.RunListScrollViewer;
+        if (panelScrollViewer.Content is not Visual scrollContent || !tabContext.RunItemContainer.IsLoaded)
+        {
+            return false;
+        }
+
+        try
+        {
+            var topLeft = tabContext.RunItemContainer.TransformToAncestor(scrollContent).Transform(new Point(0, 0));
+            runBottomOffset = topLeft.Y + tabContext.RunItemContainer.ActualHeight;
+            return !double.IsNaN(runBottomOffset) && !double.IsInfinity(runBottomOffset);
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     private static void AppendTimestampRun(Paragraph paragraph, string timestamp)

@@ -3,7 +3,7 @@
 <img src="hero.png" alt="tsky hero" width="720" />
 
 Tsky is a Windows desktop task launcher built with .NET 8 WPF.
-It supports grouped tasks, chain execution, dataflow ports/connectors, history replay, and import/share workflows.
+It supports grouped tasks, chain execution, dataflow ports/connectors, history replay, import/share workflows, graph visualization, scheduler snapshots, agent-targeted remote dispatch, and task templates.
 
 ## Prerequisites
 
@@ -24,6 +24,13 @@ At startup, the app loads and merges:
 2. User profile config: `%USERPROFILE%\tasks.json`
 
 User profile tasks override workspace tasks when group+name identity matches.
+
+Additional persisted app state:
+
+- Task templates: `%LOCALAPPDATA%\tsky\templates.json`
+- Scheduler config: `%LOCALAPPDATA%\tsky\scheduler.json`
+- Scheduler run history: `%LOCALAPPDATA%\tsky\scheduler-run-history.json`
+- Task run history: `%LOCALAPPDATA%\tsky\run-history.json`
 
 ## Task Configuration Schema
 
@@ -108,17 +115,59 @@ Example:
 ## UI Highlights
 
 - Ribbon actions for add/edit/enable-disable/delete/run-chain/groups/history/share/import.
+- Task surface mode toggle:
+  - `Graph` when task-card mode is active
+  - `Task` when graph mode is active
 - Share menu:
   - Share Task to clipboard
   - Share Group to clipboard
+  - Share Backup (Tasks)
 - Import menu:
   - Import from File
   - Import from Clipboard
 - Bottom pane tabs:
   - Task Output
   - History
+  - Input Ports
+  - Output Ports
+  - Variables
+  - Result Evaluator
+  - Agents (dispatch)
 - History supports multi-select replay and details preview.
 - Sidebar and bottom pane are resizable.
+
+## Graph View
+
+- Graph view is an alternate presentation of the selected group task surface.
+- Nodes represent visible tasks in the selected group.
+- Node labels use task names; descriptions are shown as node tooltip/detail text.
+- Dataflow relationships are rendered as directed edges when bindings are resolvable.
+- Running/editing/deleting/enabling/replaying tasks in Graph mode keeps the same task semantics as Task mode.
+
+## Scheduler
+
+- Schedule snapshots from existing tasks and group chains:
+  - Task card menu: `Schedule...`
+  - Group menu: `Schedule Group Chain...`
+- Dedicated Scheduler view in the left panel with scheduler-specific cards.
+- Supports one-shot and repeatable schedules (with trigger-window tolerance).
+- Scheduler persistence is isolated from `tasks.json` in `%LOCALAPPDATA%\tsky\scheduler.json`.
+- Scheduler run history is persisted in `%LOCALAPPDATA%\tsky\scheduler-run-history.json`.
+- Scheduler view command gating is restricted to scheduler-appropriate actions (for example, delete, enable/disable, history).
+
+## Agent Dispatch (Task View)
+
+- In Task/Groups context, the bottom `Agents` tab lists known agents and per-agent dispatch controls.
+- A selected task can be run on a specific online agent.
+- Non-runnable agents are visibly non-playable based on state.
+- Remote execution lifecycle markers and stream output are written to Task Output.
+
+## Task Templates
+
+- Dedicated Task Templates view and sidebar entry.
+- Templates are non-executable definitions reused by Add Task.
+- Template CRUD, copy/paste, import/share, and result evaluator editing are supported.
+- Templates are persisted to `%LOCALAPPDATA%\tsky\templates.json`.
 
 ## Dataflow Connectors and Reordering
 
@@ -147,6 +196,9 @@ Validation results are written to the output pane so users can see pass/fail eve
 - No tasks shown:
   - Check `./tasks.json` and `%USERPROFILE%\tasks.json` for valid JSON.
   - Review output for validation events.
+- No templates shown:
+  - Check `%LOCALAPPDATA%\tsky\templates.json` for valid JSON.
+  - Review output for template validation/import events.
 - Command fails:
   - Verify runner, quoting, and working directory.
   - Review stdout/stderr in Task Output.

@@ -298,6 +298,47 @@
                         </ComboBox.ItemContainerStyle>
                     </ComboBox>
 
+                    <TextBlock x:Name="TemplatePickerLabel"
+                               Grid.Row="3"
+                               Grid.Column="0"
+                               Margin="0,0,12,10"
+                               VerticalAlignment="Center"
+                               Text="Template" />
+                    <ComboBox x:Name="TemplateComboBox"
+                              Grid.Row="3"
+                              Grid.Column="1"
+                              Grid.ColumnSpan="2"
+                              Margin="0,0,0,10"
+                              Height="32"
+                              Style="{StaticResource ThemedEditableComboBoxStyle}"
+                              SelectionChanged="TemplateComboBox_SelectionChanged">
+                        <ComboBox.ItemContainerStyle>
+                            <Style TargetType="ComboBoxItem">
+                                <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}" />
+                                <Setter Property="Padding" Value="8,4" />
+                                <Style.Triggers>
+                                    <Trigger Property="IsHighlighted" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource TabHeaderHoverBackgroundBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource TabHeaderSelectedBackgroundBrush}" />
+                                        <Setter Property="Foreground" Value="{DynamicResource PrimaryTextBrush}" />
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ComboBox.ItemContainerStyle>
+                    </ComboBox>
+
+                    <TextBlock x:Name="TemplatePickerHintText"
+                               Grid.Row="4"
+                               Grid.Column="1"
+                               Grid.ColumnSpan="2"
+                               Margin="0,0,0,10"
+                               Foreground="{DynamicResource SecondaryTextBrush}"
+                               Text="Optional: choose a template to prefill fields. You can still edit before saving." />
+
                     <TextBlock Grid.Row="6" Grid.Column="0" Margin="0,0,12,10" VerticalAlignment="Center" Text="Runner" />
                     <ComboBox x:Name="RunnerComboBox" Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,10" Height="32" SelectedIndex="0" Style="{StaticResource ThemedEditableComboBoxStyle}">
                         <ComboBox.ItemContainerStyle>

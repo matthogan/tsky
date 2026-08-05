@@ -294,6 +294,7 @@ internal sealed class SchedulerPersistenceScope : IDisposable
     private readonly FileSnapshot _schedulerRunHistorySnapshot;
     private readonly FileSnapshot _taskRunHistorySnapshot;
     private readonly FileSnapshot _userProfileTasksSnapshot;
+    private readonly FileSnapshot _appDataTemplatesSnapshot;
 
     public SchedulerPersistenceScope()
     {
@@ -305,6 +306,7 @@ internal sealed class SchedulerPersistenceScope : IDisposable
         _schedulerRunHistorySnapshot = FileSnapshot.Capture(Path.Combine(localAppDataDirectory, "scheduler-run-history.json"));
         _taskRunHistorySnapshot = FileSnapshot.Capture(Path.Combine(localAppDataDirectory, "run-history.json"));
         _userProfileTasksSnapshot = FileSnapshot.Capture(TaskConfiguration.GetUserProfileConfigPath());
+        _appDataTemplatesSnapshot = FileSnapshot.Capture(Path.Combine(localAppDataDirectory, "templates.json"));
 
         Directory.CreateDirectory(localAppDataDirectory);
 
@@ -328,6 +330,7 @@ internal sealed class SchedulerPersistenceScope : IDisposable
         _schedulerRunHistorySnapshot.Restore();
         _schedulerConfigSnapshot.Restore();
         _userProfileTasksSnapshot.Restore();
+        _appDataTemplatesSnapshot.Restore();
     }
 
     private sealed class FileSnapshot

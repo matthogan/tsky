@@ -851,6 +851,7 @@
                     <RowDefinition Height="*" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <Expander x:Name="SidebarGroupsExpander"
@@ -1049,6 +1050,57 @@
                                 Style="{StaticResource SidebarTreeGroupHeaderButtonStyle}"
                                 Click="SchedulerSidebarButton_Click"
                                 Content="Open Scheduler View" />
+                    </StackPanel>
+                </Expander>
+
+                <Expander x:Name="SidebarTemplatesExpander"
+                          Grid.Row="4"
+                          Style="{StaticResource SidebarBottomSectionStyle}"
+                          IsExpanded="False"
+                          Margin="0,6,0,0"
+                          Expanded="SidebarTemplatesExpander_Expanded"
+                          Collapsed="SidebarTemplatesExpander_Collapsed">
+                    <Expander.Header>
+                        <DockPanel>
+                            <TextBlock x:Name="TemplatesSectionChevronText"
+                                       Text="▶"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       FontSize="9"
+                                       Margin="0,0,6,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="&#xE8A5;"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"
+                                       FontSize="12"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text="TASK TEMPLATES"
+                                       Foreground="{DynamicResource SidebarSectionHeaderBrush}"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock x:Name="TemplatesHeaderCountText"
+                                       DockPanel.Dock="Right"
+                                       Text="(0)"
+                                       Foreground="{DynamicResource ConnectorFocusedBrush}"
+                                       FontSize="10"
+                                       Margin="8,0,0,0"
+                                       MinWidth="32"
+                                       TextAlignment="Right"
+                                       VerticalAlignment="Center" />
+                        </DockPanel>
+                    </Expander.Header>
+
+                    <StackPanel>
+                        <Button x:Name="TemplatesSidebarButton"
+                                Padding="8,7"
+                                HorizontalContentAlignment="Stretch"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="0"
+                                Style="{StaticResource SidebarTreeGroupHeaderButtonStyle}"
+                                Click="TemplatesSidebarButton_Click"
+                                Content="Open Task Templates View" />
                     </StackPanel>
                 </Expander>
 

@@ -13,11 +13,25 @@ public partial class TaskFormWindow : Window
     private const double DefaultDialogWidth = 760;
     private const double DefaultDialogHeight = 860;
 
-    public TaskFormWindow(IEnumerable<string>? existingGroups = null, string? defaultGroupName = null)
+    private sealed class TemplateChoice
+    {
+        public required string Label { get; init; }
+
+        public LauncherTask? TemplateTask { get; init; }
+    }
+
+    private LauncherTask? _selectedTemplateTask;
+
+    public TaskFormWindow(
+        IEnumerable<string>? existingGroups = null,
+        string? defaultGroupName = null,
+        IReadOnlyList<LauncherTask>? availableTemplates = null,
+        bool showTemplatePicker = false)
     {
         InitializeComponent();
         ApplyPersistedWindowSize();
         InitializeGroupChoices(existingGroups, defaultGroupName);
+        InitializeTemplateChoices(availableTemplates, showTemplatePicker);
         ApplyTheme();
 
         SourceInitialized += (_, _) => WindowThemeManager.ApplyTitleBarTheme(this, App.IsDarkThemeEnabled());
@@ -60,6 +74,10 @@ public partial class TaskFormWindow : Window
         GroupComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
         GroupComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
         GroupComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
+
+        TemplateComboBox.SetResourceReference(Control.BackgroundProperty, "PanelBackgroundBrush");
+        TemplateComboBox.SetResourceReference(Control.ForegroundProperty, "PrimaryTextBrush");
+        TemplateComboBox.SetResourceReference(Control.BorderBrushProperty, "InputBorderBrush");
     }
 
     private void InitializeGroupChoices(IEnumerable<string>? existingGroups, string? defaultGroupName)
@@ -87,6 +105,48 @@ public partial class TaskFormWindow : Window
         }
 
         GroupComboBox.Text = defaultGroup;
+    }
+
+    private void InitializeTemplateChoices(IReadOnlyList<LauncherTask>? availableTemplates, bool showTemplatePicker)
+    {
+        if (!showTemplatePicker)
+        {
+            TemplatePickerLabel.Visibility = Visibility.Collapsed;
+            TemplateComboBox.Visibility = Visibility.Collapsed;
+            TemplatePickerHintText.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var orderedTemplates = (availableTemplates ?? [])
+            .Where(task => !string.IsNullOrWhiteSpace(task.Name))
+            .OrderBy(task => task.Name?.Trim() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(task => task.Group?.Trim() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .Select(task => new TemplateChoice
+            {
+                Label = $"{task.Name?.Trim() ?? string.Empty} ({task.Group?.Trim() ?? "General"})",
+                TemplateTask = CloneTask(task)
+            })
+            .ToList();
+
+        var choices = new List<TemplateChoice>
+        {
+            new()
+            {
+                Label = "No template (blank task)",
+                TemplateTask = null
+            }
+        };
+
+        choices.AddRange(orderedTemplates);
+        TemplateComboBox.ItemsSource = choices;
+        TemplateComboBox.DisplayMemberPath = nameof(TemplateChoice.Label);
+        TemplateComboBox.SelectedIndex = 0;
+
+        if (orderedTemplates.Count == 0)
+        {
+            TemplateComboBox.IsEnabled = false;
+            TemplatePickerHintText.Text = "No templates available yet. Add templates from the Task Templates view.";
+        }
     }
 
     private void ApplyPersistedWindowSize()
@@ -156,24 +216,29 @@ public partial class TaskFormWindow : Window
 
         var runner = (RunnerComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "exe";
 
-        Task = new LauncherTask
-        {
-            Name = NameTextBox.Text.Trim(),
-            Description = string.IsNullOrWhiteSpace(DescriptionTextBox.Text) ? null : DescriptionTextBox.Text.Trim(),
-            Group = string.IsNullOrWhiteSpace(GroupComboBox.Text) ? "General" : GroupComboBox.Text.Trim(),
-            Runner = runner,
-            CommandLine = CommandLineTextBox.Text.Trim(),
-            WorkingDirectory = WorkingDirectoryTextBox.Text.Trim(),
-            WaitForExit = WaitForExitCheckBox.IsChecked != false,
-            RequiresElevation = RequiresElevationCheckBox.IsChecked == true,
-            IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked == true,
-            TimeoutSeconds = timeoutSeconds,
-            Retries = retries,
-            KillProcessTreeOnCancel = KillProcessTreeOnCancelCheckBox.IsChecked != false,
-            MaxCapturedOutputChars = maxCapturedOutputChars,
-            IsEnabled = IsEnabledCheckBox.IsChecked != false,
-            Env = envVars
-        };
+        var task = _selectedTemplateTask is null
+            ? new LauncherTask()
+            : CloneTask(_selectedTemplateTask);
+
+        task.Name = NameTextBox.Text.Trim();
+        task.Description = string.IsNullOrWhiteSpace(DescriptionTextBox.Text) ? null : DescriptionTextBox.Text.Trim();
+        task.Group = string.IsNullOrWhiteSpace(GroupComboBox.Text) ? "General" : GroupComboBox.Text.Trim();
+        task.Runner = runner;
+        task.CommandLine = CommandLineTextBox.Text.Trim();
+        task.WorkingDirectory = WorkingDirectoryTextBox.Text.Trim();
+        task.WaitForExit = WaitForExitCheckBox.IsChecked != false;
+        task.RequiresElevation = RequiresElevationCheckBox.IsChecked == true;
+        task.IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked == true;
+        task.TimeoutSeconds = timeoutSeconds;
+        task.Retries = retries;
+        task.KillProcessTreeOnCancel = KillProcessTreeOnCancelCheckBox.IsChecked != false;
+        task.MaxCapturedOutputChars = maxCapturedOutputChars;
+        task.IsEnabled = IsEnabledCheckBox.IsChecked != false;
+        task.Env = envVars;
+        task.ImportedFromFile = null;
+        task.ImportedAtUtc = null;
+
+        Task = task;
 
         DialogResult = true;
     }
@@ -240,6 +305,94 @@ public partial class TaskFormWindow : Window
         }
 
         return true;
+    }
+
+    private void TemplateComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (TemplateComboBox.SelectedItem is not TemplateChoice choice)
+        {
+            _selectedTemplateTask = null;
+            return;
+        }
+
+        if (choice.TemplateTask is null)
+        {
+            _selectedTemplateTask = null;
+            return;
+        }
+
+        _selectedTemplateTask = CloneTask(choice.TemplateTask);
+        ApplyTemplateToForm(choice.TemplateTask);
+    }
+
+    private void ApplyTemplateToForm(LauncherTask templateTask)
+    {
+        NameTextBox.Text = templateTask.Name;
+        DescriptionTextBox.Text = templateTask.Description ?? string.Empty;
+        GroupComboBox.Text = string.IsNullOrWhiteSpace(templateTask.Group) ? "General" : templateTask.Group;
+
+        var runner = string.IsNullOrWhiteSpace(templateTask.Runner) ? "exe" : templateTask.Runner.Trim();
+        EnsureRunnerChoice(runner);
+        RunnerComboBox.SelectedItem = RunnerComboBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item =>
+                string.Equals(item.Content?.ToString(), runner, StringComparison.OrdinalIgnoreCase));
+
+        CommandLineTextBox.Text = templateTask.CommandLine;
+        WorkingDirectoryTextBox.Text = templateTask.WorkingDirectory;
+        RequiresElevationCheckBox.IsChecked = templateTask.RequiresElevation;
+        IgnoreExitCodeCheckBox.IsChecked = templateTask.IgnoreExitCode;
+        WaitForExitCheckBox.IsChecked = templateTask.WaitForExit;
+        KillProcessTreeOnCancelCheckBox.IsChecked = templateTask.KillProcessTreeOnCancel;
+        TimeoutSecondsTextBox.Text = templateTask.TimeoutSeconds.ToString();
+        RetriesTextBox.Text = templateTask.Retries.ToString();
+        MaxCapturedOutputCharsTextBox.Text = templateTask.MaxCapturedOutputChars.ToString();
+        IsEnabledCheckBox.IsChecked = templateTask.IsEnabled;
+        EnvVarsTextBox.Text = string.Join(Environment.NewLine, templateTask.Env.Select(pair => $"{pair.Key}={pair.Value}"));
+    }
+
+    private void EnsureRunnerChoice(string runner)
+    {
+        if (RunnerComboBox.Items.OfType<ComboBoxItem>().Any(item =>
+                string.Equals(item.Content?.ToString(), runner, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        RunnerComboBox.Items.Add(new ComboBoxItem { Content = runner });
+    }
+
+    private static LauncherTask CloneTask(LauncherTask source)
+    {
+        return new LauncherTask
+        {
+            Name = source.Name,
+            Description = source.Description,
+            Group = source.Group,
+            CommandLine = source.CommandLine,
+            Runner = source.Runner,
+            Env = CloneStringDictionary(source.Env),
+            WorkingDirectory = source.WorkingDirectory,
+            WaitForExit = source.WaitForExit,
+            RequiresElevation = source.RequiresElevation,
+            IgnoreExitCode = source.IgnoreExitCode,
+            TimeoutSeconds = source.TimeoutSeconds,
+            Retries = source.Retries,
+            KillProcessTreeOnCancel = source.KillProcessTreeOnCancel,
+            MaxCapturedOutputChars = source.MaxCapturedOutputChars,
+            IsEnabled = source.IsEnabled,
+            ResultEvaluatorScript = source.ResultEvaluatorScript,
+            ImportedFromFile = source.ImportedFromFile,
+            ImportedAtUtc = source.ImportedAtUtc,
+            Inputs = CloneStringDictionary(source.Inputs),
+            InputBindings = CloneStringDictionary(source.InputBindings),
+            Outputs = CloneStringDictionary(source.Outputs)
+        };
+    }
+
+    private static Dictionary<string, string> CloneStringDictionary(IReadOnlyDictionary<string, string> source)
+    {
+        return new Dictionary<string, string>(source, StringComparer.OrdinalIgnoreCase);
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)

@@ -57,7 +57,9 @@ public partial class MainWindow : Window
 
     private readonly string _currentDirectoryConfigPath;
     private readonly string _userProfileConfigPath;
+    private readonly string _templateConfigPath;
     private TaskConfiguration _currentConfiguration = new();
+    private TaskConfiguration _templateConfiguration = new();
     private UiState _uiState = new();
     private Point _dragStartPoint;
     private bool _isDraggingTaskCard;
@@ -83,6 +85,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, List<TextBlock>> _sidebarTaskStateGlyphs = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Button> _sidebarAgentButtonsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, Grid> _taskCardsByIndex = [];
+    private readonly Dictionary<int, Grid> _templateCardsByIndex = [];
     private readonly Dictionary<string, Grid> _agentCardsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Grid> _schedulerCardsById = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, GraphNodeVisual> _graphNodesByIndex = [];
@@ -115,13 +118,16 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _agentStatusRefreshTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool _isAgentViewSelected;
     private bool _isSchedulerViewSelected;
+    private bool _isTemplateViewSelected;
     private string? _selectedAgentId;
     private string? _selectedScheduledItemId;
+    private int? _selectedTemplateTaskIndex;
     private string? _selectedDispatchAgentId;
     private bool _isReplayingHistoryBatch;
     private bool _isHistoryDetailsVisible = true;
     private double _historyListPaneRatio = DefaultHistoryListPaneRatio;
     private int? _portEditorTaskIndex;
+    private int? _portEditorTemplateTaskIndex;
     private readonly HashSet<int> _invalidPortBindingTaskIndexes = [];
     private readonly DispatcherTimer _sidebarStatusTimer = new() { Interval = TimeSpan.FromMilliseconds(120) };
     private readonly DispatcherTimer _graphRenderDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(45) };
@@ -171,7 +177,13 @@ public partial class MainWindow : Window
     private const int RetryBackoffMaxSeconds = 60;
     private const string AgentViewOutputHeightCacheKey = "__AGENTS_VIEW__";
     private const string SchedulerViewOutputHeightCacheKey = "__SCHEDULER_VIEW__";
+    private const string TemplateViewOutputHeightCacheKey = "__TEMPLATES_VIEW__";
     private const string SchedulerOutputGroupName = "__SCHEDULER__";
+    private const string TemplatesOutputGroupName = "__TEMPLATES__";
+    private const string ShareBackupTasksTitle = "Share Backup (Tasks)";
+    private const string TemplateShareBackupTitle = "Template Share Backup";
+    private const string ShareBackupLogPrefix = "[Share Backup]";
+    private const string TemplateShareBackupLogPrefix = "[Template Share Backup]";
     private const int MaxSchedulerHistoryEntries = 500;
     private const string DefaultResultEvaluatorScript = """
         function evaluate(task) {
@@ -367,6 +379,15 @@ public partial class MainWindow : Window
         public required string ScheduledItemId { get; init; }
 
         public required Border SelectionBorder { get; init; }
+    }
+
+    private sealed class TemplateTaskCardVisual
+    {
+        public required int TemplateIndex { get; init; }
+
+        public required Border SelectionBorder { get; init; }
+
+        public required Button TemplateButton { get; init; }
     }
 
     private sealed class GraphNodeVisual
@@ -689,6 +710,27 @@ public partial class MainWindow : Window
 
         _currentDirectoryConfigPath = TaskConfiguration.GetCurrentDirectoryConfigPath();
         _userProfileConfigPath = TaskConfiguration.GetUserProfileConfigPath();
+        var localAppDataDirectory = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "tsky");
+        _templateConfigPath = System.IO.Path.Combine(localAppDataDirectory, "templates.json");
+        var legacyTemplateConfigPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "templates.json");
+
+        if (!File.Exists(_templateConfigPath) && File.Exists(legacyTemplateConfigPath))
+        {
+            try
+            {
+                Directory.CreateDirectory(localAppDataDirectory);
+                File.Copy(legacyTemplateConfigPath, _templateConfigPath, overwrite: false);
+                DebugTraceLog.Write($"[Startup] Migrated templates.json from '{legacyTemplateConfigPath}' to '{_templateConfigPath}'.");
+            }
+            catch (Exception ex)
+            {
+                DebugTraceLog.Write(ex, $"[Startup] Failed to migrate templates.json from '{legacyTemplateConfigPath}' to '{_templateConfigPath}'.");
+            }
+        }
         _sidebarStatusTimer.Tick += SidebarStatusTimer_Tick;
         _graphRenderDebounceTimer.Tick += GraphRenderDebounceTimer_Tick;
         _graphAutoPanTimer.Tick += GraphAutoPanTimer_Tick;
@@ -746,7 +788,9 @@ public partial class MainWindow : Window
         ApplyHistoryDetailsVisibility();
 
         TaskConfiguration.EnsureValidFileOrReset(_userProfileConfigPath);
+        TaskConfiguration.EnsureValidFileOrReset(_templateConfigPath);
         LoadConfigurationWithValidation(_userProfileConfigPath, "Read user profile tasks.json");
+        _templateConfiguration = LoadConfigurationWithValidation(_templateConfigPath, "Read local appdata templates.json");
         _agentRegistry = _agentRegistryService.Load();
 
         UpdateGatewayListenerToggleUi();
@@ -839,6 +883,7 @@ public partial class MainWindow : Window
             UpdateGatewayListenerToggleUi();
             UpdateAgentsSidebarVisual();
             UpdateSchedulerSidebarVisual();
+            UpdateTemplatesSidebarVisual();
             UpdateAgentSidebarSelectionVisuals();
             if (ReferenceEquals(BottomPaneTabControl?.SelectedItem, AgentsDispatchPaneTabItem))
             {
@@ -2578,8 +2623,10 @@ public partial class MainWindow : Window
         GroupsSummaryText.Text = $"{groupNames.Count} groups created";
         AgentsHeaderCountText.Text = $"({_agentRegistry.Agents.Count})";
         SchedulerHeaderCountText.Text = $"({_schedulerConfiguration.Items.Count})";
+        TemplatesHeaderCountText.Text = $"({_templateConfiguration.Tasks.Count})";
         UpdateAgentsSidebarVisual();
         UpdateSchedulerSidebarVisual();
+        UpdateTemplatesSidebarVisual();
         RebuildAgentsSidebarList();
         if (groupNames.Count == 0)
         {
@@ -2608,6 +2655,15 @@ public partial class MainWindow : Window
             RenderSchedulerView();
             ShowSelectedGroupOutputTabControl();
             RefreshHistoryView();
+            ApplyGroupViewState();
+            UpdateRibbonTaskActionState();
+            return;
+        }
+
+        if (_isTemplateViewSelected)
+        {
+            RenderTemplatesView();
+            ShowSelectedGroupOutputTabControl();
             ApplyGroupViewState();
             UpdateRibbonTaskActionState();
             return;
@@ -2898,6 +2954,22 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SidebarTemplatesExpander_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (TemplatesSectionChevronText is not null)
+        {
+            TemplatesSectionChevronText.Text = "▼";
+        }
+    }
+
+    private void SidebarTemplatesExpander_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (TemplatesSectionChevronText is not null)
+        {
+            TemplatesSectionChevronText.Text = "▶";
+        }
+    }
+
     private void AgentsSidebarButton_Click(object sender, RoutedEventArgs e)
     {
         SelectAgentsView();
@@ -2906,6 +2978,11 @@ public partial class MainWindow : Window
     private void SchedulerSidebarButton_Click(object sender, RoutedEventArgs e)
     {
         SelectSchedulerView();
+    }
+
+    private void TemplatesSidebarButton_Click(object sender, RoutedEventArgs e)
+    {
+        SelectTemplatesView();
     }
 
     private void SidebarAgentRowButton_Click(object sender, RoutedEventArgs e)
@@ -3062,6 +3139,7 @@ public partial class MainWindow : Window
         CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = true;
         _isSchedulerViewSelected = false;
+        _isTemplateViewSelected = false;
         _preferGroupDeleteContext = false;
         StopGraphPanning();
         ClearGraphPointerInteraction();
@@ -3072,6 +3150,7 @@ public partial class MainWindow : Window
         UpdateAgentSidebarSelectionVisuals();
         UpdateAgentsSidebarVisual();
         UpdateSchedulerSidebarVisual();
+        UpdateTemplatesSidebarVisual();
         UpdateRibbonTaskActionState();
     }
 
@@ -3085,6 +3164,7 @@ public partial class MainWindow : Window
         CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = false;
         _isSchedulerViewSelected = true;
+        _isTemplateViewSelected = false;
         _preferGroupDeleteContext = false;
         StopGraphPanning();
         ClearGraphPointerInteraction();
@@ -3095,12 +3175,37 @@ public partial class MainWindow : Window
         ApplyBottomPaneTabsForViewMode();
         UpdateAgentsSidebarVisual();
         UpdateSchedulerSidebarVisual();
+        UpdateTemplatesSidebarVisual();
+        UpdateRibbonTaskActionState();
+    }
+
+    private void SelectTemplatesView()
+    {
+        if (SidebarTemplatesExpander is not null && !SidebarTemplatesExpander.IsExpanded)
+        {
+            SidebarTemplatesExpander.IsExpanded = true;
+        }
+
+        CacheCurrentOutputHeightForSelectedGroup();
+        _isAgentViewSelected = false;
+        _isSchedulerViewSelected = false;
+        _isTemplateViewSelected = true;
+        _preferGroupDeleteContext = false;
+        StopGraphPanning();
+        ClearGraphPointerInteraction();
+        RenderTemplatesView();
+        ShowSelectedGroupOutputTabControl();
+        ApplyGroupViewState();
+        ApplyBottomPaneTabsForViewMode();
+        UpdateAgentsSidebarVisual();
+        UpdateSchedulerSidebarVisual();
+        UpdateTemplatesSidebarVisual();
         UpdateRibbonTaskActionState();
     }
 
     private void SelectTasksView()
     {
-        if (!_isAgentViewSelected && !_isSchedulerViewSelected)
+        if (!_isAgentViewSelected && !_isSchedulerViewSelected && !_isTemplateViewSelected)
         {
             return;
         }
@@ -3108,9 +3213,11 @@ public partial class MainWindow : Window
         CacheCurrentOutputHeightForSelectedGroup();
         _isAgentViewSelected = false;
         _isSchedulerViewSelected = false;
+        _isTemplateViewSelected = false;
         ApplyBottomPaneTabsForViewMode();
         UpdateAgentsSidebarVisual();
         UpdateSchedulerSidebarVisual();
+        UpdateTemplatesSidebarVisual();
         UpdateRibbonTaskActionState();
     }
 
@@ -3134,6 +3241,18 @@ public partial class MainWindow : Window
         }
 
         SchedulerSidebarButton.Background = _isSchedulerViewSelected
+            ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
+            : Brushes.Transparent;
+    }
+
+    private void UpdateTemplatesSidebarVisual()
+    {
+        if (TemplatesSidebarButton is null)
+        {
+            return;
+        }
+
+        TemplatesSidebarButton.Background = _isTemplateViewSelected
             ? ResolveThemeBrush("TabHeaderSelectedBackgroundBrush", ThemeFallbackPalette.TabHeaderSelected)
             : Brushes.Transparent;
     }
@@ -3489,6 +3608,314 @@ public partial class MainWindow : Window
                 string.Equals(visual.ScheduledItemId, _selectedScheduledItemId, StringComparison.OrdinalIgnoreCase)
                     ? new Thickness(2)
                     : new Thickness(0);
+        }
+    }
+
+    private void RenderTemplatesView()
+    {
+        TaskPanel.Children.Clear();
+        TaskGraphCanvas.Children.Clear();
+        TaskGraphEdgeOverlay.Children.Clear();
+        TaskConnectorOverlay.Children.Clear();
+        _taskCardsByIndex.Clear();
+        _agentCardsById.Clear();
+        _schedulerCardsById.Clear();
+        _templateCardsByIndex.Clear();
+        _graphNodesByIndex.Clear();
+        _taskRunningOverlays.Clear();
+        _visibleTaskIndexes.Clear();
+        _selectedTaskIndex = null;
+        TaskPanel.AllowDrop = false;
+        SyncTaskSurfaceToViewport();
+        ApplyTaskSurfaceModeVisibility();
+
+        GroupTitleText.Text = "Task Templates";
+        GroupMetaText.Text = $"{_templateConfiguration.Tasks.Count} template(s)";
+        EmptyStateText.Text = "No templates yet. Use Add Template to create reusable task definitions.";
+        EmptyStateText.Visibility = _templateConfiguration.Tasks.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (_templateConfiguration.Tasks.Count == 0)
+        {
+            _selectedTemplateTaskIndex = null;
+            ShowTemplateResultEvaluatorSample(selectTab: false);
+            UpdateTemplatesSidebarVisual();
+            return;
+        }
+
+        if (!_selectedTemplateTaskIndex.HasValue
+            || _selectedTemplateTaskIndex.Value < 0
+            || _selectedTemplateTaskIndex.Value >= _templateConfiguration.Tasks.Count)
+        {
+            _selectedTemplateTaskIndex = 0;
+        }
+
+        for (var index = 0; index < _templateConfiguration.Tasks.Count; index++)
+        {
+            TaskPanel.Children.Add(CreateTemplateTaskCard(_templateConfiguration.Tasks[index], index, PastelPalette[index % PastelPalette.Length]));
+        }
+
+        ApplyTemplateTaskCardSelectionVisuals();
+    }
+
+    private Grid CreateTemplateTaskCard(LauncherTask templateTask, int templateIndex, Color cardColor)
+    {
+        var foregroundBrush = GetReadableTextBrush(cardColor);
+        var cardFontFamily = TryFindResource("CardUiFontFamily") as FontFamily ?? new FontFamily("Segoe UI");
+        var card = new Grid
+        {
+            Width = 195,
+            Height = 195,
+            Margin = new Thickness(0, 0, 21, 21)
+        };
+
+        var selectionBorder = new Border
+        {
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            IsHitTestVisible = false
+        };
+        selectionBorder.SetResourceReference(Border.BorderBrushProperty, "ConnectorFocusedBrush");
+
+        var body = new Grid();
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var title = new TextBlock
+        {
+            Text = templateTask.Name,
+            FontWeight = FontWeights.Bold,
+            FontFamily = cardFontFamily,
+            FontSize = 16,
+            Foreground = foregroundBrush,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxHeight = 44
+        };
+
+        var titleBar = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(28, 18, 30, 42)),
+            Padding = new Thickness(10, 8, 42, 8),
+            Child = title
+        };
+        Grid.SetRow(titleBar, 0);
+
+        var details = new TextBlock
+        {
+            Text = BuildTemplateTaskCardSummary(templateTask),
+            FontFamily = cardFontFamily,
+            FontSize = 12.5,
+            Foreground = foregroundBrush,
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.92,
+            MaxHeight = 92
+        };
+        var detailContainer = new Border
+        {
+            Padding = new Thickness(12, 10, 12, 10),
+            Child = details
+        };
+        Grid.SetRow(detailContainer, 1);
+
+        var footer = new TextBlock
+        {
+            Text = BuildTemplateTaskCardFooter(templateTask),
+            FontFamily = cardFontFamily,
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = foregroundBrush,
+            Opacity = 0.86,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(10, 0, 42, 8),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetRow(footer, 2);
+
+        body.Children.Add(titleBar);
+        body.Children.Add(detailContainer);
+        body.Children.Add(footer);
+
+        var button = new Button
+        {
+            Content = body,
+            Tag = templateIndex,
+            Style = (Style)Resources["TaskCardButtonStyle"],
+            Background = new SolidColorBrush(cardColor),
+            Foreground = foregroundBrush,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Stretch,
+            Opacity = templateTask.IsEnabled ? 1.0 : 0.66
+        };
+        button.Click += TemplateTaskCardButton_Click;
+        button.GotKeyboardFocus += TemplateTaskCardButton_GotKeyboardFocus;
+        button.PreviewMouseRightButtonUp += TemplateTaskCardButton_PreviewMouseRightButtonUp;
+
+        var menuButton = new Button
+        {
+            Content = "⋮",
+            Tag = templateIndex,
+            Style = (Style)Resources["TaskMenuButtonStyle"],
+            Background = new SolidColorBrush(cardColor),
+            BorderBrush = new SolidColorBrush(cardColor),
+            Foreground = foregroundBrush,
+            IsTabStop = false
+        };
+        menuButton.Click += TemplateTaskMenuButton_Click;
+
+        card.Tag = new TemplateTaskCardVisual
+        {
+            TemplateIndex = templateIndex,
+            SelectionBorder = selectionBorder,
+            TemplateButton = button
+        };
+        card.Children.Add(button);
+        card.Children.Add(selectionBorder);
+        card.Children.Add(menuButton);
+        _templateCardsByIndex[templateIndex] = card;
+        return card;
+    }
+
+    private static string BuildTemplateTaskCardSummary(LauncherTask task)
+    {
+        return string.IsNullOrWhiteSpace(task.Description)
+            ? string.Empty
+            : task.Description.Trim();
+    }
+
+    private static string BuildTemplateTaskCardFooter(LauncherTask task)
+    {
+        var evaluator = string.IsNullOrWhiteSpace(task.ResultEvaluatorScript) ? "no evaluator" : "evaluator";
+        var enabled = task.IsEnabled ? "enabled" : "disabled";
+        return $"{enabled} · {evaluator}";
+    }
+
+    private void TemplateTaskCardButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: int templateIndex })
+        {
+            return;
+        }
+
+        _selectedTemplateTaskIndex = templateIndex;
+        ApplyTemplateTaskCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+    }
+
+    private void TemplateTaskCardButton_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not Button { Tag: int templateIndex })
+        {
+            return;
+        }
+
+        _selectedTemplateTaskIndex = templateIndex;
+        ApplyTemplateTaskCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+    }
+
+    private void TemplateTaskCardButton_PreviewMouseRightButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Button { Tag: int templateIndex } button)
+        {
+            return;
+        }
+
+        _selectedTemplateTaskIndex = templateIndex;
+        ApplyTemplateTaskCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+        OpenContextMenuAtPointer(CreateTemplateTaskContextMenu(templateIndex), button);
+        e.Handled = true;
+    }
+
+    private void TemplateTaskMenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: int templateIndex } button)
+        {
+            return;
+        }
+
+        _selectedTemplateTaskIndex = templateIndex;
+        ApplyTemplateTaskCardSelectionVisuals();
+        UpdateRibbonTaskActionState();
+        OpenContextMenuAtButton(CreateTemplateTaskContextMenu(templateIndex), button);
+    }
+
+    private ContextMenu CreateTemplateTaskContextMenu(int templateIndex)
+    {
+        var menu = CreateRibbonContextMenu();
+        var hasTemplate = TryGetTemplateTask(templateIndex, out _);
+
+        var editItem = new MenuItem
+        {
+            Header = "Edit",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = hasTemplate
+        };
+        editItem.Click += (_, _) => EditTemplateTask(templateIndex);
+
+        var copyItem = new MenuItem
+        {
+            Header = "Copy",
+            InputGestureText = "Ctrl+C",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = hasTemplate
+        };
+        copyItem.Click += (_, _) => CopyTemplateTask(templateIndex);
+
+        var pasteItem = new MenuItem
+        {
+            Header = "Paste",
+            InputGestureText = "Ctrl+V",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = CanPasteTaskIntoCurrentGroup()
+        };
+        pasteItem.Click += (_, _) => PasteTaskIntoSelectedGroup();
+
+        var deleteItem = new MenuItem
+        {
+            Header = "Delete",
+            Style = (Style)Resources["AppMenuItemStyle"],
+            IsEnabled = hasTemplate
+        };
+        deleteItem.Click += (_, _) =>
+        {
+            _selectedTemplateTaskIndex = templateIndex;
+            TryDeleteSelectedTemplateTask();
+        };
+
+        menu.Items.Add(editItem);
+        menu.Items.Add(copyItem);
+        menu.Items.Add(pasteItem);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(deleteItem);
+        return menu;
+    }
+
+    private void ApplyTemplateTaskCardSelectionVisuals()
+    {
+        foreach (var card in _templateCardsByIndex.Values)
+        {
+            if (card.Tag is not TemplateTaskCardVisual visual)
+            {
+                continue;
+            }
+
+            visual.SelectionBorder.BorderThickness = _selectedTemplateTaskIndex.HasValue && visual.TemplateIndex == _selectedTemplateTaskIndex.Value
+                ? new Thickness(2)
+                : new Thickness(0);
+        }
+
+        if (_isTemplateViewSelected && ReferenceEquals(BottomPaneTabControl?.SelectedItem, ResultEvaluatorPaneTabItem))
+        {
+            if (_selectedTemplateTaskIndex.HasValue)
+            {
+                OpenTemplateResultEvaluatorEditor(_selectedTemplateTaskIndex.Value, selectTab: false);
+            }
+            else
+            {
+                ShowTemplateResultEvaluatorSample(selectTab: false);
+            }
         }
     }
 
@@ -4055,7 +4482,7 @@ public partial class MainWindow : Window
         }
 
         var hasGroupSelection = !string.IsNullOrWhiteSpace(_selectedGroupName);
-        RibbonTaskSurfaceToggleButton.IsEnabled = hasGroupSelection;
+        RibbonTaskSurfaceToggleButton.IsEnabled = hasGroupSelection && !_isAgentViewSelected && !_isSchedulerViewSelected && !_isTemplateViewSelected;
 
         if (_taskSurfaceViewMode == TaskSurfaceViewMode.Task)
         {
@@ -4111,14 +4538,18 @@ public partial class MainWindow : Window
 
     private void ViewGroupsMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var groupKey = NormalizeGroupName(_selectedGroupName);
+        var groupKey = _isTemplateViewSelected
+            ? TemplatesOutputGroupName
+            : NormalizeGroupName(_selectedGroupName);
         _groupSidebarVisibility[groupKey] = ViewGroupsMenuItem.IsChecked;
         ApplyGroupViewState();
     }
 
     private void ViewHistoryMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var groupKey = NormalizeGroupName(_selectedGroupName);
+        var groupKey = _isTemplateViewSelected
+            ? TemplatesOutputGroupName
+            : NormalizeGroupName(_selectedGroupName);
         if (ViewHistoryMenuItem.IsChecked)
         {
             ViewOutputMenuItem.IsChecked = true;
@@ -4131,7 +4562,9 @@ public partial class MainWindow : Window
 
     private void ViewOutputMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var groupKey = NormalizeGroupName(_selectedGroupName);
+        var groupKey = _isTemplateViewSelected
+            ? TemplatesOutputGroupName
+            : NormalizeGroupName(_selectedGroupName);
         _groupOutputVisibility[groupKey] = ViewOutputMenuItem.IsChecked;
 
         if (!ViewOutputMenuItem.IsChecked)
@@ -4190,12 +4623,14 @@ public partial class MainWindow : Window
 
     private void ToggleViewCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        e.CanExecute = _isSchedulerViewSelected || !string.IsNullOrWhiteSpace(_selectedGroupName);
+        e.CanExecute = _isSchedulerViewSelected || _isTemplateViewSelected || !string.IsNullOrWhiteSpace(_selectedGroupName);
     }
 
     private void ApplyGroupViewState()
     {
-        var groupKey = NormalizeGroupName(_selectedGroupName);
+        var groupKey = _isTemplateViewSelected
+            ? TemplatesOutputGroupName
+            : NormalizeGroupName(_selectedGroupName);
 
         if (!_groupSidebarVisibility.TryGetValue(groupKey, out var sidebarVisible))
         {
@@ -4204,6 +4639,12 @@ public partial class MainWindow : Window
         }
 
         if (!_groupHistoryVisibility.TryGetValue(groupKey, out var historyVisible))
+        {
+            historyVisible = false;
+            _groupHistoryVisibility[groupKey] = false;
+        }
+
+        if (_isTemplateViewSelected)
         {
             historyVisible = false;
             _groupHistoryVisibility[groupKey] = false;
@@ -4237,14 +4678,15 @@ public partial class MainWindow : Window
 
         var inAgentView = _isAgentViewSelected;
         var inSchedulerView = _isSchedulerViewSelected;
+        var inTemplateView = _isTemplateViewSelected;
 
         OutputPaneTabItem.Visibility = inAgentView ? Visibility.Collapsed : Visibility.Visible;
-        HistoryPaneTabItem.Visibility = Visibility.Visible;
-        InputPortsPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
-        OutputPortsPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
-        VariablesPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
+        HistoryPaneTabItem.Visibility = inTemplateView ? Visibility.Collapsed : Visibility.Visible;
+        InputPortsPaneTabItem.Visibility = inAgentView || inSchedulerView || inTemplateView ? Visibility.Collapsed : Visibility.Visible;
+        OutputPortsPaneTabItem.Visibility = inAgentView || inSchedulerView || inTemplateView ? Visibility.Collapsed : Visibility.Visible;
+        VariablesPaneTabItem.Visibility = inAgentView || inSchedulerView || inTemplateView ? Visibility.Collapsed : Visibility.Visible;
         ResultEvaluatorPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
-        AgentsDispatchPaneTabItem.Visibility = inAgentView || inSchedulerView ? Visibility.Collapsed : Visibility.Visible;
+        AgentsDispatchPaneTabItem.Visibility = inAgentView || inSchedulerView || inTemplateView ? Visibility.Collapsed : Visibility.Visible;
         AgentRuntimePaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
         GatewaySettingsPaneTabItem.Visibility = inAgentView ? Visibility.Visible : Visibility.Collapsed;
 
@@ -4254,6 +4696,17 @@ public partial class MainWindow : Window
         {
             if (!ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPaneTabItem)
                 && !ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem))
+            {
+                BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
+            }
+
+            return;
+        }
+
+        if (inTemplateView)
+        {
+            if (!ReferenceEquals(BottomPaneTabControl.SelectedItem, OutputPaneTabItem)
+                && !ReferenceEquals(BottomPaneTabControl.SelectedItem, ResultEvaluatorPaneTabItem))
             {
                 BottomPaneTabControl.SelectedItem = OutputPaneTabItem;
             }
@@ -4661,6 +5114,11 @@ public partial class MainWindow : Window
             return SchedulerViewOutputHeightCacheKey;
         }
 
+        if (_isTemplateViewSelected)
+        {
+            return TemplateViewOutputHeightCacheKey;
+        }
+
         return ResolveOutputHeightCacheKey(_isAgentViewSelected, groupKey);
     }
 
@@ -4740,13 +5198,16 @@ public partial class MainWindow : Window
 
     private void UpdateViewMenuState(bool sidebarVisible, bool historyVisible, bool outputVisible)
     {
+        var hasGroupSelection = !string.IsNullOrWhiteSpace(_selectedGroupName);
+        var historySupported = !_isTemplateViewSelected;
+
         ViewGroupsMenuItem.IsChecked = sidebarVisible;
-        ViewHistoryMenuItem.IsChecked = historyVisible;
+        ViewHistoryMenuItem.IsChecked = historySupported && historyVisible;
         ViewOutputMenuItem.IsChecked = outputVisible;
-        ViewGroupsMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
-        ViewHistoryMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
-        ViewOutputMenuItem.IsEnabled = !string.IsNullOrWhiteSpace(_selectedGroupName);
-        UpdateRibbonHistoryButtonState(historyVisible);
+        ViewGroupsMenuItem.IsEnabled = _isSchedulerViewSelected || _isTemplateViewSelected || hasGroupSelection;
+        ViewHistoryMenuItem.IsEnabled = historySupported && (_isSchedulerViewSelected || hasGroupSelection);
+        ViewOutputMenuItem.IsEnabled = _isSchedulerViewSelected || _isTemplateViewSelected || hasGroupSelection;
+        UpdateRibbonHistoryButtonState(historySupported && historyVisible);
         UpdateTaskSurfaceToggleUi();
     }
 
@@ -4797,7 +5258,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_isAgentViewSelected && !_isSchedulerViewSelected && string.IsNullOrWhiteSpace(_selectedGroupName))
+        if (!_isAgentViewSelected && !_isSchedulerViewSelected && !_isTemplateViewSelected && string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             return;
         }
@@ -4807,7 +5268,11 @@ public partial class MainWindow : Window
             return;
         }
 
-        var groupKey = _isSchedulerViewSelected ? SchedulerOutputGroupName : NormalizeGroupName(_selectedGroupName);
+        var groupKey = _isSchedulerViewSelected
+            ? SchedulerOutputGroupName
+            : _isTemplateViewSelected
+                ? TemplatesOutputGroupName
+                : NormalizeGroupName(_selectedGroupName);
         var isHistorySelected = ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem);
 
         _groupHistoryVisibility[groupKey] = isHistorySelected;
@@ -4847,6 +5312,18 @@ public partial class MainWindow : Window
             }
             else if (ReferenceEquals(BottomPaneTabControl.SelectedItem, ResultEvaluatorPaneTabItem))
             {
+                if (_isTemplateViewSelected)
+                {
+                    if (!_selectedTemplateTaskIndex.HasValue)
+                    {
+                        ShowTemplateResultEvaluatorSample(selectTab: false);
+                        return;
+                    }
+
+                    OpenTemplateResultEvaluatorEditor(_selectedTemplateTaskIndex.Value, selectTab: false);
+                    return;
+                }
+
                 if (!_selectedTaskIndex.HasValue || !_visibleTaskIndexes.Contains(_selectedTaskIndex.Value))
                 {
                     return;
@@ -5628,7 +6105,7 @@ public partial class MainWindow : Window
 
     private void ApplyTaskSurfaceModeVisibility()
     {
-        var isTaskMode = _isAgentViewSelected || _isSchedulerViewSelected || _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
+        var isTaskMode = _isAgentViewSelected || _isSchedulerViewSelected || _isTemplateViewSelected || _taskSurfaceViewMode == TaskSurfaceViewMode.Task;
 
         if (isTaskMode)
         {
@@ -7109,6 +7586,7 @@ public partial class MainWindow : Window
         }
 
         _portEditorTaskIndex = taskIndex;
+        _portEditorTemplateTaskIndex = null;
         ResultEvaluatorTitleText.Text = $"Result Evaluator - {task.Name}";
         var hasSavedScript = !string.IsNullOrWhiteSpace(task.ResultEvaluatorScript);
         ResultEvaluatorScriptTextBox.Text = hasSavedScript
@@ -7118,6 +7596,46 @@ public partial class MainWindow : Window
             ? "Optional JavaScript function evaluate(task) returning { outcome: 'success' | 'failure', message?, reasonCode? }."
             : "No evaluator is saved for this task yet. Default evaluator code is shown below; click Save Evaluator to persist it.";
         SaveResultEvaluatorButton.IsEnabled = true;
+
+        if (selectTab)
+        {
+            BottomPaneTabControl.SelectedItem = ResultEvaluatorPaneTabItem;
+        }
+    }
+
+    private void OpenTemplateResultEvaluatorEditor(int templateIndex, bool selectTab = true)
+    {
+        if (!TryGetTemplateTask(templateIndex, out var templateTask))
+        {
+            return;
+        }
+
+        _portEditorTaskIndex = null;
+        _portEditorTemplateTaskIndex = templateIndex;
+        ResultEvaluatorTitleText.Text = $"Result Evaluator - Template: {templateTask.Name}";
+        var hasSavedScript = !string.IsNullOrWhiteSpace(templateTask.ResultEvaluatorScript);
+        ResultEvaluatorScriptTextBox.Text = hasSavedScript
+            ? templateTask.ResultEvaluatorScript!
+            : DefaultResultEvaluatorScript;
+        ResultEvaluatorStatusText.Text = hasSavedScript
+            ? "Optional JavaScript function evaluate(task) returning { outcome: 'success' | 'failure', message?, reasonCode? }."
+            : "No evaluator is saved for this template yet. Default evaluator code is shown below; click Save Evaluator to persist it.";
+        SaveResultEvaluatorButton.IsEnabled = true;
+
+        if (selectTab)
+        {
+            BottomPaneTabControl.SelectedItem = ResultEvaluatorPaneTabItem;
+        }
+    }
+
+    private void ShowTemplateResultEvaluatorSample(bool selectTab = true)
+    {
+        _portEditorTaskIndex = null;
+        _portEditorTemplateTaskIndex = null;
+        ResultEvaluatorTitleText.Text = "Result Evaluator - Template";
+        ResultEvaluatorScriptTextBox.Text = DefaultResultEvaluatorScript;
+        ResultEvaluatorStatusText.Text = "Select a template to save a result evaluator. Default sample code is shown below.";
+        SaveResultEvaluatorButton.IsEnabled = false;
 
         if (selectTab)
         {
@@ -7315,6 +7833,23 @@ public partial class MainWindow : Window
 
     private void SaveResultEvaluatorButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isTemplateViewSelected)
+        {
+            if (!_portEditorTemplateTaskIndex.HasValue || !TryGetTemplateTask(_portEditorTemplateTaskIndex.Value, out var selectedTemplateTask))
+            {
+                LogPortEditorError("Select a template before saving the result evaluator.");
+                return;
+            }
+
+            selectedTemplateTask.ResultEvaluatorScript = string.IsNullOrWhiteSpace(ResultEvaluatorScriptTextBox.Text)
+                ? null
+                : ResultEvaluatorScriptTextBox.Text;
+
+            SaveTemplatesAndRefresh("Save Result Evaluator", "Template save", selectedTemplateTask.Name);
+            OpenTemplateResultEvaluatorEditor(_portEditorTemplateTaskIndex.Value);
+            return;
+        }
+
         if (!_portEditorTaskIndex.HasValue || !TryGetTask(_portEditorTaskIndex.Value, out var task))
         {
             LogPortEditorError("Select a task before saving the result evaluator.");
@@ -8498,6 +9033,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isTemplateViewSelected)
+        {
+            AddTemplateTask();
+            return;
+        }
+
         var groupNames = GetGroupNames()
             .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -8505,7 +9046,11 @@ public partial class MainWindow : Window
             ? "General"
             : NormalizeGroupName(_selectedGroupName);
 
-        var window = new TaskFormWindow(groupNames, defaultGroupName) { Owner = this };
+        var window = new TaskFormWindow(
+            groupNames,
+            defaultGroupName,
+            availableTemplates: _templateConfiguration.Tasks.Select(CloneTask).ToList(),
+            showTemplatePicker: true) { Owner = this };
 
         if (window.ShowDialog() != true || window.Task is null)
         {
@@ -8552,6 +9097,60 @@ public partial class MainWindow : Window
     private void RibbonAddTaskButton_Click(object sender, RoutedEventArgs e)
     {
         AddTaskButton_Click(sender, e);
+    }
+
+    private void AddTemplateTask()
+    {
+        var templateGroups = _templateConfiguration.Tasks
+            .Select(task => NormalizeGroupName(task.Group))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var window = new TaskFormWindow(
+            templateGroups,
+            defaultGroupName: "Templates",
+            availableTemplates: null,
+            showTemplatePicker: false)
+        {
+            Owner = this
+        };
+
+        if (window.ShowDialog() != true || window.Task is null)
+        {
+            return;
+        }
+
+        var newTemplate = window.Task;
+        newTemplate.Group = NormalizeGroupName(newTemplate.Group);
+        var templateIdentityKey = GetTaskIdentityKey(newTemplate);
+        var existingIndex = _templateConfiguration.Tasks.FindIndex(task =>
+            string.Equals(GetTaskIdentityKey(task), templateIdentityKey, StringComparison.OrdinalIgnoreCase));
+
+        if (existingIndex >= 0)
+        {
+            var overwriteResult = AppMessageBox.Show(
+                this,
+                $"A template named '{newTemplate.Name}' already exists in group '{NormalizeGroupName(newTemplate.Group)}'. Overwrite it?",
+                "Duplicate Template Name",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning);
+
+            if (overwriteResult != MessageBoxResult.OK)
+            {
+                return;
+            }
+
+            _templateConfiguration.Tasks[existingIndex] = newTemplate;
+            _selectedTemplateTaskIndex = existingIndex;
+        }
+        else
+        {
+            _templateConfiguration.Tasks.Add(newTemplate);
+            _selectedTemplateTaskIndex = _templateConfiguration.Tasks.Count - 1;
+        }
+
+        SaveTemplatesAndRefresh("Task Templates", "Template save", newTemplate.Name);
     }
 
     private void AddAgent()
@@ -8776,6 +9375,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isTemplateViewSelected)
+        {
+            TryDeleteSelectedTemplateTask();
+            return;
+        }
+
         TryDeleteFromCurrentContext();
     }
 
@@ -8784,6 +9389,12 @@ public partial class MainWindow : Window
         if (_isAgentViewSelected)
         {
             TryEditSelectedAgent();
+            return;
+        }
+
+        if (_isTemplateViewSelected)
+        {
+            TryEditSelectedTemplateTask();
             return;
         }
 
@@ -8804,6 +9415,11 @@ public partial class MainWindow : Window
 
     private void RibbonToggleTaskEnabledButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_isTemplateViewSelected)
+        {
+            return;
+        }
+
         if (_isSchedulerViewSelected)
         {
             if (string.IsNullOrWhiteSpace(_selectedScheduledItemId))
@@ -9123,11 +9739,48 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isTemplateViewSelected)
+        {
+            ExportCurrentTemplateToClipboard();
+            return;
+        }
+
         ExportCurrentTaskToClipboard();
     }
 
     private void OpenShareMenu(Button anchorButton)
     {
+        if (_isTemplateViewSelected)
+        {
+            var templateMenu = CreateRibbonContextMenu();
+
+            var shareTemplateItem = new MenuItem
+            {
+                Header = "Template Share",
+                Style = (Style)Resources["AppMenuItemStyle"],
+                IsEnabled = TryGetSelectedTemplateTaskIndex(out _)
+            };
+            shareTemplateItem.Click += (_, _) => ExportCurrentTemplateToClipboard();
+            templateMenu.Items.Add(shareTemplateItem);
+
+            var exportTemplatesBackupItem = new MenuItem
+            {
+                Header = TemplateShareBackupTitle,
+                Style = (Style)Resources["AppMenuItemStyle"],
+                IsEnabled = _templateConfiguration.Tasks.Count > 0
+            };
+            exportTemplatesBackupItem.Click += (_, _) => ExportConfigurationToClipboardAndOutput(
+                TemplateShareBackupTitle,
+                new TaskConfiguration { Tasks = _templateConfiguration.Tasks.Select(TaskIdentityClone).ToList() },
+                $"template backup ({_templateConfiguration.Tasks.Count} template(s))",
+                logPrefix: TemplateShareBackupLogPrefix,
+                errorTitle: TemplateShareBackupTitle);
+            templateMenu.Items.Add(exportTemplatesBackupItem);
+
+            OpenRibbonContextMenu(anchorButton, templateMenu);
+            return;
+        }
+
         var menu = CreateRibbonContextMenu();
 
         var shareTaskItem = new MenuItem
@@ -9150,14 +9803,16 @@ public partial class MainWindow : Window
 
         var exportBackupItem = new MenuItem
         {
-            Header = "Export Backup (Tasks)",
+            Header = ShareBackupTasksTitle,
             Style = (Style)Resources["AppMenuItemStyle"],
             IsEnabled = _currentConfiguration.Tasks.Count > 0
         };
         exportBackupItem.Click += (_, _) => ExportConfigurationToClipboardAndOutput(
-            "Share Backup",
+            ShareBackupTasksTitle,
             new TaskConfiguration { Tasks = _currentConfiguration.Tasks.Select(TaskIdentityClone).ToList() },
-            $"backup ({_currentConfiguration.Tasks.Count} task(s))");
+            $"backup ({_currentConfiguration.Tasks.Count} task(s))",
+            logPrefix: ShareBackupLogPrefix,
+            errorTitle: ShareBackupTasksTitle);
         menu.Items.Add(exportBackupItem);
 
         OpenRibbonContextMenu(anchorButton, menu);
@@ -9177,6 +9832,28 @@ public partial class MainWindow : Window
         };
 
         ExportConfigurationToClipboardAndOutput("Share Task", payload, $"task '{task.Name}'");
+    }
+
+    private void ExportCurrentTemplateToClipboard()
+    {
+        if (!TryGetSelectedTemplateTaskIndex(out var templateIndex)
+            || !TryGetTemplateTask(templateIndex, out var templateTask))
+        {
+            AppMessageBox.Show(this, "No template is selected to share.", "Template Share", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var payload = new TaskConfiguration
+        {
+            Tasks = [TaskIdentityClone(templateTask)]
+        };
+
+        ExportConfigurationToClipboardAndOutput(
+            "Template Share",
+            payload,
+            $"template '{templateTask.Name}'",
+            logPrefix: "[Template Share]",
+            errorTitle: "Template Share");
     }
 
     private void ExportCurrentGroupToClipboard()
@@ -9203,13 +9880,13 @@ public partial class MainWindow : Window
     {
         if (_currentConfiguration.Tasks.Count == 0)
         {
-            AppMessageBox.Show(this, "There are no tasks to export.", "Export Backup", MessageBoxButton.OK, MessageBoxImage.Information);
+            AppMessageBox.Show(this, "There are no tasks to export.", ShareBackupTasksTitle, MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         var saveDialog = new SaveFileDialog
         {
-            Title = "Export Backup (Tasks)",
+            Title = ShareBackupTasksTitle,
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
             FileName = $"tsky-backup-{DateTime.Now:yyyyMMdd-HHmmss}.json",
             AddExtension = true,
@@ -9224,7 +9901,7 @@ public partial class MainWindow : Window
 
         var tasks = _currentConfiguration.Tasks.Select(TaskIdentityClone).ToList();
 
-        var tabContext = CreateOutputTab("Export Backup");
+        var tabContext = CreateOutputTab(ShareBackupTasksTitle);
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
 
@@ -9238,20 +9915,25 @@ public partial class MainWindow : Window
             var json = _importExportService.SerializeConfiguration(payload);
             File.WriteAllText(saveDialog.FileName, json);
 
-            AppendLog(outputTextBox, $"[Share] Exported combined backup to '{saveDialog.FileName}'.");
-            AppendLog(outputTextBox, $"[Share] Included {tasks.Count} task(s).");
+            AppendLog(outputTextBox, $"{ShareBackupLogPrefix} Exported combined backup to '{saveDialog.FileName}'.");
+            AppendLog(outputTextBox, $"{ShareBackupLogPrefix} Included {tasks.Count} task(s).");
             SetTabStopped(tabContext, true);
         }
         catch (Exception ex)
         {
-            DebugTraceLog.Write(ex, "[Share] ExportCombinedBackupToFile failed");
-            AppendLog(outputTextBox, $"[Share] Export failed: {ex.Message}");
+            DebugTraceLog.Write(ex, $"{ShareBackupLogPrefix} ExportCombinedBackupToFile failed");
+            AppendLog(outputTextBox, $"{ShareBackupLogPrefix} Export failed: {ex.Message}");
             SetTabStopped(tabContext, false);
-            AppMessageBox.Show(this, $"Failed to export backup.{Environment.NewLine}{ex.Message}", "Export Backup", MessageBoxButton.OK, MessageBoxImage.Error);
+            AppMessageBox.Show(this, $"Failed to export backup.{Environment.NewLine}{ex.Message}", ShareBackupTasksTitle, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void ExportConfigurationToClipboardAndOutput(string tabName, TaskConfiguration payload, string summary)
+    private void ExportConfigurationToClipboardAndOutput(
+        string tabName,
+        TaskConfiguration payload,
+        string summary,
+        string logPrefix = "[Share]",
+        string errorTitle = "Share")
     {
         var tabContext = CreateOutputTab(tabName);
         var outputTextBox = tabContext.OutputTextBox;
@@ -9263,18 +9945,18 @@ public partial class MainWindow : Window
 
             Clipboard.SetText(json);
 
-            AppendLog(outputTextBox, $"[Share] Exported {summary} to clipboard.");
-            AppendLog(outputTextBox, "[Share] Paste the JSON into email, chat, docs, or any note-taking tool.");
-            AppendLog(outputTextBox, "[Share] Exported JSON:");
+            AppendLog(outputTextBox, $"{logPrefix} Exported {summary} to clipboard.");
+            AppendLog(outputTextBox, $"{logPrefix} Paste the JSON into email, chat, docs, or any note-taking tool.");
+            AppendLog(outputTextBox, $"{logPrefix} Exported JSON:");
             AppendLog(outputTextBox, json);
             SetTabStopped(tabContext, true);
         }
         catch (Exception ex)
         {
-            DebugTraceLog.Write(ex, $"[Share] ExportConfigurationToClipboardAndOutput failed for {summary}");
-            AppendLog(outputTextBox, $"[Share] Export failed: {ex.Message}");
+            DebugTraceLog.Write(ex, $"{logPrefix} ExportConfigurationToClipboardAndOutput failed for {summary}");
+            AppendLog(outputTextBox, $"{logPrefix} Export failed: {ex.Message}");
             SetTabStopped(tabContext, false);
-            AppMessageBox.Show(this, $"Failed to export share payload to clipboard.\n{ex.Message}", "Share", MessageBoxButton.OK, MessageBoxImage.Error);
+            AppMessageBox.Show(this, $"Failed to export payload to clipboard.\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -9286,42 +9968,44 @@ public partial class MainWindow : Window
             return;
         }
 
-        ImportFromFile();
+        ImportFromFile(importTemplates: _isTemplateViewSelected);
     }
 
     private void OpenImportMenu(Button anchorButton)
     {
         var menu = CreateRibbonContextMenu();
+        var isTemplateMode = _isTemplateViewSelected;
 
         var importFromFileItem = new MenuItem
         {
-            Header = "Import from File",
+            Header = isTemplateMode ? "Template Import from File" : "Import from File",
             Style = (Style)Resources["AppMenuItemStyle"]
         };
-        importFromFileItem.Click += (_, _) => ImportFromFile();
+        importFromFileItem.Click += (_, _) => ImportFromFile(importTemplates: isTemplateMode);
         menu.Items.Add(importFromFileItem);
 
         var importFromClipboardItem = new MenuItem
         {
-            Header = "Import from Clipboard",
+            Header = isTemplateMode ? "Template Import from Clipboard" : "Import from Clipboard",
             Style = (Style)Resources["AppMenuItemStyle"]
         };
-        importFromClipboardItem.Click += (_, _) => ImportFromClipboard();
+        importFromClipboardItem.Click += (_, _) => ImportFromClipboard(importTemplates: isTemplateMode);
         menu.Items.Add(importFromClipboardItem);
 
         OpenRibbonContextMenu(anchorButton, menu);
     }
 
-    private void ImportFromFile()
+    private void ImportFromFile(bool importTemplates)
     {
-        using var importScope = DebugTraceLog.BeginOperation("import", "file");
-        var tabContext = CreateOutputTab("Import");
+        using var importScope = DebugTraceLog.BeginOperation(importTemplates ? "template-import" : "import", "file");
+        var prefix = importTemplates ? "[Template Import]" : "[Import]";
+        var tabContext = CreateOutputTab(importTemplates ? "Template Import" : "Import");
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
 
         var openFileDialog = new OpenFileDialog
         {
-            Title = "Import Configuration",
+            Title = importTemplates ? "Template Import" : "Import Configuration",
             Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
             CheckFileExists = true,
             CheckPathExists = true,
@@ -9330,32 +10014,43 @@ public partial class MainWindow : Window
 
         if (openFileDialog.ShowDialog(this) != true)
         {
-            AppendLog(outputTextBox, "[Import] Import canceled.");
+            AppendLog(outputTextBox, $"{prefix} Import canceled.");
             SetTabStopped(tabContext, true);
             return;
         }
 
         var importPath = openFileDialog.FileName;
-        AppendLog(outputTextBox, $"[Import] Selected file: {importPath}");
+        AppendLog(outputTextBox, $"{prefix} Selected file: {importPath}");
 
         try
         {
             var importedConfig = LoadConfigurationWithValidation(importPath, "Read import file JSON", outputTextBox);
-            AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) from file.");
-            ImportConfiguration(importedConfig, outputTextBox, tabContext, importPath);
+            var itemLabel = importTemplates ? "template(s)" : "task(s)";
+            AppendLog(outputTextBox, $"{prefix} Loaded {importedConfig.Tasks.Count} {itemLabel} from file.");
+            if (importTemplates)
+            {
+                ImportTemplateConfiguration(importedConfig, outputTextBox, tabContext, importPath);
+            }
+            else
+            {
+                ImportConfiguration(importedConfig, outputTextBox, tabContext, importPath);
+            }
         }
         catch (Exception ex)
         {
-            DebugTraceLog.Write(ex, $"[Import] ImportFromFile failed for '{importPath}'");
-            AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
+            DebugTraceLog.Write(ex, importTemplates
+                ? $"[Template Import] ImportFromFile failed for '{importPath}'"
+                : $"[Import] ImportFromFile failed for '{importPath}'");
+            AppendLog(outputTextBox, $"{prefix} Error: {ex.Message}");
             SetTabStopped(tabContext, false);
         }
     }
 
-    private void ImportFromClipboard()
+    private void ImportFromClipboard(bool importTemplates)
     {
-        using var importScope = DebugTraceLog.BeginOperation("import", "clipboard");
-        var tabContext = CreateOutputTab("Import (Clipboard)");
+        using var importScope = DebugTraceLog.BeginOperation(importTemplates ? "template-import" : "import", "clipboard");
+        var prefix = importTemplates ? "[Template Import]" : "[Import]";
+        var tabContext = CreateOutputTab(importTemplates ? "Template Import (Clipboard)" : "Import (Clipboard)");
         var outputTextBox = tabContext.OutputTextBox;
         SetTabRunning(tabContext);
 
@@ -9363,7 +10058,7 @@ public partial class MainWindow : Window
         {
             if (!Clipboard.ContainsText())
             {
-                AppendLog(outputTextBox, "[Import] Clipboard does not contain text.");
+                AppendLog(outputTextBox, $"{prefix} Clipboard does not contain text.");
                 SetTabStopped(tabContext, false);
                 return;
             }
@@ -9371,19 +10066,28 @@ public partial class MainWindow : Window
             var clipboardText = Clipboard.GetText();
             if (string.IsNullOrWhiteSpace(clipboardText))
             {
-                AppendLog(outputTextBox, "[Import] Clipboard text is empty.");
+                AppendLog(outputTextBox, $"{prefix} Clipboard text is empty.");
                 SetTabStopped(tabContext, false);
                 return;
             }
 
-            var tempInputPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"tsky-import-clipboard-input-{Guid.NewGuid():N}.json");
+            var tempPrefix = importTemplates ? "tsky-template-import-clipboard-input" : "tsky-import-clipboard-input";
+            var tempInputPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"{tempPrefix}-{Guid.NewGuid():N}.json");
             File.WriteAllText(tempInputPath, clipboardText);
 
             try
             {
                 var importedConfig = LoadConfigurationWithValidation(tempInputPath, "Read clipboard JSON", outputTextBox);
-                AppendLog(outputTextBox, $"[Import] Loaded {importedConfig.Tasks.Count} task(s) from clipboard.");
-                ImportConfiguration(importedConfig, outputTextBox, tabContext, "clipboard");
+                var itemLabel = importTemplates ? "template(s)" : "task(s)";
+                AppendLog(outputTextBox, $"{prefix} Loaded {importedConfig.Tasks.Count} {itemLabel} from clipboard.");
+                if (importTemplates)
+                {
+                    ImportTemplateConfiguration(importedConfig, outputTextBox, tabContext, "clipboard");
+                }
+                else
+                {
+                    ImportConfiguration(importedConfig, outputTextBox, tabContext, "clipboard");
+                }
             }
             finally
             {
@@ -9395,8 +10099,10 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            DebugTraceLog.Write(ex, "[Import] ImportFromClipboard failed");
-            AppendLog(outputTextBox, $"[Import] Error: {ex.Message}");
+            DebugTraceLog.Write(ex, importTemplates
+                ? "[Template Import] ImportFromClipboard failed"
+                : "[Import] ImportFromClipboard failed");
+            AppendLog(outputTextBox, $"{prefix} Error: {ex.Message}");
             SetTabStopped(tabContext, false);
         }
     }
@@ -9432,6 +10138,59 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ImportTemplateConfiguration(TaskConfiguration importedConfig, RichTextBox outputTextBox, TaskTabContext tabContext, string importSourceLabel)
+    {
+        try
+        {
+            var importedTemplatesOnly = new TaskConfiguration
+            {
+                Tasks = importedConfig.Tasks.Select(TaskIdentityClone).ToList()
+            };
+
+            var mergeResult = _importExportService.MergeAndPersistImportedConfiguration(
+                _templateConfigPath,
+                importedTemplatesOnly,
+                importSourceLabel);
+
+            var validatedWrittenTemplates = mergeResult.ValidatedWrittenUserProfileConfiguration;
+            _templateConfiguration = validatedWrittenTemplates;
+
+            if (_templateConfiguration.Tasks.Count == 0)
+            {
+                _selectedTemplateTaskIndex = null;
+            }
+            else if (!_selectedTemplateTaskIndex.HasValue || _selectedTemplateTaskIndex.Value >= _templateConfiguration.Tasks.Count)
+            {
+                _selectedTemplateTaskIndex = 0;
+            }
+
+            TemplatesHeaderCountText.Text = $"({_templateConfiguration.Tasks.Count})";
+
+            if (_isTemplateViewSelected)
+            {
+                RenderTemplatesView();
+                ShowSelectedGroupOutputTabControl();
+                ApplyGroupViewState();
+                UpdateRibbonTaskActionState();
+            }
+            else
+            {
+                UpdateTemplatesSidebarVisual();
+            }
+
+            AppendLog(outputTextBox, $"[Template Import] Merged templates validated and written to: {_templateConfigPath}");
+            AppendLog(outputTextBox, $"[Template Import] Final merged templates result: {validatedWrittenTemplates.Tasks.Count} template(s).");
+            AppendLog(outputTextBox, "[Template Import] UI reloaded.");
+            SetTabStopped(tabContext, true);
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, $"[Template Import] Merge/persist failed from source '{importSourceLabel}'");
+            AppendLog(outputTextBox, $"[Template Import] Error: {ex.Message}");
+            SetTabStopped(tabContext, false);
+        }
+    }
+
     private static LauncherTask TaskIdentityClone(LauncherTask task)
     {
         return new LauncherTask
@@ -9451,6 +10210,7 @@ public partial class MainWindow : Window
             KillProcessTreeOnCancel = task.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = task.MaxCapturedOutputChars,
             IsEnabled = task.IsEnabled,
+            ResultEvaluatorScript = task.ResultEvaluatorScript,
             ImportedFromFile = task.ImportedFromFile,
             ImportedAtUtc = task.ImportedAtUtc,
             Inputs = new Dictionary<string, string>(task.Inputs, StringComparer.OrdinalIgnoreCase),
@@ -9708,8 +10468,58 @@ public partial class MainWindow : Window
             }
         }
 
+        if (_isTemplateViewSelected)
+        {
+            if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                TryDeleteSelectedTemplateTask();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.E && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) == 0)
+            {
+                TryEditSelectedTemplateTask();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key is Key.R or Key.Enter)
+            {
+                return;
+            }
+
+            if (!IsBottomPaneFocused() && IsTaskScrollSurfaceFocused())
+            {
+                if (e.Key is Key.Left or Key.Up)
+                {
+                    SelectNextTemplateTask(-1);
+                    e.Handled = true;
+                    return;
+                }
+
+                if (e.Key is Key.Right or Key.Down)
+                {
+                    SelectNextTemplateTask(1);
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+
         if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
         {
+            if (_isTemplateViewSelected)
+            {
+                if (TryGetSelectedTemplateTaskIndex(out var selectedTemplateTaskIndex))
+                {
+                    CopyTemplateTask(selectedTemplateTaskIndex);
+                    e.Handled = true;
+                }
+
+                return;
+            }
+
             if (TryGetSelectedVisibleTaskIndex(out var selectedTaskIndex))
             {
                 CopyTask(selectedTaskIndex);
@@ -9820,6 +10630,18 @@ public partial class MainWindow : Window
 
         if (IsBottomPaneFocused())
         {
+            return;
+        }
+
+        if (_isTemplateViewSelected)
+        {
+            if (_templateConfiguration.Tasks.Count == 0)
+            {
+                return;
+            }
+
+            SelectNextTemplateTask(step: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1);
+            e.Handled = true;
             return;
         }
 
@@ -9965,6 +10787,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_isTemplateViewSelected)
+        {
+            TryDeleteSelectedTemplateTask();
+            return;
+        }
+
         if (IsSidebarPaneFocused() || _preferGroupDeleteContext)
         {
             TryDeleteSelectedGroup();
@@ -10049,8 +10877,24 @@ public partial class MainWindow : Window
         _copiedTaskJson = TaskConfiguration.SerializeTask(taskToCopy);
     }
 
+    private void CopyTemplateTask(int templateIndex)
+    {
+        if (!TryGetTemplateTask(templateIndex, out var templateToCopy))
+        {
+            AppMessageBox.Show(this, "The selected task template is no longer available.", "Copy Template", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        _copiedTaskJson = TaskConfiguration.SerializeTask(templateToCopy);
+    }
+
     private bool CanPasteTaskIntoCurrentGroup()
     {
+        if (_isTemplateViewSelected)
+        {
+            return !string.IsNullOrWhiteSpace(_copiedTaskJson);
+        }
+
         return !string.IsNullOrWhiteSpace(_copiedTaskJson)
             && !string.IsNullOrWhiteSpace(_selectedGroupName);
     }
@@ -10180,6 +11024,7 @@ public partial class MainWindow : Window
             KillProcessTreeOnCancel = source.KillProcessTreeOnCancel,
             MaxCapturedOutputChars = source.MaxCapturedOutputChars,
             IsEnabled = source.IsEnabled,
+            ResultEvaluatorScript = source.ResultEvaluatorScript,
             ImportedFromFile = source.ImportedFromFile,
             ImportedAtUtc = source.ImportedAtUtc,
             Inputs = CloneStringDictionary(source.Inputs),
@@ -10190,6 +11035,11 @@ public partial class MainWindow : Window
 
     private bool PasteTaskIntoSelectedGroup()
     {
+        if (_isTemplateViewSelected)
+        {
+            return PasteTaskIntoTemplates();
+        }
+
         if (string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             AppMessageBox.Show(this, "Select a group before pasting a task.", "Paste Task", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -10246,6 +11096,75 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private bool PasteTaskIntoTemplates()
+    {
+        if (string.IsNullOrWhiteSpace(_copiedTaskJson))
+        {
+            AppMessageBox.Show(this, "Copy a task first, then paste it into Task Templates.", "Paste Template", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        if (!TaskConfiguration.TryDeserializeTask(_copiedTaskJson, out var pastedTemplate, out var parseError))
+        {
+            AppMessageBox.Show(this, $"Could not paste template because the copied task data is invalid.\n\n{parseError}", "Paste Template", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+
+        pastedTemplate.Group = NormalizeGroupName(pastedTemplate.Group);
+        var pastedTaskIdentityKey = GetTaskIdentityKey(pastedTemplate);
+        var existingIndex = _templateConfiguration.Tasks.FindIndex(task =>
+            string.Equals(GetTaskIdentityKey(task), pastedTaskIdentityKey, StringComparison.OrdinalIgnoreCase));
+
+        if (existingIndex >= 0)
+        {
+            var overwriteResult = AppMessageBox.Show(
+                this,
+                $"A template named '{pastedTemplate.Name}' already exists in group '{NormalizeGroupName(pastedTemplate.Group)}'. Overwrite it?",
+                "Duplicate Template Name",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Warning);
+
+            if (overwriteResult == MessageBoxResult.OK)
+            {
+                _templateConfiguration.Tasks[existingIndex] = pastedTemplate;
+                _selectedTemplateTaskIndex = existingIndex;
+            }
+            else
+            {
+                pastedTemplate.Name = BuildUniqueTaskCopyNameForTemplates(pastedTemplate.Name);
+                _templateConfiguration.Tasks.Add(pastedTemplate);
+                _selectedTemplateTaskIndex = _templateConfiguration.Tasks.Count - 1;
+            }
+        }
+        else
+        {
+            _templateConfiguration.Tasks.Add(pastedTemplate);
+            _selectedTemplateTaskIndex = _templateConfiguration.Tasks.Count - 1;
+        }
+
+        SaveTemplatesAndRefresh("Task Templates", "Template save", pastedTemplate.Name);
+        return true;
+    }
+
+    private string BuildUniqueTaskCopyNameForTemplates(string originalName)
+    {
+        var baseName = string.IsNullOrWhiteSpace(originalName)
+            ? "Template"
+            : originalName.Trim();
+
+        var candidate = $"{baseName} (2)";
+        var suffix = 2;
+
+        while (_templateConfiguration.Tasks.Any(task =>
+                   string.Equals(task.Name?.Trim(), candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            suffix++;
+            candidate = $"{baseName} ({suffix})";
+        }
+
+        return candidate;
+    }
+
     private string BuildUniqueTaskCopyName(string groupName, string originalName)
     {
         var baseName = string.IsNullOrWhiteSpace(originalName)
@@ -10287,6 +11206,46 @@ public partial class MainWindow : Window
 
         ApplyTaskCardSelectionVisuals();
         FocusSelectedTaskCard();
+    }
+
+    private void SelectNextTemplateTask(int step)
+    {
+        if (_templateConfiguration.Tasks.Count == 0)
+        {
+            _selectedTemplateTaskIndex = null;
+            ApplyTemplateTaskCardSelectionVisuals();
+            return;
+        }
+
+        if (!_selectedTemplateTaskIndex.HasValue
+            || _selectedTemplateTaskIndex.Value < 0
+            || _selectedTemplateTaskIndex.Value >= _templateConfiguration.Tasks.Count)
+        {
+            _selectedTemplateTaskIndex = 0;
+        }
+        else
+        {
+            var nextIndex = (_selectedTemplateTaskIndex.Value + step + _templateConfiguration.Tasks.Count) % _templateConfiguration.Tasks.Count;
+            _selectedTemplateTaskIndex = nextIndex;
+        }
+
+        ApplyTemplateTaskCardSelectionVisuals();
+        FocusSelectedTemplateTaskCard();
+    }
+
+    private void FocusSelectedTemplateTaskCard()
+    {
+        if (!_selectedTemplateTaskIndex.HasValue)
+        {
+            return;
+        }
+
+        if (_templateCardsByIndex.TryGetValue(_selectedTemplateTaskIndex.Value, out var card)
+            && card.Tag is TemplateTaskCardVisual visual)
+        {
+            card.BringIntoView();
+            visual.TemplateButton.Focus();
+        }
     }
 
     private void FocusSelectedTaskCard()
@@ -11505,8 +12464,8 @@ public partial class MainWindow : Window
 
         if (_isAgentViewSelected)
         {
-            RibbonAddActionLabel.Text = "Add Agent";
-            RibbonEditActionLabel.Text = "Edit Agent";
+            RibbonAddActionLabel.Text = "Add";
+            RibbonEditActionLabel.Text = "Edit";
             RibbonDeleteActionLabel.Text = "Delete";
             RibbonRunChainButton.IsEnabled = false;
             RibbonToggleTaskEnabledButton.IsEnabled = false;
@@ -11534,6 +12493,25 @@ public partial class MainWindow : Window
             RibbonGroupsDropDownButton.IsEnabled = false;
             RibbonShareButton.IsEnabled = false;
             RibbonImportButton.IsEnabled = false;
+            return;
+        }
+
+        if (_isTemplateViewSelected)
+        {
+            RibbonAddActionLabel.Text = "Add";
+            RibbonEditActionLabel.Text = "Edit";
+            RibbonDeleteActionLabel.Text = "Delete";
+            RibbonRunChainButton.IsEnabled = false;
+            RibbonTaskSurfaceToggleButton.IsEnabled = false;
+            RibbonGroupsDropDownButton.IsEnabled = false;
+            RibbonToggleTaskEnabledButton.IsEnabled = false;
+            RibbonToggleTaskEnabledLabel.Text = "Enable";
+
+            RibbonAddTaskButton.IsEnabled = true;
+            RibbonEditTaskButton.IsEnabled = _selectedTemplateTaskIndex.HasValue;
+            RibbonDeleteTaskButton.IsEnabled = _selectedTemplateTaskIndex.HasValue;
+            RibbonShareButton.IsEnabled = _templateConfiguration.Tasks.Count > 0;
+            RibbonImportButton.IsEnabled = true;
             return;
         }
 
@@ -11631,6 +12609,116 @@ public partial class MainWindow : Window
         SaveTasksAndRefresh(TaskEditorTitle);
     }
 
+    private bool TryGetTemplateTask(int templateIndex, out LauncherTask task)
+    {
+        if (templateIndex < 0 || templateIndex >= _templateConfiguration.Tasks.Count)
+        {
+            task = new LauncherTask();
+            return false;
+        }
+
+        task = _templateConfiguration.Tasks[templateIndex];
+        return true;
+    }
+
+    private bool TryGetSelectedTemplateTaskIndex(out int templateIndex)
+    {
+        if (_templateConfiguration.Tasks.Count == 0)
+        {
+            _selectedTemplateTaskIndex = null;
+            templateIndex = -1;
+            return false;
+        }
+
+        if (!_selectedTemplateTaskIndex.HasValue
+            || _selectedTemplateTaskIndex.Value < 0
+            || _selectedTemplateTaskIndex.Value >= _templateConfiguration.Tasks.Count)
+        {
+            _selectedTemplateTaskIndex = 0;
+        }
+
+        templateIndex = _selectedTemplateTaskIndex.Value;
+        return true;
+    }
+
+    private void TryEditSelectedTemplateTask()
+    {
+        if (!TryGetSelectedTemplateTaskIndex(out var templateIndex))
+        {
+            AppMessageBox.Show(this, "No task template is selected.", "Edit Template", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        EditTemplateTask(templateIndex);
+    }
+
+    private void EditTemplateTask(int templateIndex)
+    {
+        if (!TryGetTemplateTask(templateIndex, out var selectedTemplate))
+        {
+            AppMessageBox.Show(this, "The selected task template is no longer available.", "Edit Template", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var templateJson = TaskConfiguration.SerializeTask(selectedTemplate);
+        var existingGroups = _templateConfiguration.Tasks
+            .Select(task => NormalizeGroupName(task.Group))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var editorWindow = new TaskEditorWindow(templateJson, existingGroups) { Owner = this };
+        if (editorWindow.ShowDialog() != true)
+        {
+            return;
+        }
+
+        if (!TaskConfiguration.TryDeserializeTask(editorWindow.TaskJsonText, out var updatedTemplate, out var parseError))
+        {
+            AppMessageBox.Show(this, $"Could not save template because the JSON is invalid.\n\n{parseError}", "Task Template Editor", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        updatedTemplate.Group = NormalizeGroupName(updatedTemplate.Group);
+        _templateConfiguration.Tasks[templateIndex] = updatedTemplate;
+        _selectedTemplateTaskIndex = templateIndex;
+        SaveTemplatesAndRefresh("Task Templates", "Template save", updatedTemplate.Name);
+    }
+
+    private void TryDeleteSelectedTemplateTask()
+    {
+        if (!TryGetSelectedTemplateTaskIndex(out var templateIndex)
+            || !TryGetTemplateTask(templateIndex, out var templateToDelete))
+        {
+            AppMessageBox.Show(this, "No task template is selected.", "Delete Template", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var result = AppMessageBox.Show(
+            this,
+            $"Delete template '{templateToDelete.Name}'?",
+            "Delete Template",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+
+        if (result != MessageBoxResult.OK)
+        {
+            return;
+        }
+
+        _templateConfiguration.Tasks.RemoveAt(templateIndex);
+        if (_templateConfiguration.Tasks.Count == 0)
+        {
+            _selectedTemplateTaskIndex = null;
+        }
+        else if (templateIndex >= _templateConfiguration.Tasks.Count)
+        {
+            _selectedTemplateTaskIndex = _templateConfiguration.Tasks.Count - 1;
+        }
+
+        SaveTemplatesAndRefresh("Task Templates", "Template delete", templateToDelete.Name);
+    }
+
     private void TryDeleteSelectedGroup()
     {
         if (string.IsNullOrWhiteSpace(_selectedGroupName))
@@ -11718,6 +12806,19 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SaveTemplatesAndRefresh(string errorTitle, string? validationAction = null, string? templateName = null)
+    {
+        if (!TryPersistTemplateConfiguration(errorTitle, "Failed to save templates.json."))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(validationAction))
+        {
+            AppendTemplateValidationOutput(validationAction, templateName);
+        }
+    }
+
     private bool TryPersistConfiguration(
         string errorTitle,
         string errorPrefix)
@@ -11734,6 +12835,58 @@ public partial class MainWindow : Window
             DebugTraceLog.Write(ex, $"[Persist] TryPersistConfiguration failed. Title='{errorTitle}'");
             AppMessageBox.Show(this, $"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
+        }
+    }
+
+    private bool TryPersistTemplateConfiguration(
+        string errorTitle,
+        string errorPrefix)
+    {
+        try
+        {
+            _templateConfiguration = SaveAndValidateConfiguration(_templateConfigPath, _templateConfiguration, "Write local appdata templates.json");
+
+            TemplatesHeaderCountText.Text = $"({_templateConfiguration.Tasks.Count})";
+
+            if (_isTemplateViewSelected)
+            {
+                RenderTemplatesView();
+                ShowSelectedGroupOutputTabControl();
+                ApplyGroupViewState();
+                UpdateRibbonTaskActionState();
+            }
+            else
+            {
+                UpdateTemplatesSidebarVisual();
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DebugTraceLog.Write(ex, $"[Persist] TryPersistTemplateConfiguration failed. Title='{errorTitle}'");
+            AppMessageBox.Show(this, $"{errorPrefix}\n{ex.Message}", errorTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
+        }
+    }
+
+    private void AppendTemplateValidationOutput(string action, string? templateName)
+    {
+        var tabContext = CreateOutputTab("Template Validation");
+        SetTabRunning(tabContext);
+
+        try
+        {
+            var label = string.IsNullOrWhiteSpace(templateName) ? "(unnamed template)" : templateName.Trim();
+            AppendLog(tabContext.OutputTextBox, $"[Validation] {action} succeeded: {label}");
+            AppendLog(tabContext.OutputTextBox, $"[Validation] templates.json path: {_templateConfigPath}");
+            AppendLog(tabContext.OutputTextBox, $"[Validation] Stored templates: {_templateConfiguration.Tasks.Count}");
+            SetTabStopped(tabContext, true);
+        }
+        catch (Exception ex)
+        {
+            AppendLog(tabContext.OutputTextBox, $"[Validation] Template validation log failed: {ex.Message}");
+            SetTabStopped(tabContext, false);
         }
     }
 
@@ -13287,6 +14440,11 @@ public partial class MainWindow : Window
             return SchedulerOutputGroupName;
         }
 
+        if (_isTemplateViewSelected)
+        {
+            return TemplatesOutputGroupName;
+        }
+
         var groupName = _selectedGroupName;
         if (string.IsNullOrWhiteSpace(groupName))
         {
@@ -13304,7 +14462,7 @@ public partial class MainWindow : Window
             panel.RootGrid.Visibility = Visibility.Collapsed;
         }
 
-        if (!_isSchedulerViewSelected && string.IsNullOrWhiteSpace(_selectedGroupName))
+        if (!_isSchedulerViewSelected && !_isTemplateViewSelected && string.IsNullOrWhiteSpace(_selectedGroupName))
         {
             return;
         }

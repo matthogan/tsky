@@ -12786,6 +12786,7 @@ public partial class MainWindow : Window
         _groupOutputVisibility.Remove(selectedGroup);
         _groupSidebarVisibility.Remove(selectedGroup);
         _groupOutputHeights.Remove(selectedGroup);
+        RemoveOutputPanelForGroup(selectedGroup);
         _favoriteGroups.Remove(selectedGroup);
         _favoriteGroupOrder.RemoveAll(groupName => string.Equals(groupName, selectedGroup, StringComparison.OrdinalIgnoreCase));
         _nonFavoriteGroupsOrder.RemoveAll(groupName => string.Equals(groupName, selectedGroup, StringComparison.OrdinalIgnoreCase));
@@ -12796,6 +12797,31 @@ public partial class MainWindow : Window
     private bool IsValidTaskIndex(int taskIndex)
     {
         return _taskCatalogService.IsValidTaskIndex(_currentConfiguration, taskIndex);
+    }
+
+    private void RemoveOutputPanelForGroup(string groupName)
+    {
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            return;
+        }
+
+        var normalizedGroupName = NormalizeGroupName(groupName);
+        if (!_groupOutputPanels.TryGetValue(normalizedGroupName, out var panel))
+        {
+            return;
+        }
+
+        foreach (var run in panel.Runs)
+        {
+            run.SpinnerTimer.Stop();
+            _outputBudgetByTextBox.Remove(run.OutputTextBox);
+        }
+
+        panel.Runs.Clear();
+        panel.RunListPanel.Children.Clear();
+        OutputTabHost.Children.Remove(panel.RootGrid);
+        _groupOutputPanels.Remove(normalizedGroupName);
     }
 
     private bool TryGetTask(int taskIndex, out LauncherTask task)

@@ -18,9 +18,48 @@ public partial class TaskFormWindow : Window
         public required string Label { get; init; }
 
         public LauncherTask? TemplateTask { get; init; }
+
+        public override string ToString()
+        {
+            return Label;
+        }
+    }
+
+    private sealed class TemplateSelectionState
+    {
+        public required string Name { get; init; }
+
+        public required string Description { get; init; }
+
+        public required string Group { get; init; }
+
+        public required string Runner { get; init; }
+
+        public required string CommandLine { get; init; }
+
+        public required string WorkingDirectory { get; init; }
+
+        public required bool? RequiresElevation { get; init; }
+
+        public required bool? IgnoreExitCode { get; init; }
+
+        public required bool? WaitForExit { get; init; }
+
+        public required bool? KillProcessTreeOnCancel { get; init; }
+
+        public required string TimeoutSeconds { get; init; }
+
+        public required string Retries { get; init; }
+
+        public required string MaxCapturedOutputChars { get; init; }
+
+        public required bool? IsEnabled { get; init; }
+
+        public required string EnvVars { get; init; }
     }
 
     private LauncherTask? _selectedTemplateTask;
+    private TemplateSelectionState? _templateSelectionStateBuffer;
 
     public TaskFormWindow(
         IEnumerable<string>? existingGroups = null,
@@ -318,11 +357,90 @@ public partial class TaskFormWindow : Window
         if (choice.TemplateTask is null)
         {
             _selectedTemplateTask = null;
+
+            if (_templateSelectionStateBuffer is not null)
+            {
+                RestoreTemplateSelectionState(_templateSelectionStateBuffer);
+                _templateSelectionStateBuffer = null;
+            }
+
             return;
+        }
+
+        if (_templateSelectionStateBuffer is null)
+        {
+            _templateSelectionStateBuffer = CaptureTemplateSelectionState();
         }
 
         _selectedTemplateTask = CloneTask(choice.TemplateTask);
         ApplyTemplateToForm(choice.TemplateTask);
+    }
+
+    private TemplateSelectionState CaptureTemplateSelectionState()
+    {
+        return new TemplateSelectionState
+        {
+            Name = NameTextBox.Text,
+            Description = DescriptionTextBox.Text,
+            Group = GroupComboBox.Text,
+            Runner = GetSelectedRunner(),
+            CommandLine = CommandLineTextBox.Text,
+            WorkingDirectory = WorkingDirectoryTextBox.Text,
+            RequiresElevation = RequiresElevationCheckBox.IsChecked,
+            IgnoreExitCode = IgnoreExitCodeCheckBox.IsChecked,
+            WaitForExit = WaitForExitCheckBox.IsChecked,
+            KillProcessTreeOnCancel = KillProcessTreeOnCancelCheckBox.IsChecked,
+            TimeoutSeconds = TimeoutSecondsTextBox.Text,
+            Retries = RetriesTextBox.Text,
+            MaxCapturedOutputChars = MaxCapturedOutputCharsTextBox.Text,
+            IsEnabled = IsEnabledCheckBox.IsChecked,
+            EnvVars = EnvVarsTextBox.Text
+        };
+    }
+
+    private void RestoreTemplateSelectionState(TemplateSelectionState state)
+    {
+        NameTextBox.Text = state.Name;
+        DescriptionTextBox.Text = state.Description;
+        GroupComboBox.Text = state.Group;
+
+        EnsureRunnerChoice(state.Runner);
+        RunnerComboBox.SelectedItem = RunnerComboBox.Items
+            .OfType<ComboBoxItem>()
+            .FirstOrDefault(item =>
+                string.Equals(item.Content?.ToString(), state.Runner, StringComparison.OrdinalIgnoreCase));
+        if (RunnerComboBox.SelectedItem is null)
+        {
+            RunnerComboBox.Text = state.Runner;
+        }
+
+        CommandLineTextBox.Text = state.CommandLine;
+        WorkingDirectoryTextBox.Text = state.WorkingDirectory;
+        RequiresElevationCheckBox.IsChecked = state.RequiresElevation;
+        IgnoreExitCodeCheckBox.IsChecked = state.IgnoreExitCode;
+        WaitForExitCheckBox.IsChecked = state.WaitForExit;
+        KillProcessTreeOnCancelCheckBox.IsChecked = state.KillProcessTreeOnCancel;
+        TimeoutSecondsTextBox.Text = state.TimeoutSeconds;
+        RetriesTextBox.Text = state.Retries;
+        MaxCapturedOutputCharsTextBox.Text = state.MaxCapturedOutputChars;
+        IsEnabledCheckBox.IsChecked = state.IsEnabled;
+        EnvVarsTextBox.Text = state.EnvVars;
+    }
+
+    private string GetSelectedRunner()
+    {
+        var selectedRunner = (RunnerComboBox.SelectedItem as ComboBoxItem)?.Content?.ToString();
+        if (!string.IsNullOrWhiteSpace(selectedRunner))
+        {
+            return selectedRunner;
+        }
+
+        if (!string.IsNullOrWhiteSpace(RunnerComboBox.Text))
+        {
+            return RunnerComboBox.Text.Trim();
+        }
+
+        return "exe";
     }
 
     private void ApplyTemplateToForm(LauncherTask templateTask)

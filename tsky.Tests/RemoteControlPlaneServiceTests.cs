@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Runtime.Serialization;
 using Microsoft.AspNetCore.Builder;
 
 namespace tsky.Tests;
@@ -318,11 +317,13 @@ public sealed class RemoteControlPlaneServiceTests
         var appField = typeof(AgentGatewayHost).GetField("_app", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("AgentGatewayHost._app field not found.");
 
-#pragma warning disable SYSLIB0050
-        var uninitializedApp = (WebApplication)FormatterServices.GetUninitializedObject(typeof(WebApplication));
-#pragma warning restore SYSLIB0050
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+        {
+            ApplicationName = typeof(RemoteControlPlaneServiceTests).Assembly.FullName
+        });
+        using var inertApp = builder.Build();
 
-        appField.SetValue(gatewayHost, uninitializedApp);
+        appField.SetValue(gatewayHost, inertApp);
     }
 
     private static string CreateTempRoot()

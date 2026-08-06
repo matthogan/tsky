@@ -9,7 +9,66 @@ permissions:
   contents: write
 
 jobs:
+  release-quality-gates:
+    runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: |
+            **/*.csproj
+            global.json
+            nuget.config
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Clean previous analyzer reports
+        shell: pwsh
+        run: |
+          if (Test-Path .\artifacts\analyzers) {
+            Remove-Item .\artifacts\analyzers -Recurse -Force
+          }
+
+      - name: Build with analyzer/style report
+        shell: pwsh
+        run: |
+          $analyzerOutputDir = Join-Path $PWD "artifacts/analyzers"
+          New-Item -Path $analyzerOutputDir -ItemType Directory -Force | Out-Null
+          $sarifPath = Join-Path $analyzerOutputDir "current.sarif"
+          dotnet build .\Tsky.sln --configuration Release --no-restore --no-incremental /p:ErrorLog=$sarifPath
+
+      - name: Enforce analyzer/style baseline
+        shell: pwsh
+        run: |
+          $sarifPath = Join-Path $PWD "artifacts/analyzers/current.sarif"
+          .\scripts\verify-analyzer-style-baseline.ps1 -BaselinePath .\eng\analyzers\baseline.json -CurrentSarifPath $sarifPath -RepoRoot .
+
+      - name: Clean previous coverage reports
+        shell: pwsh
+        run: |
+          if (Test-Path .\artifacts\testresults) {
+            Remove-Item .\artifacts\testresults -Recurse -Force
+          }
+
+      - name: Test with coverage
+        shell: pwsh
+        run: |
+          $coverageOutput = Join-Path $PWD "artifacts/testresults/coverage"
+          dotnet test .\tsky.Tests\tsky.Tests.csproj --configuration Release --no-build /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:CoverletOutput=$coverageOutput
+
+      - name: Enforce critical coverage thresholds
+        shell: pwsh
+        run: .\scripts\verify-coverage-thresholds.ps1 -CoverageRoot .\artifacts\testresults
+
   build-and-release:
+    needs: release-quality-gates
     runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
     strategy:
       fail-fast: false

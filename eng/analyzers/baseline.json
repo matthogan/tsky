@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "generatedAtUtc": "2026-08-06T13:26:34.9042248Z",
+  "sourceSarif": "C:\\_dev_env_\\code\\tsky\\artifacts\\analyzers\\current.sarif",
+  "entryCount": 2,
+  "entries": [
+    {
+      "ruleId": "SYSLIB1054",
+      "path": "tsky.Tests/WindowsCommandLineParserTests.cs",
+      "line": 116,
+      "column": 34,
+      "fingerprint": "SYSLIB1054|tsky.tests/windowscommandlineparsertests.cs|116|34"
+    },
+    {
+      "ruleId": "SYSLIB1054",
+      "path": "tsky.Tests/WindowsCommandLineParserTests.cs",
+      "line": 119,
+      "column": 34,
+      "fingerprint": "SYSLIB1054|tsky.tests/windowscommandlineparsertests.cs|119|34"
+    }
+  ]
+}

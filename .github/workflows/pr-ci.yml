@@ -6,7 +6,12 @@ on:
     paths:
       - "**/*.cs"
       - "**/*.csproj"
+      - "**/*.props"
       - "**/*.xaml"
+      - ".editorconfig"
+      - "eng/analyzers/**"
+      - "agent/**"
+      - "scripts/**"
       - "global.json"
       - "nuget.config"
       - ".github/workflows/pr-ci.yml"
@@ -20,9 +25,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
+    outputs:
+      dotnet: ${{ steps.filter.outputs.dotnet }}
+      agent: ${{ steps.filter.outputs.agent }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            dotnet:
+              - "**/*.cs"
+              - "**/*.csproj"
+              - "**/*.props"
+              - "**/*.xaml"
+              - ".editorconfig"
+              - "eng/analyzers/**"
+              - "scripts/**"
+              - "global.json"
+              - "nuget.config"
+              - ".github/workflows/pr-ci.yml"
+            agent:
+              - "agent/**"
+              - ".github/workflows/pr-ci.yml"
+
   restore-build-test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: [self-hosted, windows, tsky-local]
+    needs: [changes]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.draft == false &&
+       needs.changes.outputs.dotnet == 'true')
+    runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
 
     steps:
       - name: Checkout
@@ -41,8 +82,66 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      - name: Build
-        run: dotnet build .\Tsky.sln --configuration Release --no-restore
+      - name: Clean previous analyzer reports
+        shell: pwsh
+        run: |
+          if (Test-Path .\artifacts\analyzers) {
+            Remove-Item .\artifacts\analyzers -Recurse -Force
+          }
 
-      - name: Test
-        run: dotnet test .\tsky.Tests\tsky.Tests.csproj --configuration Release --no-build
+      - name: Build with analyzer/style report
+        shell: pwsh
+        run: |
+          $analyzerOutputDir = Join-Path $PWD "artifacts/analyzers"
+          New-Item -Path $analyzerOutputDir -ItemType Directory -Force | Out-Null
+          $sarifPath = Join-Path $analyzerOutputDir "current.sarif"
+          dotnet build .\Tsky.sln --configuration Release --no-restore /p:ErrorLog=$sarifPath
+
+      - name: Enforce analyzer/style baseline
+        shell: pwsh
+        run: .\scripts\verify-analyzer-style-baseline.ps1 -BaselinePath .\eng\analyzers\baseline.json -CurrentSarifPath .\artifacts\analyzers\current.sarif -RepoRoot .
+
+      - name: Clean previous coverage reports
+        shell: pwsh
+        run: |
+          if (Test-Path .\artifacts\testresults) {
+            Remove-Item .\artifacts\testresults -Recurse -Force
+          }
+
+      - name: Test with coverage
+        shell: pwsh
+        run: |
+          $coverageOutput = Join-Path $PWD "artifacts/testresults/coverage"
+          dotnet test .\tsky.Tests\tsky.Tests.csproj --configuration Release --no-build /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:CoverletOutput=$coverageOutput
+
+      - name: Enforce critical coverage thresholds
+        shell: pwsh
+        run: .\scripts\verify-coverage-thresholds.ps1 -CoverageRoot .\artifacts\testresults
+
+  go-build-test:
+    needs: [changes]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.draft == false &&
+       needs.changes.outputs.agent == 'true')
+    runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache: true
+          cache-dependency-path: agent/go.sum
+
+      - name: Go Test
+        working-directory: .\agent
+        run: go test ./...
+
+      - name: Go Build
+        working-directory: .\agent
+        run: go build ./cmd/tsky-agent

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -142,8 +143,8 @@ public static class DebugTraceLog
     {
         var normalizedCategory = NormalizeTokenPart(category, 12, "op");
         var normalizedDetail = NormalizeTokenPart(detail, 20, string.Empty);
-        var stamp = DateTime.UtcNow.ToString("HHmmssfff");
-        var sequence = Interlocked.Increment(ref _operationSequence).ToString("x4");
+        var stamp = DateTime.UtcNow.ToString("HHmmssfff", CultureInfo.InvariantCulture);
+        var sequence = Interlocked.Increment(ref _operationSequence).ToString("x4", CultureInfo.InvariantCulture);
 
         return string.IsNullOrWhiteSpace(normalizedDetail)
             ? $"{normalizedCategory}-{stamp}-{sequence}"

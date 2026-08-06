@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Windows;
@@ -123,10 +124,10 @@ public partial class TaskEditorWindow : Window
         WaitForExitCheckBox.IsChecked = task.WaitForExit;
         RequiresElevationCheckBox.IsChecked = task.RequiresElevation;
         IgnoreExitCodeCheckBox.IsChecked = task.IgnoreExitCode;
-        TimeoutSecondsTextBox.Text = task.TimeoutSeconds.ToString();
-        RetriesTextBox.Text = Math.Max(0, task.Retries).ToString();
+        TimeoutSecondsTextBox.Text = task.TimeoutSeconds.ToString(CultureInfo.CurrentCulture);
+        RetriesTextBox.Text = Math.Max(0, task.Retries).ToString(CultureInfo.CurrentCulture);
         KillProcessTreeOnCancelCheckBox.IsChecked = task.KillProcessTreeOnCancel;
-        MaxCapturedOutputCharsTextBox.Text = task.MaxCapturedOutputChars.ToString();
+        MaxCapturedOutputCharsTextBox.Text = task.MaxCapturedOutputChars.ToString(CultureInfo.CurrentCulture);
         IsEnabledCheckBox.IsChecked = task.IsEnabled;
 
         EnvVarsTextBox.Text = string.Join(Environment.NewLine,

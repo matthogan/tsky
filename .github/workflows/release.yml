@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: [self-hosted, windows, tsky-local]
+    runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -90,7 +90,7 @@ jobs:
           path: artifacts/tsky-${{ env.APP_VERSION }}-${{ matrix.runtime }}.zip
 
   create-release:
-    runs-on: [self-hosted, windows, tsky-local]
+    runs-on: ${{ fromJSON(vars.TSKY_RUNNER_LABELS || '["self-hosted","windows","tsky-local"]') }}
     needs: build-and-release
 
     steps:

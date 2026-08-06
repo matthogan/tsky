@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Windows;
@@ -462,9 +463,9 @@ public partial class TaskFormWindow : Window
         IgnoreExitCodeCheckBox.IsChecked = templateTask.IgnoreExitCode;
         WaitForExitCheckBox.IsChecked = templateTask.WaitForExit;
         KillProcessTreeOnCancelCheckBox.IsChecked = templateTask.KillProcessTreeOnCancel;
-        TimeoutSecondsTextBox.Text = templateTask.TimeoutSeconds.ToString();
-        RetriesTextBox.Text = templateTask.Retries.ToString();
-        MaxCapturedOutputCharsTextBox.Text = templateTask.MaxCapturedOutputChars.ToString();
+        TimeoutSecondsTextBox.Text = templateTask.TimeoutSeconds.ToString(CultureInfo.CurrentCulture);
+        RetriesTextBox.Text = templateTask.Retries.ToString(CultureInfo.CurrentCulture);
+        MaxCapturedOutputCharsTextBox.Text = templateTask.MaxCapturedOutputChars.ToString(CultureInfo.CurrentCulture);
         IsEnabledCheckBox.IsChecked = templateTask.IsEnabled;
         EnvVarsTextBox.Text = string.Join(Environment.NewLine, templateTask.Env.Select(pair => $"{pair.Key}={pair.Value}"));
     }

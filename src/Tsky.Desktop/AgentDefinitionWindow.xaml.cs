@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Globalization;
 
 namespace tsky;
 
@@ -17,7 +18,7 @@ public partial class AgentDefinitionWindow : Window
         DisplayNameTextBox.Text = _agent.DisplayName;
         DescriptionTextBox.Text = _agent.Description ?? string.Empty;
         ControllerUrlTextBox.Text = _agent.ControllerUrl ?? "http://localhost:7341";
-        MaximumRunsTextBox.Text = _agent.MaximumConcurrentRuns.ToString();
+        MaximumRunsTextBox.Text = _agent.MaximumConcurrentRuns.ToString(CultureInfo.CurrentCulture);
         RequiresApprovalCheckBox.IsChecked = _agent.RequiresApproval;
         AllowedExecutorsTextBox.Text = string.Join(", ", _agent.AllowedExecutors);
         StateComboBox.SelectedItem = _agent.State;

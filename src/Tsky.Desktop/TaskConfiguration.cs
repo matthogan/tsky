@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -148,7 +149,7 @@ public sealed class TaskConfiguration
         }
 
         Directory.CreateDirectory(AppDataTskyDirectory);
-        var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmssfff");
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmssfff", CultureInfo.InvariantCulture);
         var token = BuildPathToken(path);
         var backupPath = Path.Combine(AppDataTskyDirectory, $"tasks.{token}.{timestamp}.bak");
         File.Copy(path, backupPath, overwrite: false);

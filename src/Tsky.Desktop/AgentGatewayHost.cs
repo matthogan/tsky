@@ -1080,10 +1080,7 @@ internal sealed class AgentGatewayRuntime
 
         public async Task SendAsync(ControllerFrame frame, int timeoutMilliseconds)
         {
-            if (_disposed || _faulted)
-            {
-                throw new ObjectDisposedException(nameof(AgentSessionConnection));
-            }
+            ObjectDisposedException.ThrowIf(_disposed || _faulted, this);
 
             var gateEntered = await _writeGate.WaitAsync(timeoutMilliseconds).ConfigureAwait(false);
             if (!gateEntered)
@@ -1094,10 +1091,7 @@ internal sealed class AgentGatewayRuntime
 
             try
             {
-                if (_disposed || _faulted)
-                {
-                    throw new ObjectDisposedException(nameof(AgentSessionConnection));
-                }
+                ObjectDisposedException.ThrowIf(_disposed || _faulted, this);
 
                 var writeTask = ResponseStream.WriteAsync(frame);
                 var completed = await Task.WhenAny(writeTask, Task.Delay(timeoutMilliseconds)).ConfigureAwait(false) == writeTask;

@@ -58,6 +58,12 @@ public enum TaskExecutionOutcome
 
 public static class TaskExecutionService
 {
+    internal static Func<Process, bool>? StartProcessOverride { get; set; }
+
+    internal static Func<Process, CancellationToken, Task>? WaitForExitAsyncOverride { get; set; }
+
+    internal static Func<bool>? IsCurrentProcessElevatedOverride { get; set; }
+
     public static bool ShouldLaunchAsAdministrator(LauncherTask task)
     {
         return task.RequiresElevation && !IsCurrentProcessElevated();
@@ -105,7 +111,7 @@ public static class TaskExecutionService
         try
         {
             using var process = new Process { StartInfo = processStartInfo };
-            process.Start();
+            StartProcess(process);
 
             if (!waitForExit)
             {
@@ -185,7 +191,7 @@ public static class TaskExecutionService
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
-                await process.WaitForExitAsync(linkedCts.Token);
+                await WaitForExitAsync(process, linkedCts.Token);
                 await Task.WhenAll(standardOutputClosed.Task, standardErrorClosed.Task);
 
                 capturedStandardOutput = standardOutputBuilder.ToString().TrimEnd();
@@ -193,7 +199,7 @@ public static class TaskExecutionService
             }
             else
             {
-                await process.WaitForExitAsync(linkedCts.Token);
+                await WaitForExitAsync(process, linkedCts.Token);
             }
 
             if (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
@@ -385,6 +391,11 @@ public static class TaskExecutionService
 
     private static bool IsCurrentProcessElevated()
     {
+        if (IsCurrentProcessElevatedOverride is not null)
+        {
+            return IsCurrentProcessElevatedOverride();
+        }
+
         using var identity = WindowsIdentity.GetCurrent();
         if (identity is null)
         {
@@ -393,6 +404,27 @@ public static class TaskExecutionService
 
         var principal = new WindowsPrincipal(identity);
         return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    private static void StartProcess(Process process)
+    {
+        if (StartProcessOverride is not null)
+        {
+            StartProcessOverride(process);
+            return;
+        }
+
+        process.Start();
+    }
+
+    private static Task WaitForExitAsync(Process process, CancellationToken cancellationToken)
+    {
+        if (WaitForExitAsyncOverride is not null)
+        {
+            return WaitForExitAsyncOverride(process, cancellationToken);
+        }
+
+        return process.WaitForExitAsync(cancellationToken);
     }
 
     private static bool ContainsPowerShellErrorRecord(string standardError)

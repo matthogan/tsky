@@ -612,7 +612,7 @@ public partial class MainWindow : Window
         {
             get
             {
-                var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+                var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
 
                 var statusText = Entry.Outcome switch
                 {
@@ -643,10 +643,10 @@ public partial class MainWindow : Window
             get
             {
                 var lastSeenText = Agent.LastSeenAtUtc.HasValue
-                    ? Agent.LastSeenAtUtc.Value.ToLocalTime().ToString("HH:mm:ss")
+                    ? Agent.LastSeenAtUtc.Value.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture)
                     : "n/a";
 
-                return $"{Agent.EffectiveDisplayName}  active:{Agent.ActiveRuns}  ok:{Agent.SuccessfulRuns}  err:{Agent.FailedRuns}  seen:{lastSeenText}";
+                return MainWindow.FormatCurrent($"{Agent.EffectiveDisplayName}  active:{Agent.ActiveRuns}  ok:{Agent.SuccessfulRuns}  err:{Agent.FailedRuns}  seen:{lastSeenText}");
             }
         }
 
@@ -661,7 +661,7 @@ public partial class MainWindow : Window
         {
             get
             {
-                var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+                var localTime = Entry.StartedAtUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
                 var statusText = Entry.Outcome switch
                 {
                     TaskRunOutcome.Succeeded => "OK",
@@ -848,8 +848,10 @@ public partial class MainWindow : Window
 
     private void UpdateMainScrollBarVisibility(string reason)
     {
-        var verticalVisibility = ScrollBarVisibility.Hidden;
-        var horizontalVisibility = ScrollBarVisibility.Hidden;
+        var verticalVisibility = ScrollBarVisibility.Auto;
+        var horizontalVisibility = _taskSurfaceViewMode == TaskSurfaceViewMode.Graph
+            ? ScrollBarVisibility.Auto
+            : ScrollBarVisibility.Hidden;
 
         if (TaskScrollViewer.VerticalScrollBarVisibility != verticalVisibility)
         {
@@ -2763,7 +2765,7 @@ public partial class MainWindow : Window
             DockPanel.SetDock(badge, Dock.Right);
             badge.Child = new TextBlock
             {
-                Text = group.TaskCount.ToString(),
+                Text = group.TaskCount.ToString(CultureInfo.CurrentCulture),
                 FontSize = 10,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = badgeForegroundBrush,
@@ -5451,6 +5453,16 @@ public partial class MainWindow : Window
         ToggleHistoryDetailsButton.Content = "Show Details";
     }
 
+    private static string FormatCurrent(FormattableString value)
+    {
+        return value.ToString(CultureInfo.CurrentCulture);
+    }
+
+    private static string FormatInvariant(FormattableString value)
+    {
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
+
     private void UpdateHistoryPreview()
     {
         if (HistoryDetailsTextBox is null)
@@ -5478,17 +5490,17 @@ public partial class MainWindow : Window
 
             if (selectedAgentItems.Count > 1)
             {
-                agentBuilder.AppendLine($"{selectedAgentItems.Count} items selected. Showing details for the first selected item.");
+                agentBuilder.AppendLine(FormatCurrent($"{selectedAgentItems.Count} items selected. Showing details for the first selected item."));
                 agentBuilder.AppendLine();
             }
 
-            agentBuilder.AppendLine($"Agent: {firstAgent.EffectiveDisplayName}");
-            agentBuilder.AppendLine($"Agent ID: {firstAgent.AgentId}");
-            agentBuilder.AppendLine($"State: {firstAgent.State}");
-            agentBuilder.AppendLine($"Active runs: {firstAgent.ActiveRuns}");
-            agentBuilder.AppendLine($"Successful runs: {firstAgent.SuccessfulRuns}");
-            agentBuilder.AppendLine($"Failed runs: {firstAgent.FailedRuns}");
-            agentBuilder.AppendLine($"Last seen: {(firstAgent.LastSeenAtUtc.HasValue ? firstAgent.LastSeenAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "n/a")}");
+            agentBuilder.AppendLine(FormatCurrent($"Agent: {firstAgent.EffectiveDisplayName}"));
+            agentBuilder.AppendLine(FormatCurrent($"Agent ID: {firstAgent.AgentId}"));
+            agentBuilder.AppendLine(FormatCurrent($"State: {firstAgent.State}"));
+            agentBuilder.AppendLine(FormatCurrent($"Active runs: {firstAgent.ActiveRuns}"));
+            agentBuilder.AppendLine(FormatCurrent($"Successful runs: {firstAgent.SuccessfulRuns}"));
+            agentBuilder.AppendLine(FormatCurrent($"Failed runs: {firstAgent.FailedRuns}"));
+            agentBuilder.AppendLine(FormatCurrent($"Last seen: {(firstAgent.LastSeenAtUtc.HasValue ? firstAgent.LastSeenAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture) : "n/a")}"));
 
             if (!string.IsNullOrWhiteSpace(firstAgent.LastSeenSummary))
             {
@@ -5522,30 +5534,30 @@ public partial class MainWindow : Window
 
             if (selectedSchedulerItems.Count > 1)
             {
-                schedulerBuilder.AppendLine($"{selectedSchedulerItems.Count} items selected. Showing details for the first selected item.");
+                schedulerBuilder.AppendLine(FormatCurrent($"{selectedSchedulerItems.Count} items selected. Showing details for the first selected item."));
                 schedulerBuilder.AppendLine();
             }
 
             var schedulerStartedLocal = schedulerEntry.StartedAtUtc.ToLocalTime();
-            schedulerBuilder.AppendLine($"Scheduled Item: {schedulerEntry.ScheduledItemDisplayName}");
-            schedulerBuilder.AppendLine($"Item ID: {schedulerEntry.ScheduledItemId}");
-            schedulerBuilder.AppendLine($"Target: {schedulerEntry.TargetKind}");
-            schedulerBuilder.AppendLine($"Status: {schedulerEntry.Outcome}");
-            schedulerBuilder.AppendLine($"Occurrence: {schedulerEntry.OccurrenceUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
-            schedulerBuilder.AppendLine($"Started: {schedulerStartedLocal:yyyy-MM-dd HH:mm:ss}");
+            schedulerBuilder.AppendLine(FormatCurrent($"Scheduled Item: {schedulerEntry.ScheduledItemDisplayName}"));
+            schedulerBuilder.AppendLine(FormatCurrent($"Item ID: {schedulerEntry.ScheduledItemId}"));
+            schedulerBuilder.AppendLine(FormatCurrent($"Target: {schedulerEntry.TargetKind}"));
+            schedulerBuilder.AppendLine(FormatCurrent($"Status: {schedulerEntry.Outcome}"));
+            schedulerBuilder.AppendLine(FormatCurrent($"Occurrence: {schedulerEntry.OccurrenceUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}"));
+            schedulerBuilder.AppendLine(FormatCurrent($"Started: {schedulerStartedLocal:yyyy-MM-dd HH:mm:ss}"));
 
             if (schedulerEntry.CompletedAtUtc.HasValue)
             {
                 var completedLocal = schedulerEntry.CompletedAtUtc.Value.ToLocalTime();
-                schedulerBuilder.AppendLine($"Completed: {completedLocal:yyyy-MM-dd HH:mm:ss}");
-                schedulerBuilder.AppendLine($"Duration: {(completedLocal - schedulerStartedLocal).TotalSeconds:F1}s");
+                schedulerBuilder.AppendLine(FormatCurrent($"Completed: {completedLocal:yyyy-MM-dd HH:mm:ss}"));
+                schedulerBuilder.AppendLine(FormatCurrent($"Duration: {(completedLocal - schedulerStartedLocal).TotalSeconds:F1}s"));
             }
 
-            schedulerBuilder.AppendLine($"Snapshot task count: {schedulerEntry.SnapshotTaskCount}");
+            schedulerBuilder.AppendLine(FormatCurrent($"Snapshot task count: {schedulerEntry.SnapshotTaskCount}"));
 
             if (schedulerEntry.ExitCode.HasValue)
             {
-                schedulerBuilder.AppendLine($"Exit code: {schedulerEntry.ExitCode.Value}");
+                schedulerBuilder.AppendLine(FormatCurrent($"Exit code: {schedulerEntry.ExitCode.Value}"));
             }
 
             if (!string.IsNullOrWhiteSpace(schedulerEntry.Message))
@@ -5572,43 +5584,43 @@ public partial class MainWindow : Window
 
         if (selectedItems.Count > 1)
         {
-            builder.AppendLine($"{selectedItems.Count} items selected. Showing details for the first selected item.");
+            builder.AppendLine(FormatCurrent($"{selectedItems.Count} items selected. Showing details for the first selected item."));
             builder.AppendLine();
         }
 
         var startedLocal = firstEntry.StartedAtUtc.ToLocalTime();
-        builder.AppendLine($"Run: {firstEntry.Snapshot.Name}");
-        builder.AppendLine($"Group: {firstEntry.Snapshot.Group}");
-        builder.AppendLine($"Status: {firstEntry.Outcome}");
+        builder.AppendLine(FormatCurrent($"Run: {firstEntry.Snapshot.Name}"));
+        builder.AppendLine(FormatCurrent($"Group: {firstEntry.Snapshot.Group}"));
+        builder.AppendLine(FormatCurrent($"Status: {firstEntry.Outcome}"));
 
-        builder.AppendLine($"Started: {startedLocal:yyyy-MM-dd HH:mm:ss}");
+        builder.AppendLine(FormatCurrent($"Started: {startedLocal:yyyy-MM-dd HH:mm:ss}"));
 
         if (firstEntry.CompletedAtUtc.HasValue)
         {
             var completedLocal = firstEntry.CompletedAtUtc.Value.ToLocalTime();
-            builder.AppendLine($"Completed: {completedLocal:yyyy-MM-dd HH:mm:ss}");
-            builder.AppendLine($"Duration: {(completedLocal - startedLocal).TotalSeconds:F1}s");
+            builder.AppendLine(FormatCurrent($"Completed: {completedLocal:yyyy-MM-dd HH:mm:ss}"));
+            builder.AppendLine(FormatCurrent($"Duration: {(completedLocal - startedLocal).TotalSeconds:F1}s"));
         }
 
         if (firstEntry.ExitCode.HasValue)
         {
-            builder.AppendLine($"Exit code: {firstEntry.ExitCode.Value}");
+            builder.AppendLine(FormatCurrent($"Exit code: {firstEntry.ExitCode.Value}"));
         }
 
         if (firstEntry.IsReplay)
         {
-            builder.AppendLine($"Replay: yes (from {firstEntry.ReplayFromRunId ?? "unknown"})");
+            builder.AppendLine(FormatCurrent($"Replay: yes (from {firstEntry.ReplayFromRunId ?? "unknown"})"));
         }
 
         builder.AppendLine();
         builder.AppendLine("Task Snapshot");
-        builder.AppendLine($"Description: {firstEntry.Snapshot.Description ?? "(none)"}");
-        builder.AppendLine($"Runner: {firstEntry.Snapshot.Runner}");
-        builder.AppendLine($"Command: {firstEntry.Snapshot.CommandLine}");
-        builder.AppendLine($"Working directory: {firstEntry.Snapshot.WorkingDirectory}");
-        builder.AppendLine($"Wait for exit: {firstEntry.Snapshot.WaitForExit}");
-        builder.AppendLine($"Requires elevation: {firstEntry.Snapshot.RequiresElevation}");
-        builder.AppendLine($"Ignore exit code: {firstEntry.Snapshot.IgnoreExitCode}");
+        builder.AppendLine(FormatCurrent($"Description: {firstEntry.Snapshot.Description ?? "(none)"}"));
+        builder.AppendLine(FormatCurrent($"Runner: {firstEntry.Snapshot.Runner}"));
+        builder.AppendLine(FormatCurrent($"Command: {firstEntry.Snapshot.CommandLine}"));
+        builder.AppendLine(FormatCurrent($"Working directory: {firstEntry.Snapshot.WorkingDirectory}"));
+        builder.AppendLine(FormatCurrent($"Wait for exit: {firstEntry.Snapshot.WaitForExit}"));
+        builder.AppendLine(FormatCurrent($"Requires elevation: {firstEntry.Snapshot.RequiresElevation}"));
+        builder.AppendLine(FormatCurrent($"Ignore exit code: {firstEntry.Snapshot.IgnoreExitCode}"));
 
         if (firstEntry.Snapshot.Env.Count > 0)
         {
@@ -5616,7 +5628,7 @@ public partial class MainWindow : Window
             builder.AppendLine("Environment");
             foreach (var env in firstEntry.Snapshot.Env.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
             {
-                builder.AppendLine($"{env.Key}={env.Value}");
+                builder.AppendLine(FormatCurrent($"{env.Key}={env.Value}"));
             }
         }
 
@@ -6498,7 +6510,7 @@ public partial class MainWindow : Window
 
             _graphPointerWasDrag = true;
             StartGraphPanning(current);
-            DebugTraceLog.Write($"[GraphInput] DragStart fromPoint=({_graphPointerDownPoint.X:F1},{_graphPointerDownPoint.Y:F1}) current=({current.X:F1},{current.Y:F1}) downTaskIndex={_graphPointerDownTaskIndex?.ToString() ?? "(none)"}");
+            DebugTraceLog.Write(FormatInvariant($"[GraphInput] DragStart fromPoint=({_graphPointerDownPoint.X:F1},{_graphPointerDownPoint.Y:F1}) current=({current.X:F1},{current.Y:F1}) downTaskIndex={_graphPointerDownTaskIndex?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}"));
         }
 
         UpdateGraphPanning(current);
@@ -6520,7 +6532,7 @@ public partial class MainWindow : Window
                 ? _graphPointerDownTaskIndex.Value
                 : (int?)null);
 
-        DebugTraceLog.Write($"[GraphInput] MouseUp wasDrag={_graphPointerWasDrag}, point=({canvasPoint.X:F1},{canvasPoint.Y:F1}), downTaskIndex={_graphPointerDownTaskIndex?.ToString() ?? "(none)"}, resolvedRunTarget={taskToRun?.ToString() ?? "(none)"}, group='{_selectedGroupName ?? "(none)"}'");
+        DebugTraceLog.Write(FormatInvariant($"[GraphInput] MouseUp wasDrag={_graphPointerWasDrag}, point=({canvasPoint.X:F1},{canvasPoint.Y:F1}), downTaskIndex={_graphPointerDownTaskIndex?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}, resolvedRunTarget={taskToRun?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}, group='{_selectedGroupName ?? "(none)"}'"));
 
         StopGraphPanning();
         ClearGraphPointerInteraction();
@@ -6722,7 +6734,7 @@ public partial class MainWindow : Window
 
     private void ClearGraphPointerInteraction()
     {
-        DebugTraceLog.Write($"[GraphInput] ClearPointerState downTaskIndex={_graphPointerDownTaskIndex?.ToString() ?? "(none)"}, wasDrag={_graphPointerWasDrag}, active={_graphPointerActive}");
+        DebugTraceLog.Write(FormatInvariant($"[GraphInput] ClearPointerState downTaskIndex={_graphPointerDownTaskIndex?.ToString(CultureInfo.InvariantCulture) ?? "(none)"}, wasDrag={_graphPointerWasDrag}, active={_graphPointerActive}"));
         _graphPointerDownTaskIndex = null;
         _graphPointerWasDrag = false;
         _graphPointerActive = false;
@@ -8743,9 +8755,8 @@ public partial class MainWindow : Window
     {
         var normalizedGroup = NormalizeGroupName(groupName);
 
-        if (_favoriteGroups.Contains(normalizedGroup))
+        if (_favoriteGroups.Remove(normalizedGroup))
         {
-            _favoriteGroups.Remove(normalizedGroup);
             _favoriteGroupOrder.RemoveAll(name => string.Equals(name, normalizedGroup, StringComparison.OrdinalIgnoreCase));
             _nonFavoriteGroupsOrder.RemoveAll(name => string.Equals(name, normalizedGroup, StringComparison.OrdinalIgnoreCase));
             _nonFavoriteGroupsOrder.Insert(0, normalizedGroup);
@@ -13318,7 +13329,7 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(task.ImportedAtUtc)
             && DateTimeOffset.TryParse(task.ImportedAtUtc, out var importedAt))
         {
-            importDateDisplay = importedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+            importDateDisplay = importedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.CurrentCulture);
         }
 
         return string.IsNullOrWhiteSpace(importDateDisplay)
@@ -14047,7 +14058,7 @@ public partial class MainWindow : Window
                 {
                     "stdout" or "command:stdout" or "runtime:stdout" => standardOutput ?? string.Empty,
                     "stderr" or "command:stderr" or "runtime:stderr" => standardError ?? string.Empty,
-                    "exitcode" or "command:exitcode" or "runtime:exitcode" => exitCode?.ToString() ?? string.Empty,
+                    "exitcode" or "command:exitcode" or "runtime:exitcode" => exitCode?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
                     _ => match.Value
                 };
             });
@@ -14172,7 +14183,7 @@ public partial class MainWindow : Window
         }
 
         AppendLog(outputTextBox,
-            $"[{taskName}] Running evaluator with exitCode={input.ExitCode?.ToString() ?? "(null)"}, timedOut={input.TimedOut}, cancelled={input.Cancelled}.");
+            FormatCurrent($"[{taskName}] Running evaluator with exitCode={input.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "(null)"}, timedOut={input.TimedOut}, cancelled={input.Cancelled}."));
     }
 
     private void LogEvaluatedOutcome(
@@ -14214,7 +14225,7 @@ public partial class MainWindow : Window
         }
 
         DebugTraceLog.Write(
-            $"[Evaluator] Executing for task '{task.Name}' with exitCode={input.ExitCode?.ToString() ?? "(null)"}, timedOut={input.TimedOut}, cancelled={input.Cancelled}, defaultSucceeded={defaultSucceeded}.");
+            FormatInvariant($"[Evaluator] Executing for task '{task.Name}' with exitCode={input.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "(null)"}, timedOut={input.TimedOut}, cancelled={input.Cancelled}, defaultSucceeded={defaultSucceeded}."));
 
         if (!TaskResultEvaluationService.TryEvaluate(
                 task.ResultEvaluatorScript,
@@ -14448,8 +14459,8 @@ public partial class MainWindow : Window
 
         var listScroll = new ScrollViewer
         {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             Content = listStack
         };
 
@@ -14536,6 +14547,52 @@ public partial class MainWindow : Window
         tabContext.StatusText.Foreground = succeeded
             ? new SolidColorBrush(ThemeFallbackPalette.StatusSucceeded)
             : new SolidColorBrush(ThemeFallbackPalette.StatusFailed);
+
+        MoveStoppedRunBelowRunningRuns(tabContext);
+    }
+
+    private static void MoveStoppedRunBelowRunningRuns(TaskTabContext tabContext)
+    {
+        var panel = tabContext.HostOutputPanel;
+        var currentIndex = panel.Runs.IndexOf(tabContext);
+        if (currentIndex < 0)
+        {
+            return;
+        }
+
+        var targetIndex = ResolveStoppedRunInsertionIndex(
+            panel.Runs.Select(run => run.SpinnerTimer.IsEnabled).ToArray(),
+            currentIndex);
+        if (targetIndex == currentIndex)
+        {
+            return;
+        }
+
+        panel.Runs.RemoveAt(currentIndex);
+        if (targetIndex > panel.Runs.Count)
+        {
+            targetIndex = panel.Runs.Count;
+        }
+
+        panel.Runs.Insert(targetIndex, tabContext);
+
+        panel.RunListPanel.Children.Remove(tabContext.RunItemContainer);
+        panel.RunListPanel.Children.Insert(targetIndex, tabContext.RunItemContainer);
+    }
+
+    internal static int ResolveStoppedRunInsertionIndex(IReadOnlyList<bool> runIsRunningStates, int currentIndex)
+    {
+        if (runIsRunningStates is null || currentIndex < 0 || currentIndex >= runIsRunningStates.Count)
+        {
+            return currentIndex;
+        }
+
+        // Keep all running runs at the top. A just-stopped run is inserted at the start
+        // of the completed section, giving completed runs a completion-time ordering.
+        var firstCompletedIndex = runIsRunningStates.Count(state => state);
+        return currentIndex == firstCompletedIndex
+            ? currentIndex
+            : firstCompletedIndex;
     }
 
     private void ExpandOutputRun(TaskTabContext runContext)
@@ -14711,8 +14768,8 @@ public partial class MainWindow : Window
             FontFamily = outputFontFamily,
             FontSize = 12,
             IsReadOnly = true,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             FlowDirection = FlowDirection.LeftToRight,
             IsDocumentEnabled = false
         };
@@ -14800,16 +14857,16 @@ public partial class MainWindow : Window
     {
         if (resolved.TraceLines.Count == 0)
         {
-            AppendLog(outputTextBox, $"[{taskName}] Dataflow: no inputs, bindings, outputs, or placeholders to resolve.");
+            AppendLog(outputTextBox, FormatCurrent($"[{taskName}] Dataflow: no inputs, bindings, outputs, or placeholders to resolve."));
             return;
         }
 
         var builder = new StringBuilder();
-        builder.AppendLine($"[{taskName}] Dataflow resolution trace:");
+        builder.AppendLine(FormatCurrent($"[{taskName}] Dataflow resolution trace:"));
 
         foreach (var line in resolved.TraceLines)
         {
-            builder.AppendLine($"  - {PreviewForUiLog(line, MaxUiTraceLineChars)}");
+            builder.AppendLine(FormatCurrent($"  - {PreviewForUiLog(line, MaxUiTraceLineChars)}"));
         }
 
         AppendLog(outputTextBox, builder.ToString().TrimEnd());
@@ -14823,11 +14880,11 @@ public partial class MainWindow : Window
         }
 
         var builder = new StringBuilder();
-        builder.AppendLine($"[{taskName}] Published outputs:");
+        builder.AppendLine(FormatCurrent($"[{taskName}] Published outputs:"));
 
         foreach (var pair in outputs.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
         {
-            builder.AppendLine($"  - {pair.Key} = {PreviewForUiLog(pair.Value, MaxUiPublishedValueChars)}");
+            builder.AppendLine(FormatCurrent($"  - {pair.Key} = {PreviewForUiLog(pair.Value, MaxUiPublishedValueChars)}"));
         }
 
         AppendLog(outputTextBox, builder.ToString().TrimEnd());
@@ -14848,7 +14905,7 @@ public partial class MainWindow : Window
         }
 
         var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
         paragraph.Inlines.Add(new Run(" "));
@@ -14875,7 +14932,7 @@ public partial class MainWindow : Window
         }
 
         var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
         paragraph.Inlines.Add(new Run(" "));
@@ -14919,7 +14976,7 @@ public partial class MainWindow : Window
     private void AppendLogBypassBudget(RichTextBox outputTextBox, string message)
     {
         var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
         paragraph.Inlines.Add(new Run(" "));

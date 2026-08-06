@@ -2,6 +2,7 @@ using Microsoft.Win32;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Globalization;
 
 namespace tsky;
 
@@ -13,7 +14,7 @@ public partial class AgentGatewaySettingsWindow : Window
 
         EnableTlsCheckBox.IsChecked = settings.EnableTlsListener;
         HostTextBox.Text = settings.BindHost;
-        PortTextBox.Text = settings.Port.ToString();
+        PortTextBox.Text = settings.Port.ToString(CultureInfo.CurrentCulture);
         CertPathTextBox.Text = settings.CertificatePath ?? string.Empty;
         CertPasswordBox.Password = settings.CertificatePassword ?? string.Empty;
         DevFallbackCheckBox.IsChecked = settings.IsDevLoopbackFallbackEnabled;

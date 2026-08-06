@@ -111,6 +111,11 @@ public partial class App : System.Windows.Application
 		SetBrush("GraphNodeDisabledBackgroundBrush", useDarkTheme ? "#FF202224" : "#FFF3F4F6");
 		SetBrush("GraphNodeBorderBrush", useDarkTheme ? "#FF3D4D5D" : "#FFD0D7DE");
 		SetBrush("GraphNodeDisabledBorderBrush", useDarkTheme ? "#FF4A4D50" : "#FFC2C8CF");
+		SetBrush("ScrollBarTrackBrush", useDarkTheme ? "#33484F58" : "#16000000");
+		SetBrush("ScrollBarThumbBrush", useDarkTheme ? "#CC9AA4AF" : "#8057606A");
+		SetBrush("ScrollBarThumbHoverBrush", useDarkTheme ? "#E0B7C0CA" : "#A057606A");
+		SetBrush("ScrollBarThumbPressedBrush", useDarkTheme ? "#FFF1F5F9" : "#CC57606A");
+		SetBrush("ScrollBarThumbDisabledBrush", useDarkTheme ? "#557B8591" : "#4057606A");
 		SetDouble("PortDotSize", useDarkTheme ? 10.0 : 8.0);
 		SetDouble("PortDotStrokeThickness", useDarkTheme ? 1.4 : 1.0);
 		SetThickness("PortDotMargin", useDarkTheme ? new Thickness(0, 3, 0, 3) : new Thickness(0, 2, 0, 2));

@@ -9,8 +9,10 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/matthogan/tsky/agent/internal/config"
@@ -27,23 +29,28 @@ type Sender interface {
 }
 
 type Engine struct {
-	cfg     config.Config
-	store   *runtimefs.Store
-	policy  policy.Policy
-	log     *slog.Logger
-	mu      sync.Mutex
-	active  map[string]context.CancelFunc
-	running chan struct{}
+	cfg                config.Config
+	store              *runtimefs.Store
+	policy             policy.Policy
+	log                *slog.Logger
+	mu                 sync.Mutex
+	active             map[string]context.CancelFunc
+	running            chan struct{}
+	admitted           chan struct{}
+	rejectedByCapacity uint64
 }
+
+var errAdmissionQueueTimeout = errors.New("admission queue wait timed out")
 
 func New(cfg config.Config, store *runtimefs.Store, log *slog.Logger) *Engine {
 	return &Engine{
-		cfg:     cfg,
-		store:   store,
-		policy:  policy.New(cfg),
-		log:     log,
-		active:  map[string]context.CancelFunc{},
-		running: make(chan struct{}, cfg.Execution.MaxConcurrentRuns),
+		cfg:      cfg,
+		store:    store,
+		policy:   policy.New(cfg),
+		log:      log,
+		active:   map[string]context.CancelFunc{},
+		running:  make(chan struct{}, cfg.Execution.MaxConcurrentRuns),
+		admitted: make(chan struct{}, cfg.Execution.MaxConcurrentRuns+cfg.Execution.MaxPendingQueueDepth),
 	}
 }
 
@@ -79,6 +86,15 @@ func (e *Engine) HandleOffer(ctx context.Context, sender Sender, offer *agentv1.
 	if duplicate {
 		return
 	}
+	if err := e.acquireAdmission(ctx); err != nil {
+		if errors.Is(err, errAdmissionQueueTimeout) {
+			atomic.AddUint64(&e.rejectedByCapacity, 1)
+			e.failAdmission(sender, offer, agentv1.RunAttemptState_RUN_ATTEMPT_STATE_TIMED_OUT, "admission_queue_timeout", err.Error())
+			return
+		}
+		e.failAdmission(sender, offer, agentv1.RunAttemptState_RUN_ATTEMPT_STATE_CANCELLED, "admission_cancelled", err.Error())
+		return
+	}
 	go e.execute(ctx, sender, offer)
 }
 
@@ -96,6 +112,21 @@ func (e *Engine) ActiveRuns() uint32 {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return uint32(len(e.active))
+}
+
+func (e *Engine) QueuedRuns() uint32 {
+	e.mu.Lock()
+	active := len(e.active)
+	e.mu.Unlock()
+	admitted := len(e.admitted)
+	if admitted <= active {
+		return 0
+	}
+	return uint32(admitted - active)
+}
+
+func (e *Engine) RejectedByCapacity() uint64 {
+	return atomic.LoadUint64(&e.rejectedByCapacity)
 }
 
 func (e *Engine) accept(offer *agentv1.RunOffer) (*runtimefs.Acceptance, bool, error) {
@@ -129,7 +160,13 @@ func (e *Engine) accept(offer *agentv1.RunOffer) (*runtimefs.Acceptance, bool, e
 }
 
 func (e *Engine) execute(parent context.Context, sender Sender, offer *agentv1.RunOffer) {
-	e.running <- struct{}{}
+	defer func() { <-e.admitted }()
+	select {
+	case e.running <- struct{}{}:
+	case <-parent.Done():
+		e.failAdmission(sender, offer, agentv1.RunAttemptState_RUN_ATTEMPT_STATE_CANCELLED, "admission_cancelled", parent.Err().Error())
+		return
+	}
 	defer func() { <-e.running }()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -235,6 +272,55 @@ func (e *Engine) execute(parent context.Context, sender Sender, offer *agentv1.R
 	state.HasExitCode = hasExit
 	_ = e.store.WriteState(*state)
 	e.sendTerminalFailure(sender, offer, state, final, exitCode, hasExit)
+}
+
+func (e *Engine) acquireAdmission(ctx context.Context) error {
+	waitTimeout := e.cfg.AdmissionQueueWaitTimeout()
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
+
+	select {
+	case e.admitted <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return errAdmissionQueueTimeout
+	}
+}
+
+func (e *Engine) failAdmission(sender Sender, offer *agentv1.RunOffer, final agentv1.RunAttemptState, errorCode, msg string) {
+	state, _ := e.store.ReadState(offer.RunId, offer.AttemptId)
+	if state == nil {
+		state = &runtimefs.State{RunID: offer.RunId, AttemptID: offer.AttemptId}
+	}
+	state.State = final
+	state.ErrorCode = errorCode
+	state.ErrorMessage = msg
+	state.ProcessKnownRunning = false
+	state.HighestEventSeq++
+	_ = e.store.WriteState(*state)
+
+	detail := map[string]any{
+		"activeRuns":             e.ActiveRuns(),
+		"queuedRuns":             e.QueuedRuns(),
+		"rejectedByCapacity":     strconv.FormatUint(e.RejectedByCapacity(), 10),
+		"maxConcurrentRuns":      e.cfg.Execution.MaxConcurrentRuns,
+		"maxPendingQueueDepth":   e.cfg.Execution.MaxPendingQueueDepth,
+		"queueWaitTimeoutSecond": e.cfg.Execution.AdmissionQueueWaitTimeoutSeconds,
+	}
+	ev := &agentv1.RunEvent{
+		RunId:         offer.RunId,
+		AttemptId:     offer.AttemptId,
+		EventSequence: state.HighestEventSeq,
+		Type:          agentv1.RunEventType_RUN_EVENT_TYPE_ATTEMPT_STATE_CHANGED,
+		AttemptState:  final,
+		OccurredAt:    timestamppb.Now(),
+		Detail:        toStruct(detail),
+	}
+	_ = e.store.AppendRunEvent(ev)
+	_ = e.sendFrame(sender, &agentv1.AgentFrame{Header: tapproto.Header(offer.AttemptId), Body: &agentv1.AgentFrame_RunEvent{RunEvent: ev}}, "RunEvent", offer.RunId, offer.AttemptId)
+	e.sendTerminalFailure(sender, offer, state, final, 0, false)
 }
 
 func (e *Engine) runStep(ctx context.Context, sender Sender, offer *agentv1.RunOffer, state *runtimefs.State, step *agentv1.RunStep) (int32, error) {

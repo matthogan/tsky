@@ -17,6 +17,8 @@ runtime:
     criticalFreeDiskBytes: 1073741824
 execution:
     maxConcurrentRuns: 1
+    maxPendingQueueDepth: 16
+    admissionQueueWaitTimeoutSeconds: 30
     defaultTimeoutSeconds: 3600
     cancellationGraceSeconds: 10
     maximumOutputBytesPerStream: 104857600

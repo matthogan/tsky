@@ -151,7 +151,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			SupportedTapVersions:  []*agentv1.ProtocolVersion{{Major: 1, Minor: 0}},
 			SupportedBindings:     []*agentv1.ProtocolBinding{{Profile: "tap-grpc", Version: "1", Endpoint: c.cfg.Controller.URL}},
 			ImplementationName:    "tsky-agent",
-			ImplementationVersion: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.draining).ImplementationVersion,
+			ImplementationVersion: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining).ImplementationVersion,
 		}},
 	}); err != nil {
 		return err
@@ -207,10 +207,10 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			"controller", c.cfg.Controller.URL)
 	}
 	c.hasConnected = true
-	if err := stream.Send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_AgentSnapshot{AgentSnapshot: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.draining)}}); err != nil {
+	if err := stream.Send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_AgentSnapshot{AgentSnapshot: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining)}}); err != nil {
 		return err
 	}
-	if err := stream.Send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_CapabilityReport{CapabilityReport: c.telemetry.Capability(c.engine.ActiveRuns())}}); err != nil {
+	if err := stream.Send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_CapabilityReport{CapabilityReport: c.telemetry.Capability(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity())}}); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -259,7 +259,7 @@ func (c *Client) heartbeat(ctx context.Context, send func(*agentv1.AgentFrame) e
 			seq++
 			frame := &agentv1.AgentFrame{
 				Header: tapproto.Header(c.cfg.Identity.AgentID),
-				Body:   &agentv1.AgentFrame_AgentHeartbeat{AgentHeartbeat: c.telemetry.Heartbeat(seq, c.engine.ActiveRuns(), c.draining)},
+				Body:   &agentv1.AgentFrame_AgentHeartbeat{AgentHeartbeat: c.telemetry.Heartbeat(seq, c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining)},
 			}
 			if err := send(frame); err != nil {
 				errs <- err

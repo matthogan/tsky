@@ -17,7 +17,6 @@ This module provides a cross-platform TAP worker that:
 
 Current limitations in this reference implementation:
 
-- `install-service` and `uninstall-service` are defined but not implemented.
 - Only `process.v1` execution is implemented in the engine.
 
 ## Build
@@ -39,9 +38,14 @@ make test
 tsky-agent enrol --controller https://host:7341 --pending-agent agt_pending_... --token tsky_enrol_... --controller-id ctl_...
 tsky-agent validate-config --config ./config.yaml
 tsky-agent run --config ./config.yaml
+tsky-agent run --config ./config.yaml --silent
 tsky-agent status --config ./config.yaml
 tsky-agent doctor --config ./config.yaml
 tsky-agent rotate-key --config ./config.yaml
+tsky-agent install-service --config ./config.yaml --name TskyAgent --display-name "Tsky Agent" --description "Tsky remote execution agent" --start auto-delayed
+tsky-agent start-service --name TskyAgent
+tsky-agent stop-service --name TskyAgent
+tsky-agent uninstall-service --name TskyAgent
 tsky-agent version
 ```
 
@@ -63,6 +67,28 @@ tsky-agent version
 - `rotate-key`
 	- Generates a new key file for future rotation workflows.
 	- This does not rotate controller-side trust automatically.
+- `install-service`
+	- Windows: installs the current executable as a native Windows Service (no `sc.exe`/`nssm` required).
+	- Linux (systemd): installs a native `systemd` unit at `/etc/systemd/system/<name>.service`.
+	- Service command line is configured as `tsky-agent service-run --name <name> --config <path>` plus any install-time logging/runtime overrides.
+	- Requires sufficient privileges to create services/units.
+	- Default start mode is delayed automatic (`--start auto-delayed`).
+	- Default service name: `TskyAgent` on Windows, `tsky-agent` on Linux.
+	- Common flags: `--name`, `--display-name`, `--description`, `--start auto|auto-delayed|manual`.
+- `start-service`
+	- Starts the installed service by name.
+	- Windows: via SCM.
+	- Linux (systemd): via `systemd` D-Bus start.
+- `stop-service`
+	- Stops the running service by name.
+	- Windows: via SCM.
+	- Linux (systemd): via `systemd` D-Bus stop.
+- `uninstall-service`
+	- Stops (if running) and removes the installed service by name.
+	- Windows: deletes the service from SCM.
+	- Linux (systemd): disables/removes unit file and reloads daemon state.
+	- Requires sufficient privileges to remove services/units.
+	- On Linux hosts without active `systemd` (or where `systemd` is not PID 1), lifecycle commands fail with a clear unsupported-environment error.
 
 The agent stores durable run data under `runtime.root`, including accepted plans,
 state snapshots, event NDJSON, and stdout/stderr logs.
@@ -76,7 +102,7 @@ Config values are applied in this order (later wins):
 1. Built-in defaults.
 2. YAML file (`--config`, default path, or `TSKY_AGENT_CONFIG`).
 3. Environment overrides.
-4. CLI flag overrides (`--log-level`, `--runtime-root`).
+4. CLI flag overrides (`--log-level`, `--runtime-root`, `--silent`).
 
 `config.yaml` uses strict YAML decoding (unknown fields are rejected).
 
@@ -103,6 +129,7 @@ Set `TSKY_AGENT_CONFIG` to override the path globally.
 - `TSKY_AGENT_CONTROLLER_URL`: overrides `controller.url`.
 - `TSKY_AGENT_RUNTIME_ROOT`: overrides `runtime.root`.
 - `TSKY_AGENT_LOG_LEVEL`: overrides `logging.level`.
+- `TSKY_AGENT_SILENT`: overrides `logging.silent` (`true`/`false`).
 
 ### Desktop Gateway TLS certificate (PFX)
 
@@ -194,6 +221,8 @@ runtime:
 
 execution:
 	maxConcurrentRuns: 1
+	maxPendingQueueDepth: 16
+	admissionQueueWaitTimeoutSeconds: 30
 	defaultTimeoutSeconds: 3600
 	cancellationGraceSeconds: 10
 	maximumOutputBytesPerStream: 104857600
@@ -211,6 +240,7 @@ connection:
 logging:
 	level: "info"
 	format: "json" # "json" or "text"
+	silent: false # when true, suppresses agent log output (stderr + persistent log file)
 ```
 
 ### Field-by-field guide
@@ -251,9 +281,23 @@ logging:
 - `runtime.warningFreeDiskBytes`, `runtime.criticalFreeDiskBytes`
 	- Threshold values for disk-pressure policy/telemetry integration.
 
+- `logging.silent`
+	- Optional, default `false`.
+	- When `true`, suppresses all agent logging output, including stderr and persistent agent log file writes.
+
 - `execution.maxConcurrentRuns`
 	- Must be `>= 1`.
 	- Controls concurrent attempt execution capacity.
+
+- `execution.maxPendingQueueDepth`
+	- Must be `>= 0`.
+	- Bounds pending admitted attempts waiting for an execution slot.
+	- Total admitted attempts is bounded by `maxConcurrentRuns + maxPendingQueueDepth`.
+
+- `execution.admissionQueueWaitTimeoutSeconds`
+	- Must be `>= 1`.
+	- Maximum time an offer can wait to enter the bounded admission window.
+	- On timeout, the attempt is deterministically completed in terminal `TIMED_OUT` with admission error details.
 
 - `execution.defaultTimeoutSeconds`
 	- Must be `>= 1`.
@@ -307,6 +351,49 @@ Common validation failures:
 - Empty `execution.allowedExecutors`.
 - Invalid connection reconnect bounds.
 - Empty path in `execution.allowedWorkingRoots`.
+
+### Admission Control And Telemetry
+
+The engine uses two bounded controls:
+
+- Running slots: `execution.maxConcurrentRuns`.
+- Admission window: `execution.maxConcurrentRuns + execution.maxPendingQueueDepth`.
+
+Behavior summary:
+
+- If admission capacity is available, an accepted offer enters the admission window.
+- If admission capacity is full, the offer waits up to `execution.admissionQueueWaitTimeoutSeconds`.
+- If that wait expires, the attempt transitions to terminal `TIMED_OUT` with admission error code `admission_queue_timeout`.
+- Running-slot acquisition is context-aware and cancellation-aware.
+
+Client-visible frame semantics:
+
+- Admission overload is not emitted as `RunRejected`.
+- The offer is first acknowledged with `RunAccepted`, then the attempt is completed with:
+	- `RunEvent` (`ATTEMPT_STATE_CHANGED`) to terminal `TIMED_OUT` or `CANCELLED`.
+	- `RunCompleted` carrying the terminal state and admission error details.
+- This guarantees the client receives a terminal attempt outcome for admission failures.
+
+Telemetry exposure:
+
+- `activeRuns`: exposed via `capacity.active_runs`.
+- `queuedRuns`: exposed in heartbeat/snapshot health issue details (`admission_control`).
+- `rejectedByCapacity`: exposed in heartbeat/snapshot health issue details and capability labels (`admission.rejected_by_capacity`).
+
+### Concurrency Theory Notes
+
+Design rationale:
+
+- The bounded admission model prevents unbounded goroutine accumulation and gives deterministic overload behavior.
+- Queue wait timeout makes overload outcomes explicit rather than implicit indefinite blocking.
+- Capacity-based admission plus explicit queue depth follows standard backpressure patterns used in high-availability systems.
+
+Useful references:
+
+- Go channels and `select`: The Go Programming Language Specification, "Channel types" and "Select statements".
+- Go memory model: "The Go Memory Model" (go.dev).
+- Queueing fundamentals: Little's Law, $L = \lambda W$ (Little, 1961).
+- Practical queueing for finite-capacity systems: Gross, Shortle, Thompson, Harris, "Fundamentals of Queueing Theory".
 
 ## Runtime data layout
 

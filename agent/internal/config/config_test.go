@@ -85,3 +85,34 @@ logging:
 		t.Fatalf("execution.allowedWorkingRoots mismatch: got %v want [%q]", cfg.Execution.AllowedWorkingRoots, wantWork)
 	}
 }
+
+func TestApplyEnvSilentOverride(t *testing.T) {
+	t.Setenv("TSKY_AGENT_SILENT", "true")
+
+	cfg := Defaults()
+	cfg.Logging.Silent = false
+
+	applyEnv(&cfg)
+
+	if !cfg.Logging.Silent {
+		t.Fatal("expected logging.silent to be true from TSKY_AGENT_SILENT")
+	}
+}
+
+func TestValidateRejectsNegativePendingQueueDepth(t *testing.T) {
+	cfg := Defaults()
+	cfg.Execution.MaxPendingQueueDepth = -1
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for negative maxPendingQueueDepth")
+	}
+}
+
+func TestValidateRejectsNonPositiveAdmissionQueueWaitTimeout(t *testing.T) {
+	cfg := Defaults()
+	cfg.Execution.AdmissionQueueWaitTimeoutSeconds = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for non-positive admissionQueueWaitTimeoutSeconds")
+	}
+}

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"os"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/matthogan/tsky/agent/internal/config"
@@ -22,7 +23,7 @@ func New(cfg config.Config, store *runtimefs.Store, version string) *Collector {
 	return &Collector{cfg: cfg, store: store, version: version, started: time.Now()}
 }
 
-func (c *Collector) Snapshot(active uint32, draining bool) *agentv1.AgentSnapshot {
+func (c *Collector) Snapshot(active, queued uint32, rejectedByCapacity uint64, draining bool) *agentv1.AgentSnapshot {
 	host, _ := os.Hostname()
 	availability := agentv1.AgentAvailability_AGENT_AVAILABILITY_IDLE
 	if active > 0 {
@@ -40,22 +41,22 @@ func (c *Collector) Snapshot(active uint32, draining bool) *agentv1.AgentSnapsho
 		ImplementationVersion: c.version,
 		Availability:          availability,
 		Capacity:              c.Capacity(active),
-		Health:                &agentv1.AgentHealth{State: agentv1.HealthState_HEALTH_STATE_HEALTHY},
+		Health:                c.health(active, queued, rejectedByCapacity),
 		Uptime:                durationpb.New(time.Since(c.started)),
 	}
 }
 
-func (c *Collector) Heartbeat(seq uint64, active uint32, draining bool) *agentv1.AgentHeartbeat {
+func (c *Collector) Heartbeat(seq uint64, active, queued uint32, rejectedByCapacity uint64, draining bool) *agentv1.AgentHeartbeat {
 	return &agentv1.AgentHeartbeat{
 		HeartbeatSequence: seq,
 		Uptime:            durationpb.New(time.Since(c.started)),
 		Capacity:          c.Capacity(active),
 		Draining:          draining,
-		Health:            &agentv1.AgentHealth{State: agentv1.HealthState_HEALTH_STATE_HEALTHY},
+		Health:            c.health(active, queued, rejectedByCapacity),
 	}
 }
 
-func (c *Collector) Capability(active uint32) *agentv1.CapabilityReport {
+func (c *Collector) Capability(active, queued uint32, rejectedByCapacity uint64) *agentv1.CapabilityReport {
 	return &agentv1.CapabilityReport{
 		AgentId:               c.cfg.Identity.AgentID,
 		ImplementationName:    "tsky-agent",
@@ -67,8 +68,13 @@ func (c *Collector) Capability(active uint32) *agentv1.CapabilityReport {
 		Executors: c.executors(),
 		Features:  []string{"durable-runtime-store", "process-output-spooling"},
 		Labels: map[string]string{
-			"os":   runtime.GOOS,
-			"arch": runtime.GOARCH,
+			"os":                             runtime.GOOS,
+			"arch":                           runtime.GOARCH,
+			"admission.active_runs":          strconv.FormatUint(uint64(active), 10),
+			"admission.queued_runs":          strconv.FormatUint(uint64(queued), 10),
+			"admission.rejected_by_capacity": strconv.FormatUint(rejectedByCapacity, 10),
+			"admission.max_concurrent_runs":  strconv.Itoa(c.cfg.Execution.MaxConcurrentRuns),
+			"admission.max_pending_queue":    strconv.Itoa(c.cfg.Execution.MaxPendingQueueDepth),
 		},
 		Capacity: c.Capacity(active),
 	}
@@ -95,4 +101,19 @@ func (c *Collector) executors() []*agentv1.ExecutorCapability {
 		})
 	}
 	return out
+}
+
+func (c *Collector) health(active, queued uint32, rejectedByCapacity uint64) *agentv1.AgentHealth {
+	return &agentv1.AgentHealth{
+		State: agentv1.HealthState_HEALTH_STATE_HEALTHY,
+		Issues: []*agentv1.HealthIssue{{
+			Code:    "admission_control",
+			Message: "admission counters",
+			Detail: map[string]string{
+				"activeRuns":         strconv.FormatUint(uint64(active), 10),
+				"queuedRuns":         strconv.FormatUint(uint64(queued), 10),
+				"rejectedByCapacity": strconv.FormatUint(rejectedByCapacity, 10),
+			},
+		}},
+	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/matthogan/tsky/agent/internal/transport"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"google.golang.org/grpc/grpclog"
 )
 
 type buildInfo struct {
@@ -34,13 +35,26 @@ type options struct {
 	configPath string
 	logLevel   string
 	runtime    string
+	silentMode bool
 	build      buildInfo
 }
 
 const (
-	agentLogMaxBytes   int64 = 10 * 1024 * 1024
-	agentLogMaxBackups       = 5
+	agentLogMaxBytes                 int64 = 10 * 1024 * 1024
+	agentLogMaxBackups                     = 5
+	defaultWindowsServiceName              = "TskyAgent"
+	defaultLinuxServiceName                = "tsky-agent"
+	defaultWindowsServiceDisplayName       = "Tsky Agent"
+	defaultWindowsServiceDescription       = "Tsky remote execution agent"
 )
+
+func defaultServiceName() string {
+	if runtime.GOOS == "linux" {
+		return defaultLinuxServiceName
+	}
+
+	return defaultWindowsServiceName
+}
 
 func Execute(version, commit, date string) {
 	opts := &options{build: buildInfo{Version: version, Commit: commit, Date: date}}
@@ -61,6 +75,7 @@ func newRoot(opts *options) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.configPath, "config", config.DefaultPath(), "configuration file path")
 	cmd.PersistentFlags().StringVar(&opts.logLevel, "log-level", "", "log level override")
 	cmd.PersistentFlags().StringVar(&opts.runtime, "runtime-root", "", "runtime root override")
+	cmd.PersistentFlags().BoolVar(&opts.silentMode, "silent", false, "disable agent logging output")
 	_ = viper.BindPFlag("config", cmd.PersistentFlags().Lookup("config"))
 	_ = viper.BindPFlag("log-level", cmd.PersistentFlags().Lookup("log-level"))
 	_ = viper.BindPFlag("runtime-root", cmd.PersistentFlags().Lookup("runtime-root"))
@@ -70,11 +85,14 @@ func newRoot(opts *options) *cobra.Command {
 	cmd.AddCommand(
 		newEnrolCommand(opts),
 		newRunCommand(opts),
+		newServiceRunCommand(opts),
 		newValidateConfigCommand(opts),
 		newStatusCommand(opts),
 		newDoctorCommand(opts),
 		newRotateKeyCommand(opts),
 		newInstallServiceCommand(),
+		newStartServiceCommand(),
+		newStopServiceCommand(),
 		newUninstallServiceCommand(),
 		newVersionCommand(opts),
 	)
@@ -126,7 +144,6 @@ func newEnrolCommand(opts *options) *cobra.Command {
 				return err
 			}
 			cfg.Identity.AgentID = resp.AgentId
-			cfg.Identity.KeyID = resp.KeyId
 			cfg.Identity.KeyReference = id.Reference()
 			if resp.ControllerId != "" {
 				cfg.Controller.ControllerID = resp.ControllerId
@@ -156,23 +173,40 @@ func newRunCommand(opts *options) *cobra.Command {
 				return err
 			}
 			log := logger(cfg)
-			id, err := identity.Load(cfg.Identity.KeyReference)
+			client, err := newAgentClient(cfg, opts, log)
 			if err != nil {
-				return err
-			}
-			store := runtimefs.New(cfg.Runtime.Root)
-			if err := store.Init(); err != nil {
 				return err
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			engine := execution.New(cfg, store, log)
-			tel := telemetry.New(cfg, store, opts.build.Version)
-			client := transport.New(cfg, id, store, engine, tel, log)
 			log.Info("starting Tsky agent", "agentId", cfg.Identity.AgentID, "controller", cfg.Controller.URL)
 			return client.Run(ctx)
 		},
 	}
+}
+
+func newServiceRunCommand(opts *options) *cobra.Command {
+	var serviceName string
+	cmd := &cobra.Command{
+		Use:    "service-run",
+		Short:  "Run the agent as a service entrypoint",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(opts)
+			if err != nil {
+				return err
+			}
+			log := logger(cfg)
+			client, err := newAgentClient(cfg, opts, log)
+			if err != nil {
+				return err
+			}
+			log.Info("starting Tsky agent service", "serviceName", serviceName, "agentId", cfg.Identity.AgentID, "controller", cfg.Controller.URL)
+			return runAsService(serviceName, log, client.Run)
+		},
+	}
+	cmd.Flags().StringVar(&serviceName, "name", defaultServiceName(), "service name")
+	return cmd
 }
 
 func newValidateConfigCommand(opts *options) *cobra.Command {
@@ -280,23 +314,101 @@ func newRotateKeyCommand(opts *options) *cobra.Command {
 }
 
 func newInstallServiceCommand() *cobra.Command {
-	return &cobra.Command{
+	var serviceName, displayName, description, startMode string
+	cmd := &cobra.Command{
 		Use:   "install-service",
-		Short: "Install the agent as an operating-system service",
+		Short: "Install the agent as a system service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("service installation is platform-specific and not implemented in this reference binary yet")
+			return installService(serviceName, displayName, description, startMode, cmd)
+		},
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			serviceName = strings.TrimSpace(serviceName)
+			displayName = strings.TrimSpace(displayName)
+			description = strings.TrimSpace(description)
+			startMode = strings.TrimSpace(startMode)
+			if serviceName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			if displayName == "" {
+				return fmt.Errorf("--display-name is required")
+			}
+			if startMode == "" {
+				return fmt.Errorf("--start is required")
+			}
+			return nil
 		},
 	}
+	cmd.Flags().StringVar(&serviceName, "name", defaultServiceName(), "service name")
+	cmd.Flags().StringVar(&displayName, "display-name", defaultWindowsServiceDisplayName, "service display name")
+	cmd.Flags().StringVar(&description, "description", defaultWindowsServiceDescription, "service description")
+	cmd.Flags().StringVar(&startMode, "start", "auto-delayed", "service start mode: auto-delayed or manual")
+	return cmd
+}
+
+func newStartServiceCommand() *cobra.Command {
+	var serviceName string
+	cmd := &cobra.Command{
+		Use:   "start-service",
+		Short: "Start the installed system service",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			serviceName = strings.TrimSpace(serviceName)
+			if serviceName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			return startService(serviceName)
+		},
+	}
+	cmd.Flags().StringVar(&serviceName, "name", defaultServiceName(), "service name")
+	return cmd
+}
+
+func newStopServiceCommand() *cobra.Command {
+	var serviceName string
+	cmd := &cobra.Command{
+		Use:   "stop-service",
+		Short: "Stop the installed system service",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			serviceName = strings.TrimSpace(serviceName)
+			if serviceName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			return stopService(serviceName)
+		},
+	}
+	cmd.Flags().StringVar(&serviceName, "name", defaultServiceName(), "service name")
+	return cmd
 }
 
 func newUninstallServiceCommand() *cobra.Command {
-	return &cobra.Command{
+	var serviceName string
+	cmd := &cobra.Command{
 		Use:   "uninstall-service",
-		Short: "Uninstall the operating-system service",
+		Short: "Uninstall the system service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("service uninstallation is platform-specific and not implemented in this reference binary yet")
+			serviceName = strings.TrimSpace(serviceName)
+			if serviceName == "" {
+				return fmt.Errorf("--name is required")
+			}
+			return uninstallService(serviceName)
 		},
 	}
+	cmd.Flags().StringVar(&serviceName, "name", defaultServiceName(), "service name")
+	return cmd
+}
+
+func newAgentClient(cfg config.Config, opts *options, log *slog.Logger) (*transport.Client, error) {
+	id, err := identity.Load(cfg.Identity.KeyReference)
+	if err != nil {
+		return nil, err
+	}
+	store := runtimefs.New(cfg.Runtime.Root)
+	if err := store.Init(); err != nil {
+		return nil, err
+	}
+	engine := execution.New(cfg, store, log)
+	tel := telemetry.New(cfg, store, opts.build.Version)
+	client := transport.New(cfg, id, store, engine, tel, log)
+	return client, nil
 }
 
 func newVersionCommand(opts *options) *cobra.Command {
@@ -326,15 +438,26 @@ func overrideConfig(cfg *config.Config, opts *options) {
 	if opts.runtime != "" {
 		cfg.Runtime.Root = opts.runtime
 	}
+	if opts.silentMode {
+		cfg.Logging.Silent = true
+	}
 	if v := viper.GetString("log-level"); v != "" {
 		cfg.Logging.Level = v
 	}
 	if v := viper.GetString("runtime-root"); v != "" {
 		cfg.Runtime.Root = v
 	}
+	if viper.IsSet("silent") {
+		cfg.Logging.Silent = viper.GetBool("silent")
+	}
 }
 
 func logger(cfg config.Config) *slog.Logger {
+	if cfg.Logging.Silent {
+		grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, io.Discard))
+		return slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+	}
+
 	level := slog.LevelInfo
 	switch strings.ToLower(cfg.Logging.Level) {
 	case "debug":

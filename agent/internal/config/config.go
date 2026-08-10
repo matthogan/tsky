@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,13 +49,15 @@ type RuntimeConfig struct {
 }
 
 type ExecutionConfig struct {
-	MaxConcurrentRuns           int      `yaml:"maxConcurrentRuns" json:"maxConcurrentRuns"`
-	DefaultTimeoutSeconds       int      `yaml:"defaultTimeoutSeconds" json:"defaultTimeoutSeconds"`
-	CancellationGraceSeconds    int      `yaml:"cancellationGraceSeconds" json:"cancellationGraceSeconds"`
-	MaximumOutputBytesPerStream uint64   `yaml:"maximumOutputBytesPerStream" json:"maximumOutputBytesPerStream"`
-	AllowedExecutors            []string `yaml:"allowedExecutors" json:"allowedExecutors"`
-	AllowedWorkingRoots         []string `yaml:"allowedWorkingRoots" json:"allowedWorkingRoots"`
-	AllowShellExecutor          bool     `yaml:"allowShellExecutor" json:"allowShellExecutor"`
+	MaxConcurrentRuns                int      `yaml:"maxConcurrentRuns" json:"maxConcurrentRuns"`
+	MaxPendingQueueDepth             int      `yaml:"maxPendingQueueDepth" json:"maxPendingQueueDepth"`
+	AdmissionQueueWaitTimeoutSeconds int      `yaml:"admissionQueueWaitTimeoutSeconds" json:"admissionQueueWaitTimeoutSeconds"`
+	DefaultTimeoutSeconds            int      `yaml:"defaultTimeoutSeconds" json:"defaultTimeoutSeconds"`
+	CancellationGraceSeconds         int      `yaml:"cancellationGraceSeconds" json:"cancellationGraceSeconds"`
+	MaximumOutputBytesPerStream      uint64   `yaml:"maximumOutputBytesPerStream" json:"maximumOutputBytesPerStream"`
+	AllowedExecutors                 []string `yaml:"allowedExecutors" json:"allowedExecutors"`
+	AllowedWorkingRoots              []string `yaml:"allowedWorkingRoots" json:"allowedWorkingRoots"`
+	AllowShellExecutor               bool     `yaml:"allowShellExecutor" json:"allowShellExecutor"`
 }
 
 type ConnectionConfig struct {
@@ -66,6 +69,7 @@ type ConnectionConfig struct {
 type LoggingConfig struct {
 	Level  string `yaml:"level" json:"level"`
 	Format string `yaml:"format" json:"format"`
+	Silent bool   `yaml:"silent" json:"silent"`
 }
 
 func Defaults() Config {
@@ -81,13 +85,15 @@ func Defaults() Config {
 			CriticalFreeDiskBytes:     1 * 1024 * 1024 * 1024,
 		},
 		Execution: ExecutionConfig{
-			MaxConcurrentRuns:           1,
-			DefaultTimeoutSeconds:       3600,
-			CancellationGraceSeconds:    10,
-			MaximumOutputBytesPerStream: 100 * 1024 * 1024,
-			AllowedExecutors:            []string{"process.v1"},
-			AllowedWorkingRoots:         []string{filepath.Join(root, "work")},
-			AllowShellExecutor:          false,
+			MaxConcurrentRuns:                1,
+			MaxPendingQueueDepth:             16,
+			AdmissionQueueWaitTimeoutSeconds: 30,
+			DefaultTimeoutSeconds:            3600,
+			CancellationGraceSeconds:         10,
+			MaximumOutputBytesPerStream:      100 * 1024 * 1024,
+			AllowedExecutors:                 []string{"process.v1"},
+			AllowedWorkingRoots:              []string{filepath.Join(root, "work")},
+			AllowShellExecutor:               false,
 		},
 		Connection: ConnectionConfig{
 			HeartbeatSeconds:        10,
@@ -176,6 +182,12 @@ func (c Config) Validate() error {
 	if c.Execution.MaxConcurrentRuns < 1 {
 		errs = append(errs, errors.New("execution.maxConcurrentRuns must be at least 1"))
 	}
+	if c.Execution.MaxPendingQueueDepth < 0 {
+		errs = append(errs, errors.New("execution.maxPendingQueueDepth must not be negative"))
+	}
+	if c.Execution.AdmissionQueueWaitTimeoutSeconds < 1 {
+		errs = append(errs, errors.New("execution.admissionQueueWaitTimeoutSeconds must be positive"))
+	}
 	if c.Execution.DefaultTimeoutSeconds < 1 {
 		errs = append(errs, errors.New("execution.defaultTimeoutSeconds must be positive"))
 	}
@@ -209,6 +221,10 @@ func (c Config) DefaultTimeout() time.Duration {
 	return time.Duration(c.Execution.DefaultTimeoutSeconds) * time.Second
 }
 
+func (c Config) AdmissionQueueWaitTimeout() time.Duration {
+	return time.Duration(c.Execution.AdmissionQueueWaitTimeoutSeconds) * time.Second
+}
+
 func (c Config) CancellationGrace() time.Duration {
 	return time.Duration(c.Execution.CancellationGraceSeconds) * time.Second
 }
@@ -226,6 +242,11 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("TSKY_AGENT_LOG_LEVEL"); v != "" {
 		cfg.Logging.Level = v
+	}
+	if v := os.Getenv("TSKY_AGENT_SILENT"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.Logging.Silent = parsed
+		}
 	}
 }
 

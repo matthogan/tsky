@@ -11113,22 +11113,27 @@ public partial class MainWindow : Window
             {
                 _currentConfiguration.Tasks[existingIndex] = pastedTask;
                 _selectedTaskIndex = existingIndex;
+                pastedTaskIdentityKey = GetTaskIdentityKey(pastedTask);
             }
             else
             {
                 pastedTask.Name = BuildUniqueTaskCopyName(targetGroup, pastedTask.Name);
                 _currentConfiguration.Tasks.Add(pastedTask);
                 _selectedTaskIndex = _currentConfiguration.Tasks.Count - 1;
+                pastedTaskIdentityKey = GetTaskIdentityKey(pastedTask);
             }
         }
         else
         {
             _currentConfiguration.Tasks.Add(pastedTask);
             _selectedTaskIndex = _currentConfiguration.Tasks.Count - 1;
+            pastedTaskIdentityKey = GetTaskIdentityKey(pastedTask);
         }
 
+        var fallbackSelectedTaskIndex = _selectedTaskIndex ?? -1;
         _selectedGroupName = targetGroup;
         SaveTasksAndRefresh("Paste Task");
+        SelectTaskInMainPanel(targetGroup, fallbackSelectedTaskIndex, pastedTaskIdentityKey);
         return true;
     }
 
@@ -13375,6 +13380,12 @@ public partial class MainWindow : Window
         {
             _selectedTaskIndex = visual.TaskIndex;
             ApplyTaskCardSelectionVisuals();
+        }
+
+        if (GetTaskRunState(task) == TaskRunState.Running)
+        {
+            DebugTraceLog.Write($"[TaskRun] Ignored card click for running task '{task.Name}' in group '{task.Group}'.");
+            return;
         }
 
         if (!IsTaskEnabled(task))

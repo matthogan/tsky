@@ -54,6 +54,11 @@ public partial class MainWindow : Window
     private const double GraphLayerSpacing = 68;
     private const double GraphRowSpacing = 32;
     private const double GraphSurfacePadding = 24;
+    private static readonly HashSet<string> SuppressedUiCommandNames =
+    [
+        "ScrollToVerticalOffset",
+        "ScrollToHorizontalOffset"
+    ];
 
     private readonly string _currentDirectoryConfigPath;
     private readonly string _userProfileConfigPath;
@@ -79,6 +84,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, bool> _groupOutputVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _groupSidebarVisibility = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, double> _groupOutputHeights = new(StringComparer.OrdinalIgnoreCase);
+    private string? _activeOutputHeightCacheKey;
     private readonly HashSet<string> _favoriteGroups = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _favoriteGroupOrder = [];
     private readonly List<string> _nonFavoriteGroupsOrder = [];
@@ -1141,6 +1147,11 @@ public partial class MainWindow : Window
             RoutedCommand routed when !string.IsNullOrWhiteSpace(routed.Name) => routed.Name,
             _ => e.Command?.GetType().Name ?? "(unknown)"
         };
+
+        if (SuppressedUiCommandNames.Contains(commandName))
+        {
+            return;
+        }
 
         DebugTraceLog.Write("UIAction", $"Command executed: {commandName}");
     }
@@ -5057,6 +5068,7 @@ public partial class MainWindow : Window
     private void ApplyOutputVisibility(string groupKey, bool isVisible)
     {
         var outputHeightCacheKey = ResolveOutputHeightCacheKey(groupKey);
+        var isOutputCurrentlyVisible = OutputContainer.Visibility == Visibility.Visible && GetCurrentRowHeight(OutputRowDefinition) > 0;
 
         if (!isVisible)
         {
@@ -5081,10 +5093,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (isOutputCurrentlyVisible && string.Equals(_activeOutputHeightCacheKey, outputHeightCacheKey, StringComparison.Ordinal))
+        {
+            var currentHeight = OutputRowDefinition.ActualHeight > 0
+                ? OutputRowDefinition.ActualHeight
+                : OutputRowDefinition.Height.Value;
+
+            if (currentHeight >= MinOutputHeight)
+            {
+                _groupOutputHeights[outputHeightCacheKey] = currentHeight;
+            }
+
+            OutputRowDefinition.MinHeight = MinOutputHeight;
+            OutputGridSplitter.Visibility = Visibility.Visible;
+            OutputContainer.Visibility = Visibility.Visible;
+            return;
+        }
+
         var restoredHeight = _groupOutputHeights.TryGetValue(outputHeightCacheKey, out var storedHeight) && storedHeight >= MinOutputHeight
             ? storedHeight
             : (_uiState.OutputHeight >= MinOutputHeight ? _uiState.OutputHeight : DefaultOutputHeight);
 
+        _activeOutputHeightCacheKey = outputHeightCacheKey;
         OutputRowDefinition.MinHeight = 0;
         OutputGridSplitter.Visibility = Visibility.Visible;
         OutputContainer.Visibility = Visibility.Visible;

@@ -38,6 +38,18 @@ public sealed class AgentGatewayRuntimeEvent
     public ArtifactUploadCompleted? ArtifactUploadCompleted { get; init; }
 
     public ArtifactUploadFailed? ArtifactUploadFailed { get; init; }
+
+    public CapabilityReport? CapabilityReport { get; init; }
+
+    public ScheduleAck? ScheduleAck { get; init; }
+
+    public ScheduleNack? ScheduleNack { get; init; }
+
+    public ScheduleStatus? ScheduleStatus { get; init; }
+
+    public ScheduleOccurrenceEvent? ScheduleOccurrenceEvent { get; init; }
+
+    public ScheduleSyncResponse? ScheduleSyncResponse { get; init; }
 }
 
 public sealed class AgentGatewayHost : IAsyncDisposable
@@ -85,6 +97,24 @@ public sealed class AgentGatewayHost : IAsyncDisposable
         }
 
         return _runtime.TrySendCancel(agentId, cancelRun, out reason);
+    }
+
+    public bool TrySendScheduleUpsert(string agentId, ScheduleUpsert upsert, out string reason)
+    {
+        if (_runtime is null) { reason = "Gateway runtime is not available."; return false; }
+        return _runtime.TrySendScheduleUpsert(agentId, upsert, out reason);
+    }
+
+    public bool TrySendScheduleDelete(string agentId, ScheduleDelete delete, out string reason)
+    {
+        if (_runtime is null) { reason = "Gateway runtime is not available."; return false; }
+        return _runtime.TrySendScheduleDelete(agentId, delete, out reason);
+    }
+
+    public bool TrySendScheduleSyncRequest(string agentId, ScheduleSyncRequest request, out string reason)
+    {
+        if (_runtime is null) { reason = "Gateway runtime is not available."; return false; }
+        return _runtime.TrySendScheduleSyncRequest(agentId, request, out reason);
     }
 
     public int RequestReconciliationFromAll()
@@ -252,7 +282,10 @@ public sealed class AgentGatewayHost : IAsyncDisposable
             status = "ok",
             service = "tsky-agent-gateway",
             protocol = "tap",
-            version = "1.0"
+            version = TapProtocolVersioning.CurrentText,
+            protocolVersion = TapProtocolVersioning.CurrentText,
+            binding = TapProtocolVersioning.GrpcProfile,
+            bindingVersion = TapProtocolVersioning.GrpcBindingVersion
         }));
 
         app.MapGet("/.well-known/tsky-controller.json", (AgentGatewayRuntime runtime) => Results.Json(runtime.GetControllerDescriptor()));
@@ -393,13 +426,13 @@ internal sealed class AgentGatewayRuntime
         {
             controllerId = _controllerId,
             displayName = Environment.MachineName + " Tsky",
-            tapVersions = new[] { "1.0" },
+            tapVersions = TapProtocolVersioning.SupportedVersions().Select(TapProtocolVersioning.Format).ToArray(),
             bindings = new[]
             {
                 new
                 {
-                    profile = "tap-grpc",
-                    version = "1",
+                    profile = TapProtocolVersioning.GrpcProfile,
+                    version = TapProtocolVersioning.GrpcBindingVersion,
                     endpoint = _primaryEndpoint
                 }
             },
@@ -410,6 +443,17 @@ internal sealed class AgentGatewayRuntime
 
     public EnrolmentResponse CompleteEnrolment(EnrolmentRequest request)
     {
+        if (request.RequestedProtocolVersion is not null
+            && TapProtocolVersioning.SelectHighestCommon([request.RequestedProtocolVersion]) is null)
+        {
+            return new EnrolmentResponse
+            {
+                Error = NewError(
+                    "incompatible_protocol_version",
+                    $"Requested TAP {TapProtocolVersioning.Format(request.RequestedProtocolVersion)} is not supported; supported versions are 1.1 and 1.0.")
+            };
+        }
+
         var enrolRequest = new AgentEnrolmentRequest
         {
             PendingAgentId = request.PendingAgentId,
@@ -451,7 +495,7 @@ internal sealed class AgentGatewayRuntime
             EnrolledAt = Timestamp.FromDateTime(DateTime.UtcNow)
         };
 
-        response.SupportedTapVersions.Add(new ProtocolVersion { Major = 1, Minor = 0 });
+        response.SupportedTapVersions.Add(TapProtocolVersioning.SupportedVersions());
 
         foreach (var binding in result.SupportedBindings)
         {
@@ -477,6 +521,12 @@ internal sealed class AgentGatewayRuntime
         if (string.IsNullOrWhiteSpace(hello.AgentId) || string.IsNullOrWhiteSpace(hello.KeyId))
         {
             error = NewError("invalid_hello", "SessionHello must include agent_id and key_id.");
+            return null;
+        }
+
+        if (hello.AgentNonce.Length < 16)
+        {
+            error = NewError("invalid_nonce", "SessionHello agent_nonce must contain at least 128 bits.");
             return null;
         }
 
@@ -508,29 +558,48 @@ internal sealed class AgentGatewayRuntime
             return null;
         }
 
-        var selectedBinding = hello.SupportedBindings.FirstOrDefault(binding =>
-            string.Equals(binding.Profile, "tap-grpc", StringComparison.OrdinalIgnoreCase));
+        var selectedVersion = TapProtocolVersioning.SelectHighestCommon(hello.SupportedTapVersions);
+        if (selectedVersion is null)
+        {
+            var proposedVersions = hello.SupportedTapVersions.Count == 0
+                ? "none"
+                : string.Join(", ", hello.SupportedTapVersions.Select(TapProtocolVersioning.Format));
+            MarkIncompatible(
+                hello.AgentId,
+                "incompatible_protocol_version",
+                "No compatible TAP semantic protocol version.",
+                $"Expected one of [1.1, 1.0]; agent proposed [{proposedVersions}]");
+            error = NewError("incompatible_protocol_version", "No compatible TAP semantic protocol version was proposed.");
+            return null;
+        }
+
+        var unsupportedRequiredExtension = hello.Extensions.FirstOrDefault(extension =>
+            extension.Required
+            && !(TapProtocolVersioning.SupportsScheduleV1(selectedVersion)
+                && string.Equals(extension.Identifier, "schedule.v1", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(extension.Version, "1", StringComparison.Ordinal)));
+        if (unsupportedRequiredExtension is not null)
+        {
+            MarkIncompatible(
+                hello.AgentId,
+                "incompatible_extension",
+                "A required TAP extension cannot be negotiated.",
+                $"Required extension {unsupportedRequiredExtension.Identifier}:{unsupportedRequiredExtension.Version} is not supported by TAP {TapProtocolVersioning.Format(selectedVersion)}.");
+            error = NewError("incompatible_extension", "A required TAP extension cannot be negotiated.");
+            return null;
+        }
+
+        var selectedBinding = hello.SupportedBindings.FirstOrDefault(TapProtocolVersioning.IsCompatibleBinding);
         if (selectedBinding is null)
         {
-            lock (_sync)
-            {
-                var latestRegistry = _registryService.Load();
-                var live = latestRegistry.Agents.FirstOrDefault(candidate =>
-                    string.Equals(candidate.AgentId, hello.AgentId, StringComparison.OrdinalIgnoreCase));
-                if (live is not null && live.State is not AgentDefinitionState.Disabled and not AgentDefinitionState.Revoked)
-                {
-                    live.State = AgentDefinitionState.Incompatible;
-                    live.LastStateReasonCode = "incompatible_binding";
-                    live.LastStateReasonMessage = "No compatible TAP binding (tap-grpc).";
-                    var proposedProfiles = hello.SupportedBindings.Count == 0
-                        ? "none"
-                        : string.Join(", ",
-                            hello.SupportedBindings.Select(binding => $"{binding.Profile}:{binding.Version}"));
-                    live.ProtocolMismatchDetail = $"Expected tap-grpc:1; agent proposed [{proposedProfiles}]";
-                    live.LastSeenSummary = "No compatible TAP binding (tap-grpc)";
-                    _registryService.Save(latestRegistry);
-                }
-            }
+            var proposedProfiles = hello.SupportedBindings.Count == 0
+                ? "none"
+                : string.Join(", ", hello.SupportedBindings.Select(binding => $"{binding.Profile}:{binding.Version}"));
+            MarkIncompatible(
+                hello.AgentId,
+                "incompatible_binding",
+                "No compatible TAP binding (tap-grpc:1).",
+                $"Expected tap-grpc:1; agent proposed [{proposedProfiles}]");
 
             error = NewError("incompatible_binding", "No compatible TAP binding was proposed.");
             return null;
@@ -542,11 +611,11 @@ internal sealed class AgentGatewayRuntime
             ControllerId = _controllerId,
             SessionId = "ses_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(10)).ToLowerInvariant(),
             ControllerNonce = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
-            SelectedTapVersion = new ProtocolVersion { Major = 1, Minor = 0 },
+            SelectedTapVersion = selectedVersion,
             SelectedBinding = new ProtocolBinding
             {
-                Profile = "tap-grpc",
-                Version = "1",
+                Profile = TapProtocolVersioning.GrpcProfile,
+                Version = TapProtocolVersioning.GrpcBindingVersion,
                 Endpoint = selectedBinding.Endpoint
             },
             IssuedAt = Timestamp.FromDateTime(now),
@@ -558,6 +627,18 @@ internal sealed class AgentGatewayRuntime
     public bool VerifyProof(SessionChallenge challenge, SessionHello hello, SessionProof proof, out TapError? error)
     {
         error = null;
+
+        if (challenge.ExpiresAt is null || challenge.ExpiresAt.ToDateTime() <= DateTime.UtcNow)
+        {
+            error = NewError("challenge_expired", "Session challenge has expired.");
+            return false;
+        }
+
+        if (!string.Equals(proof.SecurityProfile, challenge.SecurityProfile, StringComparison.Ordinal))
+        {
+            error = NewError("security_profile_mismatch", "Session proof security profile does not match the challenge.");
+            return false;
+        }
 
         if (!string.Equals(challenge.SessionId, proof.SessionId, StringComparison.Ordinal)
             || !string.Equals(hello.AgentId, proof.AgentId, StringComparison.Ordinal)
@@ -616,6 +697,7 @@ internal sealed class AgentGatewayRuntime
             }
 
             agent.SessionId = challenge.SessionId;
+            agent.ProtocolVersion = TapProtocolVersioning.Format(challenge.SelectedTapVersion);
             agent.LastSeenAtUtc = DateTime.UtcNow;
             agent.Hostname = NormalizeOrExisting(hello.ImplementationName, agent.Hostname);
             agent.ImplementationName = NormalizeOrExisting(hello.ImplementationName, agent.ImplementationName);
@@ -624,7 +706,16 @@ internal sealed class AgentGatewayRuntime
             agent.LastStateReasonCode = null;
             agent.LastStateReasonMessage = null;
             agent.ProtocolMismatchDetail = null;
-            if (agent.State is not AgentDefinitionState.Revoked and not AgentDefinitionState.Disabled and not AgentDefinitionState.Incompatible)
+            agent.Features.RemoveAll(feature => string.Equals(feature, "schedule.v1", StringComparison.OrdinalIgnoreCase));
+            agent.Extensions.RemoveAll(extension => string.Equals(extension, "schedule.v1", StringComparison.OrdinalIgnoreCase));
+            if (TapProtocolVersioning.SupportsScheduleV1(challenge.SelectedTapVersion)
+                && hello.Extensions.Any(extension =>
+                    string.Equals(extension.Identifier, "schedule.v1", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(extension.Version, "1", StringComparison.Ordinal)))
+            {
+                agent.Extensions.Add("schedule.v1");
+            }
+            if (agent.State is not AgentDefinitionState.Revoked and not AgentDefinitionState.Disabled)
             {
                 agent.State = AgentDefinitionState.Online;
             }
@@ -733,6 +824,53 @@ internal sealed class AgentGatewayRuntime
         {
             AgentId = agentId,
             RunEvent = runEvent
+        });
+    }
+
+    public void ApplyCapabilityReport(string agentId, CapabilityReport report)
+    {
+        lock (_sync)
+        {
+            var registry = _registryService.Load();
+            var agent = registry.Agents.FirstOrDefault(candidate => string.Equals(candidate.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+            if (agent is null) { return; }
+            agent.ImplementationName = report.ImplementationName;
+            agent.ImplementationVersion = report.ImplementationVersion;
+            var scheduleNegotiated = TapProtocolVersioning.SupportsScheduleV1(agent.ProtocolVersion)
+                && agent.Extensions.Contains("schedule.v1", StringComparer.OrdinalIgnoreCase);
+            agent.Features = report.Features
+                .Where(value => scheduleNegotiated || !string.Equals(value, "schedule.v1", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            agent.Extensions = report.Extensions
+                .Select(extension => extension.Identifier)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Where(value => scheduleNegotiated || !string.Equals(value, "schedule.v1", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (scheduleNegotiated && !agent.Extensions.Contains("schedule.v1", StringComparer.OrdinalIgnoreCase))
+            {
+                agent.Extensions.Add("schedule.v1");
+            }
+            agent.AllowedExecutors = report.Executors.Select(executor => executor.ExecutorId).Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var pair in report.Labels) { agent.Labels[pair.Key] = pair.Value; }
+            _registryService.Save(registry);
+        }
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent { AgentId = agentId, CapabilityReport = report });
+    }
+
+    public void ApplyScheduleFrame(string agentId, AgentFrame frame)
+    {
+        _onAgentEvent?.Invoke(new AgentGatewayRuntimeEvent
+        {
+            AgentId = agentId,
+            ScheduleAck = frame.ScheduleAck,
+            ScheduleNack = frame.ScheduleNack,
+            ScheduleStatus = frame.ScheduleStatus,
+            ScheduleOccurrenceEvent = frame.ScheduleOccurrenceEvent,
+            ScheduleSyncResponse = frame.ScheduleSyncResponse
         });
     }
 
@@ -900,9 +1038,9 @@ internal sealed class AgentGatewayRuntime
         }
     }
 
-    public void AttachSession(string agentId, string sessionId, IServerStreamWriter<ControllerFrame> responseStream)
+    public void AttachSession(string agentId, string sessionId, ProtocolVersion selectedVersion, bool scheduleV1Negotiated, IServerStreamWriter<ControllerFrame> responseStream)
     {
-        var connection = new AgentSessionConnection(agentId, sessionId, responseStream);
+        var connection = new AgentSessionConnection(agentId, sessionId, selectedVersion, scheduleV1Negotiated, responseStream);
         _sessions.AddOrUpdate(agentId, connection, (_, existing) =>
         {
             existing.Dispose();
@@ -937,6 +1075,32 @@ internal sealed class AgentGatewayRuntime
             Header = CreateControlHeader(cancelRun.RunId),
             CancelRun = cancelRun
         };
+        return TrySend(agentId, frame, out reason);
+    }
+
+    public bool TrySendScheduleUpsert(string agentId, ScheduleUpsert upsert, out string reason)
+    {
+        return TrySendSchedule(agentId, new ControllerFrame { Header = CreateControlHeader(upsert.Identity?.ScheduleId ?? string.Empty), ScheduleUpsert = upsert }, out reason);
+    }
+
+    public bool TrySendScheduleDelete(string agentId, ScheduleDelete delete, out string reason)
+    {
+        return TrySendSchedule(agentId, new ControllerFrame { Header = CreateControlHeader(delete.ScheduleId), ScheduleDelete = delete }, out reason);
+    }
+
+    public bool TrySendScheduleSyncRequest(string agentId, ScheduleSyncRequest request, out string reason)
+    {
+        return TrySendSchedule(agentId, new ControllerFrame { Header = CreateControlHeader(request.SyncId), ScheduleSyncRequest = request }, out reason);
+    }
+
+    private bool TrySendSchedule(string agentId, ControllerFrame frame, out string reason)
+    {
+        if (!_sessions.TryGetValue(agentId, out var connection) || !connection.ScheduleV1Negotiated)
+        {
+            reason = "Agent session has not negotiated schedule.v1 over TAP 1.1.";
+            return false;
+        }
+
         return TrySend(agentId, frame, out reason);
     }
 
@@ -1031,6 +1195,8 @@ internal sealed class AgentGatewayRuntime
     {
         try
         {
+            frame.Header ??= CreateControlHeader(string.Empty);
+            frame.Header.Version = connection.SelectedVersion.Clone();
             connection.SendAsync(frame, sendTimeoutMilliseconds).GetAwaiter().GetResult();
             reason = string.Empty;
             return true;
@@ -1052,7 +1218,7 @@ internal sealed class AgentGatewayRuntime
         return new FrameHeader
         {
             Protocol = "tap",
-            Version = new ProtocolVersion { Major = 1, Minor = 0 },
+            Version = TapProtocolVersioning.Current(),
             MessageId = "ctl_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(10)).ToLowerInvariant(),
             SentAt = Timestamp.FromDateTime(DateTime.UtcNow),
             CorrelationId = correlationId
@@ -1065,16 +1231,22 @@ internal sealed class AgentGatewayRuntime
         private bool _disposed;
         private bool _faulted;
 
-        public AgentSessionConnection(string agentId, string sessionId, IServerStreamWriter<ControllerFrame> responseStream)
+        public AgentSessionConnection(string agentId, string sessionId, ProtocolVersion selectedVersion, bool scheduleV1Negotiated, IServerStreamWriter<ControllerFrame> responseStream)
         {
             AgentId = agentId;
             SessionId = sessionId;
+            SelectedVersion = selectedVersion.Clone();
+            ScheduleV1Negotiated = scheduleV1Negotiated;
             ResponseStream = responseStream;
         }
 
         public string AgentId { get; }
 
         public string SessionId { get; }
+
+        public ProtocolVersion SelectedVersion { get; }
+
+        public bool ScheduleV1Negotiated { get; }
 
         public IServerStreamWriter<ControllerFrame> ResponseStream { get; }
 
@@ -1148,6 +1320,27 @@ internal sealed class AgentGatewayRuntime
         return string.IsNullOrWhiteSpace(incoming) ? existing : incoming.Trim();
     }
 
+    private void MarkIncompatible(string agentId, string code, string message, string detail)
+    {
+        lock (_sync)
+        {
+            var registry = _registryService.Load();
+            var agent = registry.Agents.FirstOrDefault(candidate =>
+                string.Equals(candidate.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+            if (agent is null || agent.State is AgentDefinitionState.Disabled or AgentDefinitionState.Revoked)
+            {
+                return;
+            }
+
+            agent.State = AgentDefinitionState.Incompatible;
+            agent.LastStateReasonCode = code;
+            agent.LastStateReasonMessage = message;
+            agent.ProtocolMismatchDetail = detail;
+            agent.LastSeenSummary = message;
+            _registryService.Save(registry);
+        }
+    }
+
     private static TapError NewError(string code, string message)
     {
         return new TapError
@@ -1197,6 +1390,10 @@ internal sealed class AgentGatewayRuntime
         transcript.Append("controller_nonce=").Append(Base64UrlEncode(challenge.ControllerNonce.ToByteArray())).Append('\n');
         transcript.Append("tap_version=").Append(challenge.SelectedTapVersion.Major).Append('.').Append(challenge.SelectedTapVersion.Minor).Append('\n');
         transcript.Append("binding=").Append(challenge.SelectedBinding.Profile).Append('\n');
+        if (TapProtocolVersioning.IsTap11OrLater(challenge.SelectedTapVersion))
+        {
+            transcript.Append("binding_version=").Append(challenge.SelectedBinding.Version).Append('\n');
+        }
         transcript.Append("issued_at=").Append(issuedAt).Append('\n');
         return Encoding.UTF8.GetBytes(transcript.ToString());
     }
@@ -1252,6 +1449,22 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
             return;
         }
 
+        if (helloFrame.Header is null
+            || !string.Equals(helloFrame.Header.Protocol, "tap", StringComparison.Ordinal)
+            || helloFrame.Header.Version is null
+            || !hello.SupportedTapVersions.Any(version => TapProtocolVersioning.Matches(version, helloFrame.Header.Version)))
+        {
+            await responseStream.WriteAsync(new ControllerFrame
+            {
+                Header = NewHeader(hello.AgentId),
+                SessionRejected = new SessionRejected
+                {
+                    Error = new TapError { Code = "invalid_frame_header", Message = "SessionHello frame header must identify TAP and use an advertised semantic version.", Retryable = false }
+                }
+            });
+            return;
+        }
+
         var challenge = _runtime.BuildChallenge(hello, out var challengeError);
         if (challenge is null)
         {
@@ -1265,7 +1478,7 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
 
         await responseStream.WriteAsync(new ControllerFrame
         {
-            Header = NewHeader(hello.AgentId),
+            Header = NewHeader(hello.AgentId, challenge.SelectedTapVersion),
             SessionChallenge = challenge
         });
 
@@ -1280,7 +1493,7 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
         {
             await responseStream.WriteAsync(new ControllerFrame
             {
-                Header = NewHeader(challenge.SessionId),
+                Header = NewHeader(challenge.SessionId, challenge.SelectedTapVersion),
                 SessionRejected = new SessionRejected
                 {
                     Error = new TapError
@@ -1294,11 +1507,24 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
             return;
         }
 
+        if (!TapProtocolVersioning.IsFrameHeaderValid(requestStream.Current.Header, challenge.SelectedTapVersion))
+        {
+            await responseStream.WriteAsync(new ControllerFrame
+            {
+                Header = NewHeader(challenge.SessionId, challenge.SelectedTapVersion),
+                SessionRejected = new SessionRejected
+                {
+                    Error = new TapError { Code = "invalid_frame_header", Message = "SessionProof frame header must match the negotiated TAP version.", Retryable = false }
+                }
+            });
+            return;
+        }
+
         if (!_runtime.VerifyProof(challenge, hello, proof, out var proofError))
         {
             await responseStream.WriteAsync(new ControllerFrame
             {
-                Header = NewHeader(challenge.SessionId),
+                Header = NewHeader(challenge.SessionId, challenge.SelectedTapVersion),
                 SessionRejected = new SessionRejected { Error = proofError ?? new TapError { Code = "auth_failed", Message = "Authentication failed." } }
             });
             return;
@@ -1306,32 +1532,54 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
 
         _runtime.MarkSessionAccepted(hello, challenge);
 
+        var accepted = new SessionAccepted
+        {
+            SessionId = challenge.SessionId,
+            SelectedTapVersion = challenge.SelectedTapVersion.Clone(),
+            SelectedBinding = challenge.SelectedBinding.Clone(),
+            Policy = new SessionPolicy
+            {
+                MaximumControlMessageBytes = 1024 * 1024,
+                MaximumOutputChunkBytes = 1024 * 1024,
+                HeartbeatIntervalSeconds = 10,
+                SuspectAfterSeconds = 20,
+                OfflineAfterSeconds = 35,
+                MaximumConcurrentRuns = 16
+            }
+        };
+
+        var scheduleNegotiated = false;
+        if (TapProtocolVersioning.SupportsScheduleV1(challenge.SelectedTapVersion))
+        {
+            var scheduleExtension = hello.Extensions.FirstOrDefault(extension =>
+                string.Equals(extension.Identifier, "schedule.v1", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(extension.Version, "1", StringComparison.Ordinal));
+            if (scheduleExtension is not null)
+            {
+                accepted.NegotiatedExtensions.Add(scheduleExtension.Clone());
+                scheduleNegotiated = true;
+            }
+        }
+
         await responseStream.WriteAsync(new ControllerFrame
         {
-            Header = NewHeader(challenge.SessionId),
-            SessionAccepted = new SessionAccepted
-            {
-                SessionId = challenge.SessionId,
-                SelectedTapVersion = new ProtocolVersion { Major = 1, Minor = 0 },
-                SelectedBinding = new ProtocolBinding { Profile = "tap-grpc", Version = "1", Endpoint = challenge.SelectedBinding.Endpoint },
-                Policy = new SessionPolicy
-                {
-                    MaximumControlMessageBytes = 1024 * 1024,
-                    MaximumOutputChunkBytes = 1024 * 1024,
-                    HeartbeatIntervalSeconds = 10,
-                    SuspectAfterSeconds = 20,
-                    OfflineAfterSeconds = 35,
-                    MaximumConcurrentRuns = 16
-                }
-            }
+            Header = NewHeader(challenge.SessionId, challenge.SelectedTapVersion),
+            SessionAccepted = accepted
         });
 
-        _runtime.AttachSession(hello.AgentId, challenge.SessionId, responseStream);
+        _runtime.AttachSession(hello.AgentId, challenge.SessionId, challenge.SelectedTapVersion, scheduleNegotiated, responseStream);
 
         try
         {
             await foreach (var frame in requestStream.ReadAllAsync(context.CancellationToken))
             {
+                if (!TapProtocolVersioning.IsFrameHeaderValid(frame.Header, challenge.SelectedTapVersion))
+                {
+                    throw new RpcException(new Status(
+                        StatusCode.InvalidArgument,
+                        $"Frame TAP version must match negotiated version {TapProtocolVersioning.Format(challenge.SelectedTapVersion)}."));
+                }
+
                 if (frame.AgentSnapshot is not null)
                 {
                     _runtime.ApplySnapshot(hello.AgentId, frame.AgentSnapshot);
@@ -1399,8 +1647,16 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
 
                 if (frame.CapabilityReport is not null)
                 {
+					_runtime.ApplyCapabilityReport(hello.AgentId, frame.CapabilityReport);
                     continue;
                 }
+
+				if (scheduleNegotiated
+					&& (frame.ScheduleAck is not null || frame.ScheduleNack is not null || frame.ScheduleStatus is not null || frame.ScheduleOccurrenceEvent is not null || frame.ScheduleSyncResponse is not null))
+				{
+					_runtime.ApplyScheduleFrame(hello.AgentId, frame);
+					continue;
+				}
             }
         }
         finally
@@ -1410,12 +1666,12 @@ internal sealed class AgentControlGrpcService : AgentControl.AgentControlBase
         }
     }
 
-    private static FrameHeader NewHeader(string correlationId)
+    private static FrameHeader NewHeader(string correlationId, ProtocolVersion? selectedVersion = null)
     {
         return new FrameHeader
         {
             Protocol = "tap",
-            Version = new ProtocolVersion { Major = 1, Minor = 0 },
+            Version = selectedVersion?.Clone() ?? TapProtocolVersioning.Current(),
             MessageId = "msg_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant(),
             SentAt = Timestamp.FromDateTime(DateTime.UtcNow),
             CorrelationId = correlationId

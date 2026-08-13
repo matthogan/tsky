@@ -159,6 +159,169 @@ public sealed class RemoteControlPlaneService
         return _gatewayHost.RequestReconciliationFromAll();
     }
 
+    public RemoteSchedulePublishReceipt TryPublishSchedule(ScheduledItem item, string desktopInstanceId)
+    {
+        if (!item.IsAgentOwned) { return new RemoteSchedulePublishReceipt { Message = "Schedule uses desktop-local execution." }; }
+        if (!string.IsNullOrWhiteSpace(item.PendingPreviousAgentId)) { return new RemoteSchedulePublishReceipt { Message = $"Waiting for agent '{item.PendingPreviousAgentId}' to acknowledge removal before publishing the new target." }; }
+        if (!_gatewayHost.IsRunning) { return new RemoteSchedulePublishReceipt { Message = "Gateway is not running." }; }
+
+        var selection = BuildScheduleTargetSelection(item);
+        var target = ResolveScheduleTargetAgent(_registryService.Load(), selection, item.TaskSnapshot ?? item.ChainSnapshot.FirstOrDefault() ?? new LauncherTask());
+        if (target is null) { return new RemoteSchedulePublishReceipt { Message = BuildUnavailableMessage(selection) }; }
+        if (!SupportsScheduleV1(target)) { return new RemoteSchedulePublishReceipt { AgentId = target.AgentId, Message = "Selected agent does not advertise schedule.v1; desktop scheduling remains available as fallback." }; }
+
+        if (!TryBuildScheduleRunPlan(item, out var plan, out var error)) { return new RemoteSchedulePublishReceipt { AgentId = target.AgentId, Message = error }; }
+        var revision = Math.Max(1UL, item.Revision);
+        var upsert = new ScheduleUpsert
+        {
+            Identity = new ScheduleIdentity { ScheduleId = item.Id, Revision = revision, SourceDesktopInstanceId = desktopInstanceId },
+            IdempotencyKey = $"{desktopInstanceId}:{item.Id}:{revision}",
+            Spec = new ScheduleSpec
+            {
+                ScheduleId = item.Id,
+                DisplayName = item.DisplayName,
+                Enabled = item.IsEnabled,
+                TriggerType = item.IsRecurring ? ScheduleTriggerType.Recurring : ScheduleTriggerType.OneShot,
+                TriggerAtUtc = Timestamp.FromDateTime(DateTime.SpecifyKind(item.TriggerAtUtc, DateTimeKind.Utc)),
+                RecurrenceRule = item.IsRecurring ? item.RecurrenceExpression ?? string.Empty : string.Empty,
+                TriggerWindowSeconds = (uint)Math.Max(1, item.TriggerWindowSeconds),
+                TargetAgentId = target.AgentId,
+                TargetPoolId = item.TargetPoolId ?? string.Empty,
+                PayloadRunPlanSnapshot = plan,
+                MisfirePolicy = ScheduleMisfirePolicy.FireOnceWithinWindow,
+                OverlapPolicy = ScheduleOverlapPolicy.SkipIfRunning,
+                MaxCatchUpOccurrences = 1,
+                CreatedAtUtc = Timestamp.FromDateTime(DateTime.SpecifyKind(item.CreatedAtUtc, DateTimeKind.Utc)),
+                UpdatedAtUtc = Timestamp.FromDateTime(DateTime.SpecifyKind(item.UpdatedAtUtc, DateTimeKind.Utc))
+            }
+        };
+        if (item.AcceptedRevision > 0) { upsert.ExpectedPreviousRevision = item.AcceptedRevision; }
+        if (!_gatewayHost.TrySendScheduleUpsert(target.AgentId, upsert, out var reason)) { return new RemoteSchedulePublishReceipt { AgentId = target.AgentId, Message = reason }; }
+        return new RemoteSchedulePublishReceipt { Sent = true, AgentId = target.AgentId, Message = $"Schedule revision {revision} published to {target.EffectiveDisplayName}." };
+    }
+
+    public RemoteSchedulePublishReceipt TryDeleteSchedule(ScheduledItem item)
+    {
+        var agentId = item.PublishedAgentId ?? item.TargetAgentId;
+        if (string.IsNullOrWhiteSpace(agentId)) { return new RemoteSchedulePublishReceipt { Message = "Schedule has no deployed agent." }; }
+        var revision = Math.Max(1UL, item.Revision + 1);
+        var request = new ScheduleDelete { ScheduleId = item.Id, Revision = revision, IdempotencyKey = $"delete:{item.Id}:{revision}" };
+        return _gatewayHost.TrySendScheduleDelete(agentId, request, out var reason)
+            ? new RemoteSchedulePublishReceipt { Sent = true, AgentId = agentId, Message = "Schedule deletion sent." }
+            : new RemoteSchedulePublishReceipt { AgentId = agentId, Message = reason };
+    }
+
+	public RemoteSchedulePublishReceipt TryDeleteSchedule(DesktopScheduleTombstone tombstone)
+	{
+		var request = new ScheduleDelete { ScheduleId = tombstone.ScheduleId, Revision = tombstone.Revision, IdempotencyKey = $"delete:{tombstone.ScheduleId}:{tombstone.Revision}" };
+		return _gatewayHost.TrySendScheduleDelete(tombstone.AgentId, request, out var reason)
+			? new RemoteSchedulePublishReceipt { Sent = true, AgentId = tombstone.AgentId, Message = "Schedule deletion sent." }
+			: new RemoteSchedulePublishReceipt { AgentId = tombstone.AgentId, Message = reason };
+	}
+
+    public bool TryRequestScheduleSync(string agentId, SchedulerConfiguration configuration, out string reason)
+    {
+        var request = new ScheduleSyncRequest { SyncId = "schedule_sync_" + Guid.NewGuid().ToString("N") };
+		var acknowledged = configuration.AgentOccurrenceCursors.TryGetValue(agentId, out var cursor) ? cursor : 0UL;
+        foreach (var item in configuration.Items.Where(item => item.IsAgentOwned && (string.Equals(item.PublishedAgentId, agentId, StringComparison.OrdinalIgnoreCase) || string.Equals(item.TargetAgentId, agentId, StringComparison.OrdinalIgnoreCase))))
+        {
+            request.KnownRevisions[item.Id] = item.Revision;
+            acknowledged = Math.Max(acknowledged, item.LastAcknowledgedOccurrenceSequence);
+        }
+        request.AcknowledgedOccurrenceSequence = acknowledged;
+        return _gatewayHost.TrySendScheduleSyncRequest(agentId, request, out reason);
+    }
+
+    internal static bool SupportsScheduleV1(AgentDefinition agent) =>
+        TapProtocolVersioning.SupportsScheduleV1(agent.ProtocolVersion)
+        && (agent.Features.Contains("schedule.v1", StringComparer.OrdinalIgnoreCase)
+            || agent.Extensions.Contains("schedule.v1", StringComparer.OrdinalIgnoreCase));
+
+    internal static bool ShouldDesktopEvaluateSchedule(ScheduledItem item, AgentRegistry registry)
+    {
+        if (!string.IsNullOrWhiteSpace(item.PendingPreviousAgentId))
+        {
+            return false;
+        }
+
+        if (!item.IsAgentOwned || item.AcceptedRevision < item.Revision)
+        {
+            return true;
+        }
+
+        var agentId = item.PublishedAgentId ?? item.TargetAgentId;
+        var agent = registry.Agents.FirstOrDefault(candidate =>
+            string.Equals(candidate.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+        return agent is null || !SupportsScheduleV1(agent);
+    }
+
+	private static AgentDefinition? ResolveScheduleTargetAgent(AgentRegistry registry, ExecutionTargetSelection selection, LauncherTask task)
+	{
+		if (selection.Mode == ExecutionTargetMode.SpecificAgent) { return ResolveTargetAgent(registry, selection, task); }
+		var capable = registry.Agents
+			.Where(agent => agent.State is AgentDefinitionState.Online or AgentDefinitionState.Busy)
+			.Where(agent => !agent.IsDraining && SupportsScheduleV1(agent));
+		if (selection.Mode == ExecutionTargetMode.AgentPool)
+		{
+			capable = capable.Where(agent => agent.Labels.TryGetValue("pool", out var pool) && string.Equals(pool, selection.PoolId?.Trim(), StringComparison.OrdinalIgnoreCase));
+		}
+		return capable.OrderBy(agent => agent.ActiveRuns).ThenBy(agent => agent.EffectiveDisplayName, StringComparer.OrdinalIgnoreCase).FirstOrDefault()
+			?? ResolveTargetAgent(registry, selection, task);
+	}
+
+    private static ExecutionTargetSelection BuildScheduleTargetSelection(ScheduledItem item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.PublishedAgentId)) { return new ExecutionTargetSelection { Mode = ExecutionTargetMode.SpecificAgent, AgentId = item.PublishedAgentId }; }
+        return item.ExecutionTargetMode switch
+        {
+            "agent" => new ExecutionTargetSelection { Mode = ExecutionTargetMode.SpecificAgent, AgentId = item.TargetAgentId },
+            "pool" => new ExecutionTargetSelection { Mode = ExecutionTargetMode.AgentPool, PoolId = item.TargetPoolId },
+            "auto" => new ExecutionTargetSelection { Mode = ExecutionTargetMode.Automatic },
+            _ => ExecutionTargetSelection.LocalOnly()
+        };
+    }
+
+    internal static bool TryBuildScheduleRunPlan(ScheduledItem item, out RunPlan plan, out string error)
+    {
+        plan = new RunPlan
+        {
+            SchemaVersion = 1,
+            Source = new RunSource { Kind = item.TargetKind == ScheduledTargetKind.TaskSnapshot ? "task" : "chain", SourceId = item.Id, Revision = item.Revision },
+            Policy = new RunPolicy { DisconnectPolicy = DisconnectPolicy.ContinueAndReport, AllowShellExecutors = true, MaximumOutputBytesPerStream = 1024 * 1024 }
+        };
+        error = string.Empty;
+        var tasks = item.TargetKind == ScheduledTargetKind.TaskSnapshot
+            ? (item.TaskSnapshot is null ? [] : new List<LauncherTask> { item.TaskSnapshot })
+            : item.ChainSnapshot;
+        if (tasks.Count == 0) { error = "Schedule snapshot contains no tasks."; return false; }
+        string? previousStepId = null;
+        for (var taskIndex = 0; taskIndex < tasks.Count; taskIndex++)
+        {
+            var task = tasks[taskIndex];
+            var parameters = new Struct();
+            if (!TryBuildProcessV1Parameters(task, parameters, out error)) { return false; }
+            var stepId = $"step_{taskIndex + 1:D4}";
+            var step = new RunStep
+            {
+                StepId = stepId,
+                SourceTaskId = TaskIdentity.BuildKey(task),
+                DisplayName = task.Name,
+                Timeout = Duration.FromTimeSpan(TimeSpan.FromSeconds(Math.Max(60, task.TimeoutSeconds))),
+                ContinueOnError = task.IgnoreExitCode,
+                Command = new ExecutorCommand { ExecutorId = "process.v1", ExecutorVersion = "1", Parameters = parameters }
+            };
+            if (previousStepId is not null) { step.DependsOnStepIds.Add(previousStepId); }
+            foreach (var pair in task.Inputs) { step.Inputs[pair.Key] = new PortValue { StringValue = pair.Value ?? string.Empty }; }
+            foreach (var pair in task.Outputs) { step.DeclaredOutputs.Add(new DeclaredOutput { OutputId = pair.Key, Name = pair.Key, Kind = "port", MediaType = "text/plain" }); }
+            plan.Steps.Add(step);
+            previousStepId = stepId;
+        }
+        var maximumSeconds = tasks.Sum(task => Math.Max(60, task.TimeoutSeconds));
+        plan.Policy.MaximumDuration = Duration.FromTimeSpan(TimeSpan.FromSeconds(maximumSeconds));
+        plan.Policy.MaximumOutputBytesPerStream = (ulong)Math.Max(1024, tasks.Max(task => task.MaxCapturedOutputChars));
+        return true;
+    }
+
     private static AgentDefinition? ResolveTargetAgent(AgentRegistry registry, ExecutionTargetSelection selection, LauncherTask task)
     {
         var eligible = registry.Agents

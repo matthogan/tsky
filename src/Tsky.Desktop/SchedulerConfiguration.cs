@@ -12,13 +12,27 @@ public enum ScheduledTargetKind
 
 public sealed class SchedulerConfiguration
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 3;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
     public int PollIntervalSeconds { get; set; } = SchedulerTimingService.DefaultPollIntervalSeconds;
 
+    public string DesktopInstanceId { get; set; } = "desktop_" + Guid.NewGuid().ToString("N");
+
+
+    public Dictionary<string, ulong> AgentOccurrenceCursors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public List<ScheduledItem> Items { get; set; } = [];
+
+    public List<DesktopScheduleTombstone> DeletedSchedules { get; set; } = [];
+}
+
+public sealed class DesktopScheduleTombstone
+{
+    public string ScheduleId { get; set; } = string.Empty;
+    public ulong Revision { get; set; }
+    public string AgentId { get; set; } = string.Empty;
 }
 
 public sealed class ScheduledItem
@@ -44,6 +58,31 @@ public sealed class ScheduledItem
     public bool IsRunning { get; set; }
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public ulong Revision { get; set; } = 1;
+
+    public string ExecutionTargetMode { get; set; } = "local";
+
+    public string? TargetAgentId { get; set; }
+
+    public string? TargetPoolId { get; set; }
+
+    public string? PublishedAgentId { get; set; }
+
+    public string? PendingPreviousAgentId { get; set; }
+
+    public ulong AcceptedRevision { get; set; }
+
+    public string? RemoteDeploymentState { get; set; }
+
+    public string? RemoteDeploymentMessage { get; set; }
+
+    public ulong LastAcknowledgedOccurrenceSequence { get; set; }
+
+    [JsonIgnore]
+    public bool IsAgentOwned => !string.Equals(ExecutionTargetMode, "local", StringComparison.OrdinalIgnoreCase);
 
     public DateTime? LastTriggeredAtUtc { get; set; }
 
@@ -96,7 +135,18 @@ public static class SchedulerConfigurationStore
         configuration ??= new SchedulerConfiguration();
         configuration.SchemaVersion = SchedulerConfiguration.CurrentSchemaVersion;
         configuration.PollIntervalSeconds = SchedulerTimingService.NormalizePollIntervalSeconds(configuration.PollIntervalSeconds);
+		configuration.DesktopInstanceId = string.IsNullOrWhiteSpace(configuration.DesktopInstanceId)
+			? "desktop_" + Guid.NewGuid().ToString("N")
+			: configuration.DesktopInstanceId.Trim();
         configuration.Items ??= [];
+        configuration.DeletedSchedules ??= [];
+		configuration.AgentOccurrenceCursors ??= new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+		configuration.AgentOccurrenceCursors = new Dictionary<string, ulong>(configuration.AgentOccurrenceCursors, StringComparer.OrdinalIgnoreCase);
+		configuration.DeletedSchedules = configuration.DeletedSchedules
+			.Where(item => !string.IsNullOrWhiteSpace(item.ScheduleId) && item.Revision > 0 && !string.IsNullOrWhiteSpace(item.AgentId))
+			.GroupBy(item => item.ScheduleId, StringComparer.OrdinalIgnoreCase)
+			.Select(group => group.OrderByDescending(item => item.Revision).First())
+			.ToList();
 
         foreach (var item in configuration.Items)
         {
@@ -108,6 +158,12 @@ public static class SchedulerConfigurationStore
                 : item.DisplayName.Trim();
             item.GroupName = TaskIdentity.NormalizeGroupName(item.GroupName);
             item.TriggerWindowSeconds = SchedulerTimingService.NormalizeTriggerWindowSeconds(item.TriggerWindowSeconds);
+			item.Revision = Math.Max(1UL, item.Revision);
+			item.ExecutionTargetMode = SchedulerSnapshotFactory.NormalizeTargetMode(item.ExecutionTargetMode);
+			item.TargetAgentId = string.IsNullOrWhiteSpace(item.TargetAgentId) ? null : item.TargetAgentId.Trim();
+			item.TargetPoolId = string.IsNullOrWhiteSpace(item.TargetPoolId) ? null : item.TargetPoolId.Trim();
+			item.PublishedAgentId = string.IsNullOrWhiteSpace(item.PublishedAgentId) ? null : item.PublishedAgentId.Trim();
+			item.PendingPreviousAgentId = string.IsNullOrWhiteSpace(item.PendingPreviousAgentId) ? null : item.PendingPreviousAgentId.Trim();
             item.ChainSnapshot ??= [];
 
             if (item.TaskSnapshot is not null)
@@ -127,7 +183,10 @@ public static class SchedulerConfigurationStore
                 item.RecurrenceExpression = null;
             }
 
-            item.NextRunAtUtc = SchedulerTimingService.TryResolveNextRunUtc(item, DateTime.UtcNow);
+			if (!item.IsAgentOwned)
+			{
+				item.NextRunAtUtc = SchedulerTimingService.TryResolveNextRunUtc(item, DateTime.UtcNow);
+			}
         }
 
         return configuration;
@@ -148,6 +207,9 @@ public static class SchedulerSnapshotFactory
             TriggerAtUtc = triggerAtUtc,
             TriggerWindowSeconds = 60,
             SourceTaskName = snapshot.Name,
+			ExecutionTargetMode = NormalizeTargetMode(sourceTask.ExecutionTargetMode),
+			TargetAgentId = sourceTask.TargetAgentId,
+			TargetPoolId = sourceTask.TargetPoolId,
             TaskSnapshot = snapshot
         };
     }
@@ -158,6 +220,10 @@ public static class SchedulerSnapshotFactory
         var snapshots = sourceTasks
             .Select(CloneAsLocalSnapshot)
             .ToList();
+		var targetModes = sourceTasks.Select(task => NormalizeTargetMode(task.ExecutionTargetMode)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		var targetMode = targetModes.Count == 1 ? targetModes[0] : "local";
+		var targetAgentIds = sourceTasks.Select(task => task.TargetAgentId?.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		var targetPoolIds = sourceTasks.Select(task => task.TargetPoolId?.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         return new ScheduledItem
         {
@@ -166,6 +232,9 @@ public static class SchedulerSnapshotFactory
             TargetKind = ScheduledTargetKind.GroupChainSnapshot,
             TriggerAtUtc = triggerAtUtc,
             TriggerWindowSeconds = 60,
+			ExecutionTargetMode = targetMode,
+			TargetAgentId = targetAgentIds.Count == 1 ? targetAgentIds[0] : null,
+			TargetPoolId = targetPoolIds.Count == 1 ? targetPoolIds[0] : null,
             ChainSnapshot = snapshots
         };
     }
@@ -221,4 +290,15 @@ public static class SchedulerSnapshotFactory
 
         return clone;
     }
+
+	internal static string NormalizeTargetMode(string? value)
+	{
+		return (value ?? "local").Trim().ToLowerInvariant() switch
+		{
+			"agent" => "agent",
+			"pool" => "pool",
+			"auto" => "auto",
+			_ => "local"
+		};
+	}
 }

@@ -43,7 +43,7 @@ func Enrol(ctx context.Context, opts Options) (*agentv1.EnrolmentResponse, error
 	}
 	host, _ := os.Hostname()
 	req := &agentv1.EnrolmentRequest{
-		RequestedProtocolVersion: &agentv1.ProtocolVersion{Major: 1, Minor: 0},
+		RequestedProtocolVersion: tapproto.CurrentVersion(),
 		PendingAgentId:           opts.PendingAgent,
 		EnrolmentToken:           opts.Token,
 		ControllerId:             opts.ControllerID,
@@ -89,6 +89,19 @@ func Enrol(ctx context.Context, opts Options) (*agentv1.EnrolmentResponse, error
 	}
 	if out.Error != nil && out.Error.Code != "" {
 		return &out, fmt.Errorf("enrolment rejected: %s: %s", out.Error.Code, out.Error.Message)
+	}
+	if tapproto.SelectHighestCommon(out.SupportedTapVersions) == nil {
+		return &out, fmt.Errorf("controller enrolment response has no compatible TAP semantic protocol version")
+	}
+	compatibleBinding := false
+	for _, binding := range out.SupportedBindings {
+		if tapproto.IsSupportedBinding(binding) {
+			compatibleBinding = true
+			break
+		}
+	}
+	if !compatibleBinding {
+		return &out, fmt.Errorf("controller enrolment response has no compatible TAP binding")
 	}
 	return &out, nil
 }

@@ -1,11 +1,12 @@
 # Scheduler Feature Spec and Implementation Plan
 
-_Last updated: 2026-07-27_
+_Last updated: 2026-08-13_
 
 ## 0. Completion Snapshot
 - Overall status: **Complete** for the scoped Scheduler feature.
 - Runtime poller and due-window execution: **Complete**.
 - Scheduler authoring (create/edit, one-shot/repeat): **Complete**.
+- Scheduler execution-target authoring and publication readiness/status: **Complete**.
 - Scheduler run history and Scheduler-history UI details: **Complete**.
 - Test coverage status:
   - **Complete**: snapshot normalization, timing/recurrence helpers, sequencing + dedup integration harness.
@@ -23,7 +24,7 @@ Key constraints:
 - Execution uses a trigger window (for example, a scheduled `2026-07-27 12:02` should still run if polled up to 1 minute late). **Complete**
 - Polling and execution orchestration run on asynchronous background threads. **Complete**
 - Scheduler view appears in the left panel (below Agents), and has scheduler-specific cards. **Complete**
-- Tasks cannot be scheduled on agents in this phase (snapshots are normalized to local execution target mode). **Complete**
+- Snapshot task payloads remain normalized, while scheduler schema v3 stores the effective target policy and safe-retarget handoff separately and publishes it through `schedule.v1` when supported. **Upgraded**
 
 ## 2. Implemented Features
 Status: **Complete**.
@@ -54,7 +55,9 @@ Status: **Complete**.
   - local date/time,
   - recurrence minutes,
   - run-window seconds,
-  - enabled state.
+  - enabled state,
+  - Local, Automatic, named-agent, or discovered-pool execution target,
+  - target validity and current `schedule.v1` publication/fallback status.
 
 ## 3. Persistence Model
 Status: **Complete**.
@@ -65,7 +68,10 @@ Scheduler config file:
 - Fields:
   - `schemaVersion`
   - `pollIntervalSeconds`
+  - `desktopInstanceId`
+  - `agentOccurrenceCursors{}`
   - `items[]`
+  - `deletedSchedules[]`
 
 Scheduled item (`ScheduledItem`) fields:
 - `id`
@@ -79,6 +85,12 @@ Scheduled item (`ScheduledItem`) fields:
 - `isEnabled`
 - `isRunning`
 - `createdAtUtc`
+- `updatedAtUtc`
+- `revision`
+- `executionTargetMode`, `targetAgentId`, `targetPoolId`
+- `publishedAgentId`, `pendingPreviousAgentId`, `acceptedRevision`
+- `remoteDeploymentState`, `remoteDeploymentMessage`
+- `lastAcknowledgedOccurrenceSequence`
 - `lastTriggeredAtUtc`
 - `lastCompletedAtUtc`
 - `lastOccurrenceToken`
@@ -100,11 +112,12 @@ Scheduler run history file:
   - message,
   - snapshot task count.
 
-Snapshot normalization rule:
-- Scheduled snapshots are persisted as local execution mode only:
+Snapshot and execution-policy rule:
+- Embedded task snapshots remain normalized to avoid coupling a payload to mutable task targeting fields:
   - `executionTargetMode = local`
   - `targetAgentId = null`
   - `targetPoolId = null`
+- The scheduled item stores the effective target separately. Upgraded agents receive a durable immutable `RunPlan`; legacy agents use the desktop poller and ordinary remote dispatch.
 
 ## 4. Polling and Trigger Semantics
 Status: **Complete**.
@@ -112,6 +125,7 @@ Status: **Complete**.
 - Dedicated scheduler polling loop starts during desktop startup and stops on shutdown.
 - Poll interval is normalized to `[10s, 59s]` (default `30s`).
 - Each poll evaluates due items using trigger-window tolerance.
+- The desktop poller skips definitions acknowledged by a `schedule.v1` agent; those definitions continue from the agent runtime while desktop is disconnected.
 - One-shot items:
   - execute once when due,
   - record run state,
@@ -168,7 +182,9 @@ Status: **Complete**.
 - choose one-shot vs repeat,
 - configure local date/time,
 - configure recurrence and run-window,
-- enable/disable scheduled item.
+- enable/disable scheduled item,
+- choose and validate Local, Automatic, named-agent, or pool execution,
+- show publication readiness and persisted deployment status.
 
 2. [x] Add scheduler runtime state fields:
 - `lastTriggeredAtUtc`,
@@ -190,6 +206,7 @@ Status: **Complete**.
 - [x] recurrence occurrence calculations,
 - [x] dedup behavior across polls,
 - [x] scheduler card/view mode command gating regressions.
+- [x] execution-target catalog, WPF selector, invalid-target, and safe-retarget fallback regressions.
 
 ## 8. Risks and Mitigations
 Status: **Tracked and mitigated for current scope**.
@@ -220,4 +237,4 @@ Status: **Mitigated**.
 Overall acceptance status: **Met**.
 
 ## 10. Remaining Follow-up (Optional)
-- None for the scoped Scheduler feature.
+- Richer scheduler-card deployment diagnostics and operator controls for resolving a newer agent-side revision can be added without changing the v1 protocol.

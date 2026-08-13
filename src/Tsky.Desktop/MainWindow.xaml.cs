@@ -1218,6 +1218,18 @@ public partial class MainWindow : Window
 
     private void HandleRemoteRuntimeFrame(AgentGatewayRuntimeEvent runtimeEvent)
     {
+		if (runtimeEvent.CapabilityReport is not null)
+		{
+			_remoteControlPlaneService.TryRequestScheduleSync(runtimeEvent.AgentId, _schedulerConfiguration, out _);
+			PublishAgentSchedules(runtimeEvent.AgentId);
+		}
+
+		if (runtimeEvent.ScheduleAck is not null) { HandleScheduleAck(runtimeEvent.AgentId, runtimeEvent.ScheduleAck); }
+		if (runtimeEvent.ScheduleNack is not null) { HandleScheduleNack(runtimeEvent.AgentId, runtimeEvent.ScheduleNack); }
+		if (runtimeEvent.ScheduleStatus is not null) { HandleScheduleStatus(runtimeEvent.AgentId, runtimeEvent.ScheduleStatus); }
+		if (runtimeEvent.ScheduleOccurrenceEvent is not null) { HandleScheduleOccurrence(runtimeEvent.AgentId, runtimeEvent.ScheduleOccurrenceEvent); }
+		if (runtimeEvent.ScheduleSyncResponse is not null) { HandleScheduleSyncResponse(runtimeEvent.AgentId, runtimeEvent.ScheduleSyncResponse); }
+
         if (runtimeEvent.RunAccepted is not null)
         {
             HandleRemoteRunAccepted(runtimeEvent.AgentId, runtimeEvent.RunAccepted);
@@ -1258,6 +1270,153 @@ public partial class MainWindow : Window
             HandleRemoteArtifactUploadFailed(runtimeEvent.AgentId, runtimeEvent.ArtifactUploadFailed);
         }
     }
+
+	private void PublishAgentSchedules(string connectedAgentId)
+	{
+		foreach (var item in _schedulerConfiguration.Items.Where(item => item.IsAgentOwned).ToList())
+		{
+			var receipt = _remoteControlPlaneService.TryPublishSchedule(item, _schedulerConfiguration.DesktopInstanceId);
+			if (!receipt.Sent) { continue; }
+			item.PublishedAgentId = receipt.AgentId;
+			item.RemoteDeploymentState = "Pending";
+			item.RemoteDeploymentMessage = receipt.Message;
+		}
+		foreach (var tombstone in _schedulerConfiguration.DeletedSchedules.Where(item => string.Equals(item.AgentId, connectedAgentId, StringComparison.OrdinalIgnoreCase)).ToList())
+		{
+			_remoteControlPlaneService.TryDeleteSchedule(tombstone);
+		}
+		PersistSchedulerRuntimeUpdate();
+	}
+
+	private void HandleScheduleAck(string agentId, ScheduleAck ack)
+	{
+		var acknowledgedTombstone = _schedulerConfiguration.DeletedSchedules.FirstOrDefault(value =>
+			string.Equals(value.ScheduleId, ack.ScheduleId, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(value.AgentId, agentId, StringComparison.OrdinalIgnoreCase)
+			&& value.Revision <= ack.AcceptedRevision);
+		if (acknowledgedTombstone is not null)
+		{
+			_schedulerConfiguration.DeletedSchedules.Remove(acknowledgedTombstone);
+			var retargetedItem = FindScheduledItem(ack.ScheduleId);
+			if (retargetedItem is not null
+				&& string.Equals(retargetedItem.PendingPreviousAgentId, agentId, StringComparison.OrdinalIgnoreCase))
+			{
+				retargetedItem.PendingPreviousAgentId = null;
+				if (retargetedItem.IsAgentOwned)
+				{
+					var receipt = _remoteControlPlaneService.TryPublishSchedule(retargetedItem, _schedulerConfiguration.DesktopInstanceId);
+					retargetedItem.RemoteDeploymentMessage = receipt.Message;
+					if (receipt.Sent)
+					{
+						retargetedItem.PublishedAgentId = receipt.AgentId;
+						retargetedItem.RemoteDeploymentState = "Pending";
+					}
+					else
+					{
+						retargetedItem.RemoteDeploymentState = "DesktopFallback";
+					}
+				}
+				else
+				{
+					retargetedItem.RemoteDeploymentState = null;
+					retargetedItem.RemoteDeploymentMessage = null;
+				}
+			}
+			PersistSchedulerRuntimeUpdate();
+			return;
+		}
+
+		var item = FindScheduledItem(ack.ScheduleId);
+		if (item is null)
+		{
+			PersistSchedulerRuntimeUpdate();
+			return;
+		}
+		item.PublishedAgentId = agentId; item.AcceptedRevision = ack.AcceptedRevision; item.RemoteDeploymentState = "Accepted"; item.RemoteDeploymentMessage = $"Agent accepted revision {ack.AcceptedRevision}.";
+		PersistSchedulerRuntimeUpdate();
+	}
+
+	private void HandleScheduleNack(string agentId, ScheduleNack nack)
+	{
+		var item = FindScheduledItem(nack.ScheduleId); if (item is null) { return; }
+		item.PublishedAgentId = agentId; item.RemoteDeploymentState = "Rejected"; item.RemoteDeploymentMessage = $"{nack.ReasonCode}: {nack.ReasonMessage}";
+		PersistSchedulerRuntimeUpdate();
+	}
+
+	private void HandleScheduleStatus(string agentId, ScheduleStatus status)
+	{
+		var item = FindScheduledItem(status.ScheduleId); if (item is null) { return; }
+		item.PublishedAgentId = agentId; item.RemoteDeploymentState = status.State.ToString(); item.AcceptedRevision = Math.Max(item.AcceptedRevision, status.Revision);
+		if (status.NextDueUtc is not null) { item.NextRunAtUtc = status.NextDueUtc.ToDateTime(); }
+		PersistSchedulerRuntimeUpdate();
+	}
+
+	private void HandleScheduleOccurrence(string agentId, ScheduleOccurrenceEvent occurrence)
+	{
+		var currentCursor = _schedulerConfiguration.AgentOccurrenceCursors.TryGetValue(agentId, out var cursor) ? cursor : 0UL;
+		_schedulerConfiguration.AgentOccurrenceCursors[agentId] = Math.Max(currentCursor, occurrence.Sequence);
+		var item = FindScheduledItem(occurrence.ScheduleId);
+		if (item is null) { PersistSchedulerRuntimeUpdate(); return; }
+		var isNewTerminal = occurrence.State == ScheduleOccurrenceState.Terminal
+			&& !string.Equals(item.LastOccurrenceToken, occurrence.OccurrenceId, StringComparison.Ordinal);
+		item.PublishedAgentId = agentId; item.LastAcknowledgedOccurrenceSequence = Math.Max(item.LastAcknowledgedOccurrenceSequence, occurrence.Sequence);
+		if (occurrence.State == ScheduleOccurrenceState.Terminal)
+		{
+			if (isNewTerminal)
+			{
+				var plannedUtc = occurrence.PlannedOccurrenceUtc?.ToDateTime() ?? DateTime.UtcNow;
+				var history = _schedulerRunHistoryService.StartEntry(item, plannedUtc);
+				if (occurrence.StartedAtUtc is not null) { history.StartedAtUtc = occurrence.StartedAtUtc.ToDateTime(); }
+				var outcome = occurrence.Outcome switch
+				{
+					ScheduleOccurrenceOutcome.Succeeded => TaskRunOutcome.Succeeded,
+					ScheduleOccurrenceOutcome.TimedOut => TaskRunOutcome.TimedOut,
+					ScheduleOccurrenceOutcome.Cancelled => TaskRunOutcome.Cancelled,
+					_ => TaskRunOutcome.LaunchFailed
+				};
+				_schedulerRunHistoryService.CompleteEntry(history, outcome, occurrence.HasExitCode ? occurrence.ExitCode : null, occurrence.Message);
+			}
+			item.IsRunning = false; item.LastCompletedAtUtc = occurrence.CompletedAtUtc?.ToDateTime() ?? DateTime.UtcNow; item.LastOccurrenceToken = occurrence.OccurrenceId; item.LastRunOutcome = occurrence.Outcome.ToString(); item.LastRunMessage = occurrence.Message;
+			if (!item.IsRecurring) { item.IsEnabled = false; item.NextRunAtUtc = null; }
+		}
+		else if (occurrence.State is ScheduleOccurrenceState.Admitted or ScheduleOccurrenceState.Running)
+		{
+			item.IsRunning = true; item.LastTriggeredAtUtc = occurrence.AdmittedAtUtc?.ToDateTime() ?? DateTime.UtcNow; item.LastRunOutcome = occurrence.State.ToString();
+		}
+		if (isNewTerminal && _isSchedulerViewSelected && ReferenceEquals(BottomPaneTabControl.SelectedItem, HistoryPaneTabItem)) { RefreshHistoryView(); }
+		PersistSchedulerRuntimeUpdate();
+	}
+
+	private void HandleScheduleSyncResponse(string agentId, ScheduleSyncResponse response)
+	{
+		foreach (var occurrence in response.OccurrenceEvents.OrderBy(value => value.Sequence)) { HandleScheduleOccurrence(agentId, occurrence); }
+		foreach (var pair in response.TombstonedRevisions)
+		{
+			var item = FindScheduledItem(pair.Key);
+			if (item is null) { continue; }
+			if (item.Revision > pair.Value) { _remoteControlPlaneService.TryPublishSchedule(item, _schedulerConfiguration.DesktopInstanceId); }
+			else { item.RemoteDeploymentState = "Conflict"; item.RemoteDeploymentMessage = $"Agent tombstone revision {pair.Value} is not older than desktop revision {item.Revision}; operator review is required."; }
+		}
+		foreach (var pair in response.LocalRevisions)
+		{
+			var item = FindScheduledItem(pair.Key);
+			if (item is null)
+			{
+				var tombstone = _schedulerConfiguration.DeletedSchedules.FirstOrDefault(value => string.Equals(value.ScheduleId, pair.Key, StringComparison.OrdinalIgnoreCase) && string.Equals(value.AgentId, agentId, StringComparison.OrdinalIgnoreCase));
+				if (tombstone is not null && tombstone.Revision > pair.Value) { _remoteControlPlaneService.TryDeleteSchedule(tombstone); }
+				continue;
+			}
+			if (pair.Value < item.Revision) { var receipt = _remoteControlPlaneService.TryPublishSchedule(item, _schedulerConfiguration.DesktopInstanceId); item.RemoteDeploymentMessage = receipt.Message; }
+			else if (pair.Value > item.Revision) { item.RemoteDeploymentState = "Conflict"; item.RemoteDeploymentMessage = $"Agent revision {pair.Value} is newer than desktop revision {item.Revision}; operator review is required."; }
+		}
+		PersistSchedulerRuntimeUpdate();
+	}
+
+	private void PersistSchedulerRuntimeUpdate()
+	{
+		try { SchedulerConfigurationStore.Save(_schedulerConfiguration); if (_isSchedulerViewSelected) { RenderSchedulerView(); } }
+		catch (Exception ex) { DebugTraceLog.Write(ex, "[Scheduler] Failed to persist remote schedule state."); }
+	}
 
     private static void HandleRemoteArtifactUploadCompleted(string agentId, ArtifactUploadCompleted completed)
     {
@@ -3408,6 +3567,9 @@ public partial class MainWindow : Window
             VerticalContentAlignment = VerticalAlignment.Stretch,
             Opacity = item.IsEnabled ? 1.0 : 0.66
         };
+		button.ToolTip = item.IsAgentOwned
+			? $"Agent schedule: {item.RemoteDeploymentState ?? "not deployed"}\n{item.RemoteDeploymentMessage ?? string.Empty}"
+			: "Desktop-local schedule";
         button.Click += ScheduledItemCardButton_Click;
         button.PreviewMouseRightButtonUp += ScheduledItemCardButton_PreviewMouseRightButtonUp;
 
@@ -3439,6 +3601,7 @@ public partial class MainWindow : Window
         var targetLabel = item.TargetKind == ScheduledTargetKind.GroupChainSnapshot
             ? "Group chain snapshot"
             : "Task snapshot";
+		if (item.IsAgentOwned) { targetLabel += $" · agent {item.PublishedAgentId ?? item.TargetAgentId ?? item.TargetPoolId ?? "auto"}"; }
         var nextRunUtc = item.NextRunAtUtc ?? item.TriggerAtUtc;
         var triggerLabel = nextRunUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         var modeLabel = item.IsRecurring ? "repeatable" : "one-shot";
@@ -3456,6 +3619,11 @@ public partial class MainWindow : Window
         {
             return $"running · ±{windowSeconds}s window";
         }
+
+		if (item.IsAgentOwned && !string.IsNullOrWhiteSpace(item.RemoteDeploymentState))
+		{
+			return $"{item.RemoteDeploymentState} · r{item.AcceptedRevision}/{item.Revision} · ±{windowSeconds}s";
+		}
 
         if (item.LastCompletedAtUtc.HasValue)
         {
@@ -3561,13 +3729,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        var editor = new SchedulerItemEditorWindow(item, isNew: false) { Owner = this };
+        var editor = new SchedulerItemEditorWindow(item, isNew: false, _agentRegistry) { Owner = this };
         if (editor.ShowDialog() != true)
         {
             return;
         }
 
         var updated = editor.ScheduledItem;
+		updated.Revision = Math.Max(1UL, item.Revision + 1);
+		updated.UpdatedAtUtc = DateTime.UtcNow;
+		HandleScheduleRetarget(item, updated);
         var targetIndex = _schedulerConfiguration.Items.FindIndex(candidate =>
             string.Equals(candidate.Id, item.Id, StringComparison.OrdinalIgnoreCase));
         if (targetIndex < 0)
@@ -3591,6 +3762,8 @@ public partial class MainWindow : Window
         }
 
         item.IsEnabled = !item.IsEnabled;
+		item.Revision = Math.Max(1UL, item.Revision + 1);
+		item.UpdatedAtUtc = DateTime.UtcNow;
         if (!item.IsEnabled)
         {
             item.IsRunning = false;
@@ -7153,7 +7326,8 @@ public partial class MainWindow : Window
         }
 
         var scheduledItem = SchedulerSnapshotFactory.CreateTaskItem(task, DateTime.UtcNow.AddMinutes(1));
-        var editor = new SchedulerItemEditorWindow(scheduledItem, isNew: true) { Owner = this };
+		ApplyScheduleTargetSelection(scheduledItem, ResolveExecutionTargetSelection(task));
+		var editor = new SchedulerItemEditorWindow(scheduledItem, isNew: true, _agentRegistry) { Owner = this };
         if (editor.ShowDialog() != true)
         {
             return;
@@ -7179,7 +7353,8 @@ public partial class MainWindow : Window
         }
 
         var scheduledItem = SchedulerSnapshotFactory.CreateGroupChainItem(normalizedGroup, tasksInGroup, DateTime.UtcNow.AddMinutes(1));
-        var editor = new SchedulerItemEditorWindow(scheduledItem, isNew: true) { Owner = this };
+		ApplyScheduleTargetSelection(scheduledItem, ResolveExecutionTargetSelection(tasksInGroup[0]));
+		var editor = new SchedulerItemEditorWindow(scheduledItem, isNew: true, _agentRegistry) { Owner = this };
         if (editor.ShowDialog() != true)
         {
             return;
@@ -10884,6 +11059,16 @@ public partial class MainWindow : Window
             return;
         }
 
+		if (selected.IsAgentOwned)
+		{
+			var agentId = selected.PublishedAgentId ?? selected.TargetAgentId;
+			if (!string.IsNullOrWhiteSpace(agentId))
+			{
+				_schedulerConfiguration.DeletedSchedules.Add(new DesktopScheduleTombstone { ScheduleId = selected.Id, Revision = Math.Max(1UL, selected.Revision + 1), AgentId = agentId });
+			}
+			var deleteReceipt = _remoteControlPlaneService.TryDeleteSchedule(selected);
+			if (!deleteReceipt.Sent) { DebugTraceLog.Write($"[Scheduler] Remote delete for '{selected.Id}' was not sent: {deleteReceipt.Message}"); }
+		}
         _schedulerConfiguration.Items.RemoveAll(item =>
             string.Equals(item.Id, selected.Id, StringComparison.OrdinalIgnoreCase));
         _selectedScheduledItemId = _schedulerConfiguration.Items.FirstOrDefault()?.Id;
@@ -12993,6 +13178,27 @@ public partial class MainWindow : Window
         {
             SchedulerConfigurationStore.Save(_schedulerConfiguration);
             _schedulerConfiguration = SchedulerConfigurationStore.Load();
+			var remoteStateChanged = false;
+			foreach (var item in _schedulerConfiguration.Items.Where(item => item.IsAgentOwned))
+			{
+				var receipt = _remoteControlPlaneService.TryPublishSchedule(item, _schedulerConfiguration.DesktopInstanceId);
+				item.RemoteDeploymentMessage = receipt.Message;
+				if (receipt.Sent)
+				{
+					item.PublishedAgentId = receipt.AgentId;
+					item.RemoteDeploymentState = "Pending";
+				}
+				else if (!string.IsNullOrWhiteSpace(item.PendingPreviousAgentId))
+				{
+					item.RemoteDeploymentState = "RetargetPendingCleanup";
+				}
+				else if (item.AcceptedRevision < item.Revision)
+				{
+					item.RemoteDeploymentState = "DesktopFallback";
+				}
+				remoteStateChanged = true;
+			}
+			if (remoteStateChanged) { SchedulerConfigurationStore.Save(_schedulerConfiguration); }
             SchedulerHeaderCountText.Text = $"({_schedulerConfiguration.Items.Count})";
 
             if (_isSchedulerViewSelected)
@@ -13130,6 +13336,7 @@ public partial class MainWindow : Window
         TrimSchedulerOccurrenceLedger(DateTime.UtcNow);
 
         var dueCandidates = _schedulerConfiguration.Items
+			.Where(ShouldDesktopEvaluateSchedule)
             .OrderBy(item => item.NextRunAtUtc ?? item.TriggerAtUtc)
             .ThenBy(item => item.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -13304,7 +13511,9 @@ public partial class MainWindow : Window
                 return [];
             }
 
-            return [SchedulerSnapshotFactory.CloneAsLocalSnapshot(item.TaskSnapshot)];
+			var snapshot = SchedulerSnapshotFactory.CloneAsLocalSnapshot(item.TaskSnapshot);
+			ApplyScheduledTarget(snapshot, item);
+            return [snapshot];
         }
 
         if (item.ChainSnapshot.Count == 0)
@@ -13312,10 +13521,22 @@ public partial class MainWindow : Window
             return [];
         }
 
-        return item.ChainSnapshot
-            .Select(SchedulerSnapshotFactory.CloneAsLocalSnapshot)
-            .ToList();
+		var snapshots = item.ChainSnapshot.Select(SchedulerSnapshotFactory.CloneAsLocalSnapshot).ToList();
+		foreach (var snapshot in snapshots) { ApplyScheduledTarget(snapshot, item); }
+		return snapshots;
     }
+
+	private bool ShouldDesktopEvaluateSchedule(ScheduledItem item)
+	{
+		return RemoteControlPlaneService.ShouldDesktopEvaluateSchedule(item, _agentRegistry);
+	}
+
+    private static void ApplyScheduledTarget(LauncherTask task, ScheduledItem item)
+	{
+		task.ExecutionTargetMode = item.ExecutionTargetMode;
+		task.TargetAgentId = item.PublishedAgentId ?? item.TargetAgentId;
+		task.TargetPoolId = item.TargetPoolId;
+	}
 
     private void TrimSchedulerOccurrenceLedger(DateTime nowUtc)
     {
@@ -13347,6 +13568,72 @@ public partial class MainWindow : Window
             _schedulerOccurrenceLedger.Remove(overflowKey);
         }
     }
+
+	private static void ApplyScheduleTargetSelection(ScheduledItem item, ExecutionTargetSelection selection)
+	{
+		item.ExecutionTargetMode = selection.Mode switch
+		{
+			ExecutionTargetMode.SpecificAgent => "agent",
+			ExecutionTargetMode.AgentPool => "pool",
+			ExecutionTargetMode.Automatic => "auto",
+			_ => "local"
+		};
+		item.TargetAgentId = selection.AgentId;
+		item.TargetPoolId = selection.PoolId;
+	}
+
+	private void HandleScheduleRetarget(ScheduledItem previous, ScheduledItem updated)
+	{
+		if (ScheduleExecutionTargetCatalog.TargetsEqual(previous, updated))
+		{
+			return;
+		}
+
+		var previousAgentId = previous.PublishedAgentId;
+		if (ScheduleExecutionTargetCatalog.CanRetainPublishedAgent(updated, previousAgentId, _agentRegistry))
+		{
+			updated.PublishedAgentId = previousAgentId;
+			updated.AcceptedRevision = previous.AcceptedRevision;
+			updated.RemoteDeploymentState = previous.RemoteDeploymentState;
+			updated.RemoteDeploymentMessage = previous.RemoteDeploymentMessage;
+			updated.LastAcknowledgedOccurrenceSequence = previous.LastAcknowledgedOccurrenceSequence;
+			updated.PendingPreviousAgentId = previous.PendingPreviousAgentId;
+			return;
+		}
+
+		if (string.IsNullOrWhiteSpace(previousAgentId))
+		{
+			return;
+		}
+
+		updated.PendingPreviousAgentId = previousAgentId;
+		updated.RemoteDeploymentState = "RetargetPendingCleanup";
+		updated.RemoteDeploymentMessage = $"Waiting for agent '{previousAgentId}' to acknowledge removal before publishing the new target.";
+
+		var tombstoneRevision = Math.Max(1UL, updated.Revision);
+		var existingTombstone = _schedulerConfiguration.DeletedSchedules.FirstOrDefault(value =>
+			string.Equals(value.ScheduleId, previous.Id, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(value.AgentId, previousAgentId, StringComparison.OrdinalIgnoreCase));
+		if (existingTombstone is null)
+		{
+			_schedulerConfiguration.DeletedSchedules.Add(new DesktopScheduleTombstone
+			{
+				ScheduleId = previous.Id,
+				Revision = tombstoneRevision,
+				AgentId = previousAgentId
+			});
+		}
+		else
+		{
+			existingTombstone.Revision = Math.Max(existingTombstone.Revision, tombstoneRevision);
+		}
+
+		var receipt = _remoteControlPlaneService.TryDeleteSchedule(previous);
+		if (!receipt.Sent)
+		{
+			DebugTraceLog.Write($"[Scheduler] Retarget cleanup for '{previous.Id}' on '{previousAgentId}' is queued: {receipt.Message}");
+		}
+	}
 
     private static Brush GetReadableTextBrush(Color backgroundColor)
     {

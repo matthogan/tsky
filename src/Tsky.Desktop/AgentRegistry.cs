@@ -44,7 +44,7 @@ public sealed class AgentDefinition
 
     public string? ControllerUrl { get; set; }
 
-    public string? ProtocolVersion { get; set; } = "1.0";
+    public string? ProtocolVersion { get; set; } = TapProtocolVersioning.CurrentText;
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
@@ -103,6 +103,10 @@ public sealed class AgentDefinition
     public int MaximumConcurrentRuns { get; set; } = 1;
 
     public List<string> AllowedExecutors { get; set; } = ["process.v1"];
+
+    public List<string> Features { get; set; } = [];
+
+    public List<string> Extensions { get; set; } = [];
 
     public Dictionary<string, string> Labels { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -404,7 +408,7 @@ public sealed class AgentRegistryService
 
         agent.DisplayName = string.IsNullOrWhiteSpace(agent.DisplayName) ? agent.AgentId : agent.DisplayName.Trim();
         agent.ControllerId = string.IsNullOrWhiteSpace(agent.ControllerId) ? "ctl_local" : agent.ControllerId.Trim();
-        agent.ProtocolVersion = string.IsNullOrWhiteSpace(agent.ProtocolVersion) ? "1.0" : agent.ProtocolVersion.Trim();
+        agent.ProtocolVersion = string.IsNullOrWhiteSpace(agent.ProtocolVersion) ? TapProtocolVersioning.CurrentText : agent.ProtocolVersion.Trim();
         if (agent.State == AgentDefinitionState.Enrolled)
         {
             agent.State = AgentDefinitionState.Offline;
@@ -440,6 +444,8 @@ public sealed class AgentRegistryService
         agent.MemoryTotalBytes = Math.Max(0, agent.MemoryTotalBytes);
         agent.RuntimeDiskFreeBytes = Math.Max(0, agent.RuntimeDiskFreeBytes);
         agent.Labels ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		agent.Features ??= [];
+		agent.Extensions ??= [];
     }
 
     private static string? NormalizeOptionalValue(string? value)

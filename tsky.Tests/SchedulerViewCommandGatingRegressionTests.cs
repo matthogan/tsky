@@ -17,6 +17,92 @@ public sealed class SchedulerViewCommandGatingRegressionTests
     }
 
     [Fact]
+    public async Task ScheduledItemEditor_ExposesEveryExecutionTargetKindAndPublicationReadiness()
+    {
+        await _fixture.InvokeAsync(() =>
+        {
+            var compatible = new AgentDefinition
+            {
+                AgentId = "agt-editor",
+                DisplayName = "Editor Agent",
+                State = AgentDefinitionState.Online,
+                ProtocolVersion = "1.1",
+                Extensions = ["schedule.v1"]
+            };
+            compatible.Labels["pool"] = "editors";
+            var item = new ScheduledItem { ExecutionTargetMode = "agent", TargetAgentId = compatible.AgentId };
+            var window = new SchedulerItemEditorWindow(
+                item,
+                isNew: true,
+                new AgentRegistry { Agents = [compatible] });
+            try
+            {
+                var options = window.ExecutionTargetComboBox.Items.Cast<ScheduleExecutionTargetOption>().ToList();
+                Assert.Contains(options, option => option.Mode == ExecutionTargetMode.Local);
+                Assert.Contains(options, option => option.Mode == ExecutionTargetMode.Automatic);
+                Assert.Contains(options, option => option.Mode == ExecutionTargetMode.SpecificAgent && option.AgentId == compatible.AgentId);
+                Assert.Contains(options, option => option.Mode == ExecutionTargetMode.AgentPool && option.PoolId == "editors");
+                Assert.Equal("Agent — Editor Agent (online)", window.ExecutionTargetComboBox.SelectionBoxItem?.ToString());
+                Assert.Contains("Ready to publish", window.ExecutionTargetStatusTextBlock.Text);
+                Assert.Equal(Visibility.Visible, window.PublicationStatusBorder.Visibility);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            var defaultWindow = new SchedulerItemEditorWindow(new ScheduledItem(), isNew: true, new AgentRegistry());
+            try
+            {
+                var selected = Assert.IsType<ScheduleExecutionTargetOption>(defaultWindow.ExecutionTargetComboBox.SelectedItem);
+                Assert.Equal(ExecutionTargetMode.Local, selected.Mode);
+                Assert.Equal("Local — this desktop", defaultWindow.ExecutionTargetComboBox.SelectionBoxItem?.ToString());
+            }
+            finally
+            {
+                defaultWindow.Close();
+            }
+
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task ScheduledItemEditor_RejectsAnUnavailableConfiguredAgent()
+    {
+        await _fixture.InvokeAsync(() =>
+        {
+            var unavailable = new AgentDefinition
+            {
+                AgentId = "agt-revoked",
+                DisplayName = "Revoked Agent",
+                State = AgentDefinitionState.Revoked
+            };
+            var item = new ScheduledItem { ExecutionTargetMode = "agent", TargetAgentId = unavailable.AgentId };
+            var window = new SchedulerItemEditorWindow(
+                item,
+                isNew: false,
+                new AgentRegistry { Agents = [unavailable] });
+            try
+            {
+                var submit = window.GetType().GetMethod("TrySubmit", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?? throw new InvalidOperationException("Method 'TrySubmit' was not found.");
+                var accepted = (bool)(submit.Invoke(window, null) ?? true);
+
+                Assert.False(accepted);
+                Assert.Equal(Visibility.Visible, window.ValidationTextBlock.Visibility);
+                Assert.Contains("cannot be selected", window.ValidationTextBlock.Text, StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
     public async Task SelectSchedulerView_RibbonCommandGating_MatchesSpec()
     {
         using var persistenceScope = new SchedulerPersistenceScope();
@@ -112,6 +198,7 @@ public sealed class SchedulerViewCommandGatingRegressionTests
                 window.RibbonToggleTaskEnabledButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
 
                 var updatedConfiguration = SchedulerConfigurationStore.Load();
+                Assert.Equal(SchedulerConfiguration.CurrentSchemaVersion, updatedConfiguration.SchemaVersion);
                 var updatedItem = updatedConfiguration.Items.Single(item =>
                     string.Equals(item.Id, scheduledItemId, StringComparison.OrdinalIgnoreCase));
 

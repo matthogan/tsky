@@ -5,6 +5,107 @@ namespace tsky.Tests;
 
 public sealed class RemoteControlPlaneServiceTests
 {
+	[Fact]
+	public void SupportsScheduleV1_AcceptsFeatureOrExtensionAndRejectsLegacyAgent()
+	{
+		Assert.True(RemoteControlPlaneService.SupportsScheduleV1(new AgentDefinition { Features = ["schedule.v1"] }));
+		Assert.True(RemoteControlPlaneService.SupportsScheduleV1(new AgentDefinition { Extensions = ["schedule.v1"] }));
+		Assert.False(RemoteControlPlaneService.SupportsScheduleV1(new AgentDefinition()));
+		Assert.False(RemoteControlPlaneService.SupportsScheduleV1(new AgentDefinition { ProtocolVersion = "1.0", Features = ["schedule.v1"] }));
+	}
+
+	[Fact]
+	public void ScheduleRunPlan_IsDeterministicAcrossPublishRetries()
+	{
+		var item = new ScheduledItem
+		{
+			Id = "schedule-deterministic",
+			Revision = 7,
+			TargetKind = ScheduledTargetKind.TaskSnapshot,
+			TaskSnapshot = CreateTask("cmd", "echo deterministic")
+		};
+
+		Assert.True(RemoteControlPlaneService.TryBuildScheduleRunPlan(item, out var first, out var firstError), firstError);
+		Assert.True(RemoteControlPlaneService.TryBuildScheduleRunPlan(item, out var second, out var secondError), secondError);
+
+		Assert.Equal(first, second);
+		Assert.Equal("step_0001", Assert.Single(first.Steps).StepId);
+	}
+
+	[Fact]
+	public void DesktopKeepsEvaluatingUntilCurrentRevisionIsAccepted()
+	{
+		var item = new ScheduledItem
+		{
+			ExecutionTargetMode = "agent",
+			TargetAgentId = "agt-1",
+			PublishedAgentId = "agt-1",
+			Revision = 3,
+			AcceptedRevision = 2
+		};
+		var registry = new AgentRegistry
+		{
+			Agents =
+			[
+				new AgentDefinition
+				{
+					AgentId = "agt-1",
+					ProtocolVersion = "1.1",
+					Features = ["schedule.v1"]
+				}
+			]
+		};
+
+		Assert.True(RemoteControlPlaneService.ShouldDesktopEvaluateSchedule(item, registry));
+		item.AcceptedRevision = item.Revision;
+		Assert.False(RemoteControlPlaneService.ShouldDesktopEvaluateSchedule(item, registry));
+	}
+
+	[Fact]
+	public void RetargetCleanup_PreventsDesktopFallbackAndNewPublicationUntilOldOwnerAcknowledgesDelete()
+	{
+		var item = new ScheduledItem
+		{
+			ExecutionTargetMode = "agent",
+			TargetAgentId = "agt-new",
+			PendingPreviousAgentId = "agt-old",
+			Revision = 4,
+			AcceptedRevision = 0
+		};
+		var registry = new AgentRegistry();
+
+		Assert.False(RemoteControlPlaneService.ShouldDesktopEvaluateSchedule(item, registry));
+
+		var tempRoot = CreateTempRoot();
+		try
+		{
+			var registryService = new AgentRegistryService(Path.Combine(tempRoot, "registry.json"));
+			var service = new RemoteControlPlaneService(
+				new AgentGatewayHost(registryService, new AgentGatewaySettings()),
+				registryService);
+			var receipt = service.TryPublishSchedule(item, "desktop-test");
+
+			Assert.False(receipt.Sent);
+			Assert.Contains("acknowledge removal", receipt.Message, StringComparison.OrdinalIgnoreCase);
+		}
+		finally { DeleteTempRoot(tempRoot); }
+	}
+
+	[Fact]
+	public void TryPublishSchedule_WhenGatewayNotRunning_DoesNotMutateLegacyFlow()
+	{
+		var tempRoot = CreateTempRoot();
+		try
+		{
+			var registry = new AgentRegistryService(Path.Combine(tempRoot, "registry.json"));
+			var service = new RemoteControlPlaneService(new AgentGatewayHost(registry, new AgentGatewaySettings()), registry);
+			var receipt = service.TryPublishSchedule(new ScheduledItem { ExecutionTargetMode = "agent", TargetAgentId = "agt-1" }, "desktop-test");
+			Assert.False(receipt.Sent);
+			Assert.Equal("Gateway is not running.", receipt.Message);
+		}
+		finally { DeleteTempRoot(tempRoot); }
+	}
+
     [Fact]
     public void TryDispatchTask_WhenGatewayNotRunning_ReturnsNotRunningMessage()
     {

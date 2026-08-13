@@ -3,6 +3,8 @@
 Reference Go implementation of the Tsky Agent Protocol worker described in
 `tsky-remote-agent-technical-spec-v0.2.md`.
 
+The agent currently supports TAP 1.1 and TAP 1.0 (in that preference order) over the required `tap-grpc` binding version 1. `schedule.v1` is negotiated only on TAP 1.1 sessions.
+
 ## What this module implements
 
 This module provides a cross-platform TAP worker that:
@@ -14,6 +16,7 @@ This module provides a cross-platform TAP worker that:
 - Persists durable attempt state, acceptance metadata, run events, and stdout/stderr logs.
 - Recovers and reconciles local attempt state with the controller after reconnects.
 - Emits heartbeats, capability reports, and health/capacity snapshots.
+- Advertises `schedule.v1`, persists controller-managed schedules, and executes due occurrences while the controller is disconnected.
 
 Current limitations in this reference implementation:
 
@@ -399,6 +402,9 @@ Useful references:
 
 Under `runtime.root`, the agent creates:
 
+- `schedules.json` (atomic current schedule registry plus revision tombstones)
+- `schedule-checkpoints.json` (per-schedule next-due cursors and the global occurrence sequence)
+- `schedule-occurrence-log.jsonl` (flushed append-only lifecycle/outcome evidence used for reconnect replay)
 - `runs/<runId>_<attemptId>/plan.json`
 - `runs/<runId>_<attemptId>/acceptance.json`
 - `runs/<runId>_<attemptId>/state.json`

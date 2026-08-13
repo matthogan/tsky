@@ -12,6 +12,7 @@ import "tsky/agent/v1/common.proto";
 import "tsky/agent/v1/errors.proto";
 import "tsky/agent/v1/reconciliation.proto";
 import "tsky/agent/v1/run.proto";
+import "tsky/agent/v1/schedule.proto";
 import "tsky/agent/v1/security.proto";
 
 service AgentControl {
@@ -41,6 +42,12 @@ message AgentFrame {
     ArtifactUploadFailed artifact_upload_failed = 31;
 
     ProtocolPong pong = 40;
+
+    ScheduleAck schedule_ack = 50;
+    ScheduleNack schedule_nack = 51;
+    ScheduleStatus schedule_status = 52;
+    ScheduleOccurrenceEvent schedule_occurrence_event = 53;
+    ScheduleSyncResponse schedule_sync_response = 54;
   }
 }
 
@@ -63,5 +70,11 @@ message ControllerFrame {
 
     ProtocolPing ping = 40;
     ProtocolError protocol_error = 41;
+
+    ScheduleUpsert schedule_upsert = 50;
+    ScheduleDelete schedule_delete = 51;
+    SchedulePause schedule_pause = 52;
+    ScheduleResume schedule_resume = 53;
+    ScheduleSyncRequest schedule_sync_request = 54;
   }
 }

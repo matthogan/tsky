@@ -154,6 +154,11 @@ Example:
 - Scheduler persistence is isolated from `tasks.json` in `%LOCALAPPDATA%\tsky\scheduler.json`.
 - Scheduler run history is persisted in `%LOCALAPPDATA%\tsky\scheduler-run-history.json`.
 - Scheduler view command gating is restricted to scheduler-appropriate actions (for example, delete, enable/disable, history).
+- The Scheduled Item dialog has an Execution Target selector for Local, Automatic, named agents, and discovered pools. It validates unavailable targets and shows protocol publication/fallback status before save.
+- Tasks or chains with an agent, pool, or automatic execution target are published as durable `schedule.v1` definitions when the selected agent advertises support.
+- Upgraded agents execute published occurrences from local durable state while the desktop is disconnected; outcomes reconcile into the scheduler state after reconnect.
+- Legacy agents retain the desktop poller plus ordinary `RunOffer` behavior, so mixed fleets remain compatible.
+- The current semantic protocol is TAP 1.1 with TAP 1.0 fallback; the required `tap-grpc` binding remains version 1.
 
 ## Agent Dispatch (Task View)
 

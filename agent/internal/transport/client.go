@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/matthogan/tsky/agent/internal/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/matthogan/tsky/agent/internal/identity"
 	tapproto "github.com/matthogan/tsky/agent/internal/protocol"
 	"github.com/matthogan/tsky/agent/internal/runtimefs"
+	"github.com/matthogan/tsky/agent/internal/schedule"
 	"github.com/matthogan/tsky/agent/internal/telemetry"
 	agentv1 "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1"
 	"google.golang.org/grpc"
@@ -39,12 +41,16 @@ type Client struct {
 	telemetry    *telemetry.Collector
 	log          *slog.Logger
 	outbound     chan *agentv1.AgentFrame
-	draining     bool
+	outboundMu   sync.Mutex
+	draining     atomic.Bool
 	hasConnected bool
+	connected    atomic.Bool
+	runtimeCtx   context.Context
+	scheduler    *schedule.Runtime
 }
 
-func New(cfg config.Config, id *identity.Manager, store *runtimefs.Store, engine *execution.Engine, tel *telemetry.Collector, log *slog.Logger) *Client {
-	return &Client{
+func New(cfg config.Config, id *identity.Manager, store *runtimefs.Store, engine *execution.Engine, tel *telemetry.Collector, scheduler *schedule.Runtime, log *slog.Logger) *Client {
+	c := &Client{
 		cfg:       cfg,
 		identity:  id,
 		store:     store,
@@ -52,10 +58,22 @@ func New(cfg config.Config, id *identity.Manager, store *runtimefs.Store, engine
 		telemetry: tel,
 		log:       log,
 		outbound:  make(chan *agentv1.AgentFrame, 1024),
+		scheduler: scheduler,
 	}
+	if scheduler != nil {
+		scheduler.SetSender(c)
+	}
+	return c
 }
 
 func (c *Client) Send(frame *agentv1.AgentFrame) error {
+	// Run and occurrence state are durable. While disconnected there is no
+	// stream to write to; reconciliation replays the durable evidence later.
+	c.outboundMu.Lock()
+	defer c.outboundMu.Unlock()
+	if !c.connected.Load() {
+		return nil
+	}
 	select {
 	case c.outbound <- frame:
 		return nil
@@ -67,6 +85,10 @@ func (c *Client) Send(frame *agentv1.AgentFrame) error {
 func (c *Client) Run(ctx context.Context) error {
 	if c.cfg.Controller.URL == "" {
 		return fmt.Errorf("controller.url is required")
+	}
+	c.runtimeCtx = ctx
+	if c.scheduler != nil {
+		go c.scheduler.Run(ctx)
 	}
 	caSource := "(system trust store)"
 	if caPath := strings.TrimSpace(c.cfg.Controller.TLSCACertPath); caPath != "" {
@@ -143,15 +165,18 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return err
 	}
 	if err := stream.Send(&agentv1.AgentFrame{
-		Header: tapproto.Header(c.cfg.Identity.AgentID),
+		// SessionHello precedes version selection, so its envelope uses the TAP
+		// 1.0 compatibility baseline while the body advertises 1.1 first.
+		Header: tapproto.HeaderForVersion(c.cfg.Identity.AgentID, tapproto.LegacyVersion()),
 		Body: &agentv1.AgentFrame_SessionHello{SessionHello: &agentv1.SessionHello{
 			AgentId:               c.cfg.Identity.AgentID,
 			KeyId:                 c.cfg.Identity.KeyID,
 			AgentNonce:            agentNonce,
-			SupportedTapVersions:  []*agentv1.ProtocolVersion{{Major: 1, Minor: 0}},
-			SupportedBindings:     []*agentv1.ProtocolBinding{{Profile: "tap-grpc", Version: "1", Endpoint: c.cfg.Controller.URL}},
+			SupportedTapVersions:  tapproto.SupportedVersions(),
+			SupportedBindings:     []*agentv1.ProtocolBinding{{Profile: tapproto.BindingProfile, Version: tapproto.BindingVersion, Endpoint: c.cfg.Controller.URL}},
+			Extensions:            []*agentv1.ExtensionSupport{{Identifier: "schedule.v1", Version: "1", Required: false}},
 			ImplementationName:    "tsky-agent",
-			ImplementationVersion: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining).ImplementationVersion,
+			ImplementationVersion: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining.Load()).ImplementationVersion,
 		}},
 	}); err != nil {
 		return err
@@ -164,6 +189,24 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	if challenge == nil {
 		return fmt.Errorf("controller did not send SessionChallenge")
 	}
+	if !tapproto.IsSupportedVersion(challenge.SelectedTapVersion) {
+		return fmt.Errorf("controller selected unsupported TAP version %d.%d", challenge.GetSelectedTapVersion().GetMajor(), challenge.GetSelectedTapVersion().GetMinor())
+	}
+	if !tapproto.IsSupportedBinding(challenge.SelectedBinding) {
+		return fmt.Errorf("controller selected unsupported TAP binding %s:%s", challenge.GetSelectedBinding().GetProfile(), challenge.GetSelectedBinding().GetVersion())
+	}
+	if !tapproto.IsFrameHeaderValid(challengeFrame.GetHeader(), challenge.SelectedTapVersion) {
+		return fmt.Errorf("SessionChallenge frame header does not match selected TAP version")
+	}
+	if len(challenge.ControllerNonce) < 16 {
+		return fmt.Errorf("controller challenge nonce must contain at least 128 bits")
+	}
+	if challenge.ExpiresAt == nil || !challenge.ExpiresAt.AsTime().After(time.Now()) {
+		return fmt.Errorf("controller challenge has expired")
+	}
+	if challenge.SecurityProfile != "tap-es256-p1363-v1" {
+		return fmt.Errorf("controller selected unsupported security profile %q", challenge.SecurityProfile)
+	}
 	transcript, err := tapproto.AuthTranscript(challenge, c.cfg.Identity.AgentID, c.cfg.Identity.KeyID, agentNonce)
 	if err != nil {
 		return err
@@ -173,7 +216,7 @@ func (c *Client) connectOnce(ctx context.Context) error {
 		return err
 	}
 	if err := stream.Send(&agentv1.AgentFrame{
-		Header: tapproto.Header(challenge.SessionId),
+		Header: tapproto.HeaderForVersion(challenge.SessionId, challenge.SelectedTapVersion),
 		Body: &agentv1.AgentFrame_SessionProof{SessionProof: &agentv1.SessionProof{
 			SessionId:       challenge.SessionId,
 			AgentId:         c.cfg.Identity.AgentID,
@@ -195,6 +238,24 @@ func (c *Client) connectOnce(ctx context.Context) error {
 	if accepted == nil {
 		return fmt.Errorf("controller did not accept the session")
 	}
+	if !tapproto.VersionsEqual(accepted.SelectedTapVersion, challenge.SelectedTapVersion) {
+		return fmt.Errorf("controller accepted a TAP version different from the authenticated challenge")
+	}
+	if !tapproto.IsFrameHeaderValid(acceptedFrame.GetHeader(), accepted.SelectedTapVersion) {
+		return fmt.Errorf("SessionAccepted frame header does not match negotiated TAP version")
+	}
+	if !tapproto.IsSupportedBinding(accepted.SelectedBinding) || !tapproto.BindingsEqual(accepted.SelectedBinding, challenge.SelectedBinding) {
+		return fmt.Errorf("controller accepted a TAP binding different from the authenticated challenge")
+	}
+	selectedVersion := accepted.SelectedTapVersion
+	var sendMu sync.Mutex
+	send := func(frame *agentv1.AgentFrame) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		tapproto.SetFrameVersion(frame, selectedVersion)
+		return stream.Send(frame)
+	}
+	scheduleNegotiated := tapproto.SupportsScheduleV1(selectedVersion) && hasExtension(accepted.NegotiatedExtensions, "schedule.v1", "1")
 	if c.hasConnected {
 		c.log.Info("TAP reconnected successfully",
 			"sessionId", accepted.GetSessionId(),
@@ -207,30 +268,41 @@ func (c *Client) connectOnce(ctx context.Context) error {
 			"controller", c.cfg.Controller.URL)
 	}
 	c.hasConnected = true
-	if err := stream.Send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_AgentSnapshot{AgentSnapshot: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining)}}); err != nil {
+	c.outboundMu.Lock()
+	c.connected.Store(true)
+	c.outboundMu.Unlock()
+	defer c.disconnect()
+	if err := send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_AgentSnapshot{AgentSnapshot: c.telemetry.Snapshot(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining.Load())}}); err != nil {
 		return err
 	}
-	if err := stream.Send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_CapabilityReport{CapabilityReport: c.telemetry.Capability(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity())}}); err != nil {
+	if err := send(&agentv1.AgentFrame{Header: tapproto.Header(c.cfg.Identity.AgentID), Body: &agentv1.AgentFrame_CapabilityReport{CapabilityReport: c.telemetry.Capability(c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity())}}); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errs := make(chan error, 3)
-	var sendMu sync.Mutex
-	send := func(frame *agentv1.AgentFrame) error {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		return stream.Send(frame)
-	}
 	go c.sender(ctx, send, errs)
 	go c.heartbeat(ctx, send, errs)
-	go c.receiver(ctx, stream, errs)
+	go c.receiver(ctx, stream, selectedVersion, scheduleNegotiated, errs)
 	err = <-errs
 	cancel()
 	if err == io.EOF {
 		return fmt.Errorf("controller closed TAP stream")
 	}
 	return err
+}
+
+func (c *Client) disconnect() {
+	c.outboundMu.Lock()
+	defer c.outboundMu.Unlock()
+	c.connected.Store(false)
+	for {
+		select {
+		case <-c.outbound:
+		default:
+			return
+		}
+	}
 }
 
 func (c *Client) sender(ctx context.Context, send func(*agentv1.AgentFrame) error, errs chan<- error) {
@@ -259,7 +331,7 @@ func (c *Client) heartbeat(ctx context.Context, send func(*agentv1.AgentFrame) e
 			seq++
 			frame := &agentv1.AgentFrame{
 				Header: tapproto.Header(c.cfg.Identity.AgentID),
-				Body:   &agentv1.AgentFrame_AgentHeartbeat{AgentHeartbeat: c.telemetry.Heartbeat(seq, c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining)},
+				Body:   &agentv1.AgentFrame_AgentHeartbeat{AgentHeartbeat: c.telemetry.Heartbeat(seq, c.engine.ActiveRuns(), c.engine.QueuedRuns(), c.engine.RejectedByCapacity(), c.draining.Load())},
 			}
 			if err := send(frame); err != nil {
 				errs <- err
@@ -269,16 +341,24 @@ func (c *Client) heartbeat(ctx context.Context, send func(*agentv1.AgentFrame) e
 	}
 }
 
-func (c *Client) receiver(ctx context.Context, stream agentv1.AgentControl_ConnectClient, errs chan<- error) {
+func (c *Client) receiver(ctx context.Context, stream agentv1.AgentControl_ConnectClient, selectedVersion *agentv1.ProtocolVersion, scheduleNegotiated bool, errs chan<- error) {
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
 			errs <- err
 			return
 		}
+		if !tapproto.IsFrameHeaderValid(frame.GetHeader(), selectedVersion) {
+			errs <- fmt.Errorf("controller frame TAP version does not match negotiated version %d.%d", selectedVersion.GetMajor(), selectedVersion.GetMinor())
+			return
+		}
 		switch body := frame.Body.(type) {
 		case *agentv1.ControllerFrame_RunOffer:
-			c.engine.HandleOffer(ctx, c, body.RunOffer)
+			runCtx := c.runtimeCtx
+			if runCtx == nil {
+				runCtx = ctx
+			}
+			c.engine.HandleOffer(runCtx, c, body.RunOffer)
 		case *agentv1.ControllerFrame_CancelRun:
 			c.engine.Cancel(body.CancelRun.RunId, body.CancelRun.AttemptId)
 		case *agentv1.ControllerFrame_EventAcknowledgement:
@@ -299,7 +379,7 @@ func (c *Client) receiver(ctx context.Context, stream agentv1.AgentControl_Conne
 		case *agentv1.ControllerFrame_ReconciliationRequest:
 			_ = c.Send(&agentv1.AgentFrame{Header: tapproto.Header(body.ReconciliationRequest.ReconciliationId), Body: &agentv1.AgentFrame_ReconciliationResponse{ReconciliationResponse: c.reconcile(body.ReconciliationRequest)}})
 		case *agentv1.ControllerFrame_DrainRequest:
-			c.draining = body.DrainRequest.Draining
+			c.draining.Store(body.DrainRequest.Draining)
 		case *agentv1.ControllerFrame_ArtifactUploadGrant:
 			c.log.Warn(
 				"controller frame type not implemented by agent",
@@ -319,8 +399,37 @@ func (c *Client) receiver(ctx context.Context, stream agentv1.AgentControl_Conne
 			_ = c.Send(&agentv1.AgentFrame{Header: tapproto.Header(body.Ping.PingId), Body: &agentv1.AgentFrame_Pong{Pong: &agentv1.ProtocolPong{PingId: body.Ping.PingId}}})
 		case *agentv1.ControllerFrame_ProtocolError:
 			c.log.Warn("controller reported protocol error", "code", body.ProtocolError.Error.GetCode(), "message", body.ProtocolError.Error.GetMessage())
+		case *agentv1.ControllerFrame_ScheduleUpsert:
+			if scheduleNegotiated && c.scheduler != nil {
+				c.scheduler.HandleUpsert(body.ScheduleUpsert)
+			}
+		case *agentv1.ControllerFrame_ScheduleDelete:
+			if scheduleNegotiated && c.scheduler != nil {
+				c.scheduler.HandleDelete(body.ScheduleDelete)
+			}
+		case *agentv1.ControllerFrame_SchedulePause:
+			if scheduleNegotiated && c.scheduler != nil {
+				c.scheduler.HandlePause(body.SchedulePause)
+			}
+		case *agentv1.ControllerFrame_ScheduleResume:
+			if scheduleNegotiated && c.scheduler != nil {
+				c.scheduler.HandleResume(body.ScheduleResume)
+			}
+		case *agentv1.ControllerFrame_ScheduleSyncRequest:
+			if scheduleNegotiated && c.scheduler != nil {
+				_ = c.Send(&agentv1.AgentFrame{Header: tapproto.Header(body.ScheduleSyncRequest.SyncId), Body: &agentv1.AgentFrame_ScheduleSyncResponse{ScheduleSyncResponse: c.scheduler.Sync(body.ScheduleSyncRequest)}})
+			}
 		}
 	}
+}
+
+func hasExtension(extensions []*agentv1.ExtensionSupport, identifier, version string) bool {
+	for _, extension := range extensions {
+		if extension.GetIdentifier() == identifier && extension.GetVersion() == version {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) reconcile(req *agentv1.ReconciliationRequest) *agentv1.ReconciliationResponse {

@@ -18,6 +18,7 @@ import (
 	"github.com/matthogan/tsky/agent/internal/execution"
 	"github.com/matthogan/tsky/agent/internal/identity"
 	"github.com/matthogan/tsky/agent/internal/runtimefs"
+	"github.com/matthogan/tsky/agent/internal/schedule"
 	"github.com/matthogan/tsky/agent/internal/telemetry"
 	"github.com/matthogan/tsky/agent/internal/transport"
 	"github.com/spf13/cobra"
@@ -407,7 +408,15 @@ func newAgentClient(cfg config.Config, opts *options, log *slog.Logger) (*transp
 	}
 	engine := execution.New(cfg, store, log)
 	tel := telemetry.New(cfg, store, opts.build.Version)
-	client := transport.New(cfg, id, store, engine, tel, log)
+	scheduler, err := schedule.New(cfg, engine, log)
+	if err != nil {
+		return nil, fmt.Errorf("initialize schedule runtime: %w", err)
+	}
+	tel.SetScheduleMetrics(func() telemetry.ScheduleMetrics {
+		m := scheduler.Metrics()
+		return telemetry.ScheduleMetrics{ActiveCount: m.ActiveCount, PausedCount: m.PausedCount, OccurrenceBacklogCount: m.OccurrenceBacklogCount, ReplayQueueDepth: m.ReplayQueueDepth, LastTickUTC: m.LastTickUTC, UpsertAcceptedTotal: m.UpsertAcceptedTotal, UpsertRejectedTotal: m.UpsertRejectedTotal, OccurrenceStartedTotal: m.OccurrenceStartedTotal, OccurrenceTerminal: m.OccurrenceTerminal}
+	})
+	client := transport.New(cfg, id, store, engine, tel, scheduler, log)
 	return client, nil
 }
 

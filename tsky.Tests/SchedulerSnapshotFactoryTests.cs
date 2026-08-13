@@ -24,6 +24,10 @@ public sealed class SchedulerSnapshotFactoryTests
         Assert.Null(scheduled.TaskSnapshot.TargetAgentId);
         Assert.Null(scheduled.TaskSnapshot.TargetPoolId);
         Assert.Equal("Deploy", scheduled.TaskSnapshot.Name);
+		Assert.Equal("agent", scheduled.ExecutionTargetMode);
+		Assert.Equal("agent-01", scheduled.TargetAgentId);
+		Assert.True(scheduled.IsAgentOwned);
+		Assert.Equal(1UL, scheduled.Revision);
     }
 
     [Fact]
@@ -58,5 +62,6 @@ public sealed class SchedulerSnapshotFactoryTests
         Assert.All(scheduled.ChainSnapshot, snapshot => Assert.Equal("local", snapshot.ExecutionTargetMode));
         Assert.All(scheduled.ChainSnapshot, snapshot => Assert.Null(snapshot.TargetAgentId));
         Assert.All(scheduled.ChainSnapshot, snapshot => Assert.Null(snapshot.TargetPoolId));
+		Assert.Equal("local", scheduled.ExecutionTargetMode); // mixed remote policies require an explicit effective selection from the UI
     }
 }

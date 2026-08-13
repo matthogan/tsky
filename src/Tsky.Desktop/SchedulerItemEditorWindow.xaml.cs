@@ -7,14 +7,22 @@ namespace tsky;
 public partial class SchedulerItemEditorWindow : Window
 {
     private readonly ScheduledItem _draft;
+    private readonly AgentRegistry _agentRegistry;
+    private readonly IReadOnlyList<ScheduleExecutionTargetOption> _targetOptions;
 
-    public SchedulerItemEditorWindow(ScheduledItem source, bool isNew)
+    public SchedulerItemEditorWindow(ScheduledItem source, bool isNew, AgentRegistry? agentRegistry = null)
     {
         InitializeComponent();
 
         _draft = CloneScheduledItem(source);
+        _agentRegistry = agentRegistry ?? new AgentRegistry();
+        _targetOptions = ScheduleExecutionTargetCatalog.Build(_agentRegistry, _draft);
         DialogTitleTextBlock.Text = isNew ? "Create scheduled item" : "Edit scheduled item";
         TargetSummaryTextBlock.Text = BuildTargetSummary(_draft);
+
+        ExecutionTargetComboBox.ItemsSource = _targetOptions;
+        ExecutionTargetComboBox.SelectedItem = ScheduleExecutionTargetCatalog.FindSelected(_targetOptions, _draft)
+            ?? _targetOptions.First(option => option.Mode == ExecutionTargetMode.Local);
 
         DisplayNameTextBox.Text = _draft.DisplayName;
         var localTrigger = _draft.TriggerAtUtc.ToLocalTime();
@@ -36,6 +44,7 @@ public partial class SchedulerItemEditorWindow : Window
         PreviewKeyDown += SchedulerItemEditorWindow_PreviewKeyDown;
 
         UpdateRecurrenceUi();
+        UpdateExecutionTargetStatus();
         Loaded += (_, _) => DisplayNameTextBox.Focus();
     }
 
@@ -69,6 +78,11 @@ public partial class SchedulerItemEditorWindow : Window
         UpdateRecurrenceUi();
     }
 
+    private void ExecutionTargetComboBox_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        UpdateExecutionTargetStatus();
+    }
+
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
         _ = TrySubmit();
@@ -88,6 +102,13 @@ public partial class SchedulerItemEditorWindow : Window
         if (string.IsNullOrWhiteSpace(displayName))
         {
             return ShowValidation("Display name is required.");
+        }
+
+        var selectedTarget = ExecutionTargetComboBox.SelectedItem as ScheduleExecutionTargetOption;
+        var targetError = ScheduleExecutionTargetCatalog.Validate(selectedTarget);
+        if (targetError is not null)
+        {
+            return ShowValidation(targetError);
         }
 
         if (!TryResolveTriggerUtc(out var triggerUtc))
@@ -115,6 +136,19 @@ public partial class SchedulerItemEditorWindow : Window
         }
 
         _draft.DisplayName = displayName;
+        var targetChanged = !string.Equals(
+            ScheduleExecutionTargetCatalog.FindSelected(_targetOptions, _draft)?.Key,
+            selectedTarget!.Key,
+            StringComparison.OrdinalIgnoreCase);
+        ScheduleExecutionTargetCatalog.Apply(_draft, selectedTarget);
+        if (targetChanged)
+        {
+            _draft.PublishedAgentId = null;
+            _draft.AcceptedRevision = 0;
+            _draft.RemoteDeploymentState = null;
+            _draft.RemoteDeploymentMessage = null;
+            _draft.LastAcknowledgedOccurrenceSequence = 0;
+        }
         _draft.TriggerAtUtc = triggerUtc;
         _draft.IsRecurring = isRecurring;
         _draft.RecurrenceExpression = recurrenceExpression;
@@ -174,6 +208,33 @@ public partial class SchedulerItemEditorWindow : Window
         RecurrenceMinutesTextBox.Opacity = isRecurring ? 1 : 0.6;
     }
 
+    private void UpdateExecutionTargetStatus()
+    {
+        if (ExecutionTargetStatusTextBlock is null || PublicationStatusBorder is null)
+        {
+            return;
+        }
+
+        var selected = ExecutionTargetComboBox.SelectedItem as ScheduleExecutionTargetOption;
+        ExecutionTargetStatusTextBlock.Text = ScheduleExecutionTargetCatalog.DescribeReadiness(selected, _agentRegistry);
+
+        var isRemote = selected is not null && selected.Mode != ExecutionTargetMode.Local;
+        PublicationStatusBorder.Visibility = isRemote ? Visibility.Visible : Visibility.Collapsed;
+        if (!isRemote)
+        {
+            PublicationStatusTextBlock.Text = string.Empty;
+            return;
+        }
+
+        var original = ScheduleExecutionTargetCatalog.FindSelected(_targetOptions, _draft);
+        var targetChanged = original is null || !string.Equals(original.Key, selected!.Key, StringComparison.OrdinalIgnoreCase);
+        PublicationStatusTextBlock.Text = targetChanged
+            ? "Not published for this target. Saving will publish when a compatible target is connected."
+            : !string.IsNullOrWhiteSpace(_draft.RemoteDeploymentState)
+                ? $"{_draft.RemoteDeploymentState}: {_draft.RemoteDeploymentMessage ?? "No additional detail."}"
+                : "Not published yet. The desktop fallback remains active until the agent acknowledges this revision.";
+    }
+
     private static string BuildTargetSummary(ScheduledItem item)
     {
         var targetLabel = item.TargetKind == ScheduledTargetKind.GroupChainSnapshot
@@ -198,6 +259,17 @@ public partial class SchedulerItemEditorWindow : Window
             IsEnabled = source.IsEnabled,
             IsRunning = source.IsRunning,
             CreatedAtUtc = source.CreatedAtUtc,
+			UpdatedAtUtc = source.UpdatedAtUtc,
+			Revision = source.Revision,
+			ExecutionTargetMode = source.ExecutionTargetMode,
+			TargetAgentId = source.TargetAgentId,
+			TargetPoolId = source.TargetPoolId,
+			PublishedAgentId = source.PublishedAgentId,
+			PendingPreviousAgentId = source.PendingPreviousAgentId,
+			AcceptedRevision = source.AcceptedRevision,
+			RemoteDeploymentState = source.RemoteDeploymentState,
+			RemoteDeploymentMessage = source.RemoteDeploymentMessage,
+			LastAcknowledgedOccurrenceSequence = source.LastAcknowledgedOccurrenceSequence,
             LastTriggeredAtUtc = source.LastTriggeredAtUtc,
             LastCompletedAtUtc = source.LastCompletedAtUtc,
             LastOccurrenceToken = source.LastOccurrenceToken,

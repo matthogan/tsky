@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package tsky.agent.v1;
+
+option csharp_namespace = "Tsky.Agent.V1";
+option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+import "tsky/agent/v1/run.proto";
+
+// Controller-managed schedules executed from durable agent state.
+
+enum ScheduleTriggerType {
+  SCHEDULE_TRIGGER_TYPE_UNSPECIFIED = 0;
+  SCHEDULE_TRIGGER_TYPE_ONE_SHOT = 1;
+  SCHEDULE_TRIGGER_TYPE_RECURRING = 2;
+}
+
+enum ScheduleMisfirePolicy {
+  SCHEDULE_MISFIRE_POLICY_UNSPECIFIED = 0;
+  SCHEDULE_MISFIRE_POLICY_FIRE_ONCE_WITHIN_WINDOW = 1;
+  SCHEDULE_MISFIRE_POLICY_SKIP = 2;
+  SCHEDULE_MISFIRE_POLICY_COALESCE = 3;
+}
+
+enum ScheduleOverlapPolicy {
+  SCHEDULE_OVERLAP_POLICY_UNSPECIFIED = 0;
+  SCHEDULE_OVERLAP_POLICY_ALLOW = 1;
+  SCHEDULE_OVERLAP_POLICY_SKIP_IF_RUNNING = 2;
+  SCHEDULE_OVERLAP_POLICY_QUEUE_ONE = 3;
+}
+
+enum ScheduleDefinitionState {
+  SCHEDULE_DEFINITION_STATE_UNSPECIFIED = 0;
+  SCHEDULE_DEFINITION_STATE_ACTIVE = 1;
+  SCHEDULE_DEFINITION_STATE_PAUSED = 2;
+  SCHEDULE_DEFINITION_STATE_TOMBSTONED = 3;
+}
+
+enum ScheduleOccurrenceState {
+  SCHEDULE_OCCURRENCE_STATE_UNSPECIFIED = 0;
+  SCHEDULE_OCCURRENCE_STATE_PLANNED = 1;
+  SCHEDULE_OCCURRENCE_STATE_ADMITTED = 2;
+  SCHEDULE_OCCURRENCE_STATE_RUNNING = 3;
+  SCHEDULE_OCCURRENCE_STATE_TERMINAL = 4;
+}
+
+enum ScheduleOccurrenceOutcome {
+  SCHEDULE_OCCURRENCE_OUTCOME_UNSPECIFIED = 0;
+  SCHEDULE_OCCURRENCE_OUTCOME_SUCCEEDED = 1;
+  SCHEDULE_OCCURRENCE_OUTCOME_FAILED = 2;
+  SCHEDULE_OCCURRENCE_OUTCOME_SKIPPED = 3;
+  SCHEDULE_OCCURRENCE_OUTCOME_TIMED_OUT = 4;
+  SCHEDULE_OCCURRENCE_OUTCOME_CANCELLED = 5;
+}
+
+enum ScheduleNackReasonCode {
+  SCHEDULE_NACK_REASON_CODE_UNSPECIFIED = 0;
+  SCHEDULE_NACK_REASON_CODE_INVALID_SPEC = 1;
+  SCHEDULE_NACK_REASON_CODE_UNSUPPORTED_FEATURE = 2;
+  SCHEDULE_NACK_REASON_CODE_REVISION_CONFLICT = 3;
+  SCHEDULE_NACK_REASON_CODE_CAPACITY_POLICY_REJECTED = 4;
+  SCHEDULE_NACK_REASON_CODE_STORAGE_FAILURE = 5;
+  SCHEDULE_NACK_REASON_CODE_AUTHORIZATION_DENIED = 6;
+}
+
+message ScheduleIdentity {
+  string schedule_id = 1;
+  uint64 revision = 2;
+  string source_desktop_instance_id = 3;
+}
+
+message ScheduleSpec {
+  string schedule_id = 1;
+  string display_name = 2;
+  bool enabled = 3;
+  ScheduleTriggerType trigger_type = 4;
+  google.protobuf.Timestamp trigger_at_utc = 5;
+  string recurrence_rule = 6;
+  uint32 trigger_window_seconds = 7;
+  string target_agent_id = 8;
+  string target_pool_id = 9;
+  RunPlan payload_run_plan_snapshot = 10;
+  ScheduleMisfirePolicy misfire_policy = 11;
+  ScheduleOverlapPolicy overlap_policy = 12;
+  uint32 max_catch_up_occurrences = 13;
+  google.protobuf.Timestamp created_at_utc = 14;
+  google.protobuf.Timestamp updated_at_utc = 15;
+}
+
+message ScheduleUpsert {
+  ScheduleIdentity identity = 1;
+  ScheduleSpec spec = 2;
+  string idempotency_key = 3;
+  optional uint64 expected_previous_revision = 4;
+}
+
+message ScheduleDelete {
+  string schedule_id = 1;
+  uint64 revision = 2;
+  string idempotency_key = 3;
+}
+
+message SchedulePause {
+  string schedule_id = 1;
+  uint64 revision = 2;
+  string idempotency_key = 3;
+}
+
+message ScheduleResume {
+  string schedule_id = 1;
+  uint64 revision = 2;
+  string idempotency_key = 3;
+}
+
+message ScheduleAck {
+  string schedule_id = 1;
+  uint64 accepted_revision = 2;
+  bytes persistence_checksum_sha256 = 3;
+  google.protobuf.Timestamp accepted_at_utc = 4;
+}
+
+message ScheduleNack {
+  string schedule_id = 1;
+  uint64 rejected_revision = 2;
+  ScheduleNackReasonCode reason_code = 3;
+  string reason_message = 4;
+  bool retryable = 5;
+}
+
+message ScheduleStatus {
+  string schedule_id = 1;
+  uint64 revision = 2;
+  ScheduleDefinitionState state = 3;
+  google.protobuf.Timestamp next_due_utc = 4;
+  google.protobuf.Timestamp last_tick_utc = 5;
+  uint64 last_occurrence_sequence = 6;
+}
+
+message ScheduleOccurrenceEvent {
+  uint64 sequence = 1;
+  string schedule_id = 2;
+  string occurrence_id = 3;
+  google.protobuf.Timestamp planned_occurrence_utc = 4;
+  google.protobuf.Timestamp admitted_at_utc = 5;
+  google.protobuf.Timestamp started_at_utc = 6;
+  google.protobuf.Timestamp completed_at_utc = 7;
+  ScheduleOccurrenceState state = 8;
+  ScheduleOccurrenceOutcome outcome = 9;
+  string run_id = 10;
+  optional int32 exit_code = 11;
+  string message = 12;
+  string reason_code = 13;
+}
+
+message ScheduleSyncRequest {
+  string sync_id = 1;
+  map<string, uint64> known_revisions = 2;
+  uint64 acknowledged_occurrence_sequence = 3;
+}
+
+message ScheduleSyncResponse {
+  string sync_id = 1;
+  map<string, uint64> local_revisions = 2;
+  repeated string tombstoned_schedule_ids = 3;
+  uint64 latest_occurrence_sequence = 4;
+  repeated ScheduleOccurrenceEvent occurrence_events = 5;
+  map<string, uint64> tombstoned_revisions = 6;
+}

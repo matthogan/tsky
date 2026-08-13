@@ -7,7 +7,8 @@ option go_package = "github.com/matthogan/tsky/agent/protocol/tsky/agent/v1;agen
 
 import "google/protobuf/timestamp.proto";
 
-// Draft companion IDL for Tsky Agent Protocol (TAP) v1.
+// Draft companion IDL for Tsky Agent Protocol (TAP) v1.x (current: 1.1).
+// TAP 1.0 remains negotiable; the package changes only on a breaking major release.
 // The written state-machine and security rules in the technical specification
 // remain normative where this draft does not yet define behaviour completely.
 

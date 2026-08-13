@@ -129,6 +129,29 @@ func (e *Engine) RejectedByCapacity() uint64 {
 	return atomic.LoadUint64(&e.rejectedByCapacity)
 }
 
+// ValidatePlan applies the same executor and working-directory policy used when
+// accepting a RunOffer. Schedule definitions call this before they are made
+// durable so an invalid payload cannot fail repeatedly at every occurrence.
+func (e *Engine) ValidatePlan(plan *agentv1.RunPlan) error {
+	if plan == nil || len(plan.Steps) == 0 {
+		return fmt.Errorf("run plan must contain at least one step")
+	}
+	for _, step := range plan.Steps {
+		if step == nil || step.Command == nil {
+			return fmt.Errorf("run step is missing its command")
+		}
+		if !e.policy.ExecutorAllowed(step.Command.GetExecutorId()) {
+			return fmt.Errorf("executor %q is not allowed", step.Command.GetExecutorId())
+		}
+		if wd := stringParam(step.Command.GetParameters(), "workingDirectory"); wd != "" {
+			if err := e.policy.ValidateWorkingDirectory(wd); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (e *Engine) accept(offer *agentv1.RunOffer) (*runtimefs.Acceptance, bool, error) {
 	if offer == nil || offer.Plan == nil {
 		return nil, false, fmt.Errorf("run offer missing plan")
@@ -143,18 +166,8 @@ func (e *Engine) accept(offer *agentv1.RunOffer) (*runtimefs.Acceptance, bool, e
 	if !bytes.Equal(digest, offer.PlanDigestSha256) {
 		return nil, false, fmt.Errorf("plan digest mismatch")
 	}
-	for _, step := range offer.Plan.Steps {
-		if !e.policy.ExecutorAllowed(step.Command.GetExecutorId()) {
-			return nil, false, fmt.Errorf("executor %q is not allowed", step.Command.GetExecutorId())
-		}
-		params := step.Command.GetParameters()
-		if params != nil {
-			if wd := stringParam(params, "workingDirectory"); wd != "" {
-				if err := e.policy.ValidateWorkingDirectory(wd); err != nil {
-					return nil, false, err
-				}
-			}
-		}
+	if err := e.ValidatePlan(offer.Plan); err != nil {
+		return nil, false, err
 	}
 	return e.store.Accept(offer)
 }

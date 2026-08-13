@@ -5,7 +5,7 @@
 **Date:** 2026-07-17  
 **Target:** Tsky Windows desktop application and cross-platform Tsky Agent  
 **Reference implementations:** C#/.NET controller and Go agent  
-**Protocol:** Tsky Agent Protocol (TAP) v1 draft  
+**Protocol:** Tsky Agent Protocol (TAP) 1.1 draft; TAP 1.0 compatibility retained
 **Protocol design:** Language-neutral semantic core with named transport bindings  
 **Decision owner:** Tsky project
 **Companion draft IDL:** `tap-v1-draft.proto`  
@@ -354,6 +354,19 @@ Use a **composed protocol architecture**:
 6. REAPI, Remote Worker API, and A2A provide selected domain concepts.
 7. OAuth, SSH, WS-Man, MQTT, and AMQP remain optional profiles or adapters.
 
+### 5.11 Version axes
+
+Specification revisions, TAP Core versions, and binding versions have independent lifecycles:
+
+| Axis | Current value | Meaning |
+|---|---:|---|
+| Technical specification | 0.2 | Revision of this document; not sent as a wire-protocol version. |
+| TAP semantic protocol | 1.1 | Current message semantics and state-machine contract. TAP 1.0 remains negotiable for legacy run-offer sessions. |
+| Required gRPC binding | `tap-grpc`/1 | Mapping of TAP frames to the bidirectional gRPC stream. |
+| Optional WebSocket binding | `tap-websocket`/1 | Optional representation of the same TAP semantics. |
+
+Peers advertise exact supported TAP versions and bindings independently. They select the highest exact common semantic version and an exact compatible binding version. The additive `schedule.v1` contract introduced TAP 1.1; it did not change the gRPC representation, so `tap-grpc` remains binding version 1. The protobuf namespace remains `tsky.agent.v1` until a breaking TAP 2 release.
+
 ---
 
 ## 6. Architecture decisions
@@ -684,7 +697,7 @@ Example controller descriptor:
 {
   "controllerId": "ctl_01J...",
   "displayName": "Matthew's Tsky",
-  "tapVersions": ["1.0"],
+  "tapVersions": ["1.1", "1.0"],
   "bindings": [
     {
       "profile": "tap-grpc",
@@ -1013,7 +1026,7 @@ Definitions are desktop-owned. They must not be overwritten by heartbeat data.
   "lastSeenAt": "2026-07-17T18:08:43Z",
   "sessionId": "ses_01J...",
   "agentVersion": "0.1.0",
-  "protocolVersion": "1.0",
+  "protocolVersion": "1.1",
   "hostname": "BUILD-01",
   "os": "windows",
   "architecture": "amd64",
@@ -1127,7 +1140,7 @@ Example:
 
 ```json
 {
-  "protocolVersion": "1.0",
+  "protocolVersion": "1.1",
   "pendingAgentId": "agt_pending_01J...",
   "token": "tsky_enrol_...",
   "controllerId": "ctl_01J...",
@@ -1472,12 +1485,14 @@ agent_nonce=<base64url>
 controller_nonce=<base64url>
 tap_version=<major.minor>
 binding=<binding-profile>
+binding_version=<binding-version>
 issued_at=<RFC3339 UTC>
 ```
 
 Requirements:
 
 - Field order and line endings are fixed as shown.
+- TAP 1.0 omits the `binding_version` line for compatibility; TAP 1.1 adds it so the proof binds both independently negotiated version axes.
 - Values MUST NOT contain newline characters.
 - Nonces contain at least 128 bits of cryptographically secure randomness.
 - Challenges expire after 30 seconds.

@@ -6208,6 +6208,9 @@ public partial class MainWindow : Window
             };
             Grid.SetRow(adminBar, 2);
 
+            var inputPorts = GetInputPortNames(task);
+            var outputPorts = GetOutputPortNames(task);
+
             var descriptionText = new TextBlock
             {
                 Text = task.Description ?? string.Empty,
@@ -6225,7 +6228,11 @@ public partial class MainWindow : Window
 
             var descriptionContainer = new Border
             {
-                Padding = new Thickness(12, 10, 12, 10),
+                Padding = new Thickness(
+                    12 + (inputPorts.Count > 0 ? 8 : 0),
+                    10,
+                    12 + (outputPorts.Count > 0 ? 8 : 0),
+                    10),
                 Child = descriptionText
             };
             Grid.SetRow(descriptionContainer, 1);
@@ -6281,14 +6288,12 @@ public partial class MainWindow : Window
             _taskRunningOverlays[GetTaskStateKey(task)] = runningOverlay;
             ApplyTaskCardRunningVisual(task);
 
-            var inputPorts = GetInputPortNames(task);
             StackPanel? leftPorts = null;
             if (inputPorts.Count > 0)
             {
                 leftPorts = CreatePortStack(inputPorts, isInput: true, task.Inputs, task.InputBindings);
             }
 
-            var outputPorts = GetOutputPortNames(task);
             StackPanel? rightPorts = null;
             if (outputPorts.Count > 0)
             {

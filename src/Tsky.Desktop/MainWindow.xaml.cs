@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
@@ -48,6 +49,11 @@ public partial class MainWindow : Window
     private const string TaskEditorTitle = "Task Editor";
     private const string TaskUnavailableMessage = "The selected task is no longer available.";
     private const int MaxRunHistoryEntries = 300;
+    private const int OutputFlushIntervalMs = 50;
+    private const int MaxOutputLinesPerFlush = 120;
+    private const int MaxOutputCharsPerFlush = 24000;
+    private const int MaxBufferedOutputLinesPerRun = 1500;
+    private const int MaxBufferedOutputCharsPerRun = 220000;
     private const bool EnableLayoutDebugLogging = true;
     private const double GraphNodeWidth = 190;
     private const double GraphNodeHeight = 96;
@@ -345,8 +351,20 @@ public partial class MainWindow : Window
 
         public required DispatcherTimer SpinnerTimer { get; init; }
 
+        public required DispatcherTimer OutputFlushTimer { get; init; }
+
+        public ConcurrentQueue<BufferedOutputEntry> BufferedOutputQueue { get; } = new();
+
+        public int BufferedOutputLines { get; set; }
+
+        public int BufferedOutputChars { get; set; }
+
+        public int DroppedBufferedLineCount { get; set; }
+
         public int SpinnerFrameIndex { get; set; }
     }
+
+    private readonly record struct BufferedOutputEntry(string StreamName, string Line);
 
     private sealed class OutputBudgetState
     {
@@ -1725,7 +1743,7 @@ public partial class MainWindow : Window
 
         foreach (var line in lines)
         {
-            AppendStreamOutputLine(tracking.OutputTextBox, streamName, line);
+            EnqueueBufferedStreamOutputLine(tracking.OutputTextBox, streamName, line);
         }
     }
 
@@ -14202,10 +14220,7 @@ public partial class MainWindow : Window
                 effectiveTask,
                 onOutputLine: (line, isError) =>
                 {
-                    Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
-                    {
-                        AppendStreamOutputLine(outputTextBox, isError ? "stderr" : "stdout", line);
-                    }));
+                    EnqueueBufferedStreamOutputLine(outputTextBox, isError ? "stderr" : "stdout", line);
                 },
                 cancellationToken: effectiveCancellationToken);
 
@@ -14695,6 +14710,11 @@ public partial class MainWindow : Window
             Interval = TimeSpan.FromMilliseconds(120)
         };
 
+        var outputFlushTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(OutputFlushIntervalMs)
+        };
+
         var tabContext = new TaskTabContext
         {
             HostOutputPanel = currentOutputPanel,
@@ -14705,7 +14725,8 @@ public partial class MainWindow : Window
             OutputTextBox = outputTextBox,
             StatusText = statusText,
             TitleText = titleText,
-            SpinnerTimer = spinnerTimer
+            SpinnerTimer = spinnerTimer,
+            OutputFlushTimer = outputFlushTimer
         };
 
         spinnerTimer.Tick += (_, _) =>
@@ -14713,6 +14734,8 @@ public partial class MainWindow : Window
             tabContext.StatusText.Text = RunningIndicatorFrames[tabContext.SpinnerFrameIndex % RunningIndicatorFrames.Length];
             tabContext.SpinnerFrameIndex++;
         };
+
+        outputFlushTimer.Tick += (_, _) => FlushBufferedOutput(tabContext);
 
         runItemExpander.Expanded += (_, _) => ExpandOutputRun(tabContext);
         runItemExpander.Collapsed += (_, _) =>
@@ -14981,6 +15004,14 @@ public partial class MainWindow : Window
     {
         var panel = runContext.HostOutputPanel;
         runContext.SpinnerTimer.Stop();
+        runContext.OutputFlushTimer.Stop();
+        while (runContext.BufferedOutputQueue.TryDequeue(out _))
+        {
+            // Drain buffered output to release queued lines for this closed run.
+        }
+        runContext.BufferedOutputLines = 0;
+        runContext.BufferedOutputChars = 0;
+        runContext.DroppedBufferedLineCount = 0;
         _outputBudgetByTextBox.Remove(runContext.OutputTextBox);
 
         panel.Runs.Remove(runContext);
@@ -15252,6 +15283,11 @@ public partial class MainWindow : Window
 
     private void AppendStreamOutputLine(RichTextBox outputTextBox, string streamName, string line)
     {
+        _ = AppendStreamOutputLine(outputTextBox, streamName, line, deferScroll: false);
+    }
+
+    private bool AppendStreamOutputLine(RichTextBox outputTextBox, string streamName, string line, bool deferScroll)
+    {
         var boundedLine = PreviewForUiLog(line, MaxUiStreamLineChars);
         if (!TryConsumeOutputBudget(outputTextBox, boundedLine.Length, out var budgetState))
         {
@@ -15261,10 +15297,10 @@ public partial class MainWindow : Window
                 AppendLogBypassBudget(outputTextBox, "[system] Output limit reached for this run; additional stream output is suppressed to keep the UI responsive.");
             }
 
-            return;
+            return false;
         }
 
-        var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
+        var shouldAutoScroll = !deferScroll && ShouldAutoScrollOutput(outputTextBox);
         var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
         var paragraph = EnsureOutputParagraph(outputTextBox);
         AppendTimestampRun(paragraph, timestamp);
@@ -15286,6 +15322,109 @@ public partial class MainWindow : Window
         if (shouldAutoScroll)
         {
             ScrollOutputToEnd(outputTextBox);
+        }
+
+        return true;
+    }
+
+    private void EnqueueBufferedStreamOutputLine(RichTextBox outputTextBox, string streamName, string line)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                EnqueueBufferedStreamOutputLine(outputTextBox, streamName, line);
+            }));
+            return;
+        }
+
+        if (!TryGetOutputTabContext(outputTextBox, out var tabContext))
+        {
+            // Run tab can be closed while late stream events are still arriving.
+            // In that case ignore orphaned output instead of rehydrating UI state.
+            return;
+        }
+
+        // Keep a bounded per-run queue so very fast producers do not create unbounded memory growth.
+        while ((tabContext.BufferedOutputLines >= MaxBufferedOutputLinesPerRun
+                || tabContext.BufferedOutputChars >= MaxBufferedOutputCharsPerRun)
+               && tabContext.BufferedOutputQueue.TryDequeue(out var droppedEntry))
+        {
+            tabContext.BufferedOutputLines = Math.Max(0, tabContext.BufferedOutputLines - 1);
+            tabContext.BufferedOutputChars = Math.Max(0, tabContext.BufferedOutputChars - droppedEntry.Line.Length);
+            tabContext.DroppedBufferedLineCount++;
+        }
+
+        tabContext.BufferedOutputQueue.Enqueue(new BufferedOutputEntry(streamName, line));
+        tabContext.BufferedOutputLines++;
+        tabContext.BufferedOutputChars += line.Length;
+        EnsureOutputFlushTimerRunning(tabContext);
+    }
+
+    private void EnsureOutputFlushTimerRunning(TaskTabContext tabContext)
+    {
+        if (Dispatcher.CheckAccess())
+        {
+            if (!tabContext.OutputFlushTimer.IsEnabled)
+            {
+                tabContext.OutputFlushTimer.Start();
+            }
+
+            return;
+        }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (!tabContext.OutputFlushTimer.IsEnabled)
+            {
+                tabContext.OutputFlushTimer.Start();
+            }
+        }));
+    }
+
+    private void FlushBufferedOutput(TaskTabContext tabContext)
+    {
+        if (tabContext.BufferedOutputQueue.IsEmpty)
+        {
+            tabContext.OutputFlushTimer.Stop();
+            return;
+        }
+
+        var outputTextBox = tabContext.OutputTextBox;
+        var shouldAutoScroll = ShouldAutoScrollOutput(outputTextBox);
+        var appendedAny = false;
+        var drainedLines = 0;
+        var drainedChars = 0;
+
+        while (drainedLines < MaxOutputLinesPerFlush
+               && drainedChars < MaxOutputCharsPerFlush
+               && tabContext.BufferedOutputQueue.TryDequeue(out var entry))
+        {
+            tabContext.BufferedOutputLines = Math.Max(0, tabContext.BufferedOutputLines - 1);
+            tabContext.BufferedOutputChars = Math.Max(0, tabContext.BufferedOutputChars - entry.Line.Length);
+            drainedLines++;
+            drainedChars += entry.Line.Length;
+            if (AppendStreamOutputLine(outputTextBox, entry.StreamName, entry.Line, deferScroll: true))
+            {
+                appendedAny = true;
+            }
+        }
+
+        if (tabContext.DroppedBufferedLineCount > 0)
+        {
+            AppendLogBypassBudget(outputTextBox, $"[system] Output producer exceeded UI flush capacity; dropped {tabContext.DroppedBufferedLineCount} buffered line(s) to maintain responsiveness.");
+            tabContext.DroppedBufferedLineCount = 0;
+            appendedAny = true;
+        }
+
+        if (appendedAny && shouldAutoScroll)
+        {
+            ScrollOutputToEnd(outputTextBox);
+        }
+
+        if (tabContext.BufferedOutputQueue.IsEmpty)
+        {
+            tabContext.OutputFlushTimer.Stop();
         }
     }
 

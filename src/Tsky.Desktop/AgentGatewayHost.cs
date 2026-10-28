@@ -204,7 +204,11 @@ public sealed class AgentGatewayHost : IAsyncDisposable
                     throw new InvalidOperationException("TLS listener is enabled, but the configured PFX certificate path is missing or invalid.");
                 }
 
-                var certificate = new X509Certificate2(settings.CertificatePath, settings.CertificatePassword);
+                var certificate = X509CertificateLoader.LoadPkcs12FromFile(
+                    settings.CertificatePath,
+                    settings.CertificatePassword,
+                    X509KeyStorageFlags.DefaultKeySet,
+                    Pkcs12LoaderLimits.Defaults);
                 ConfigureListener(options, bindHost, port, HttpProtocols.Http1AndHttp2, certificate);
 
                 if (settings.IsDevLoopbackFallbackEnabled && port != DefaultPort)

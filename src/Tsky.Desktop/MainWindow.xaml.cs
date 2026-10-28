@@ -5100,7 +5100,11 @@ public partial class MainWindow : Window
 
         try
         {
-            _ = new X509Certificate2(certPath, settings.CertificatePassword);
+            _ = X509CertificateLoader.LoadPkcs12FromFile(
+                certPath,
+                settings.CertificatePassword,
+                X509KeyStorageFlags.DefaultKeySet,
+                Pkcs12LoaderLimits.Defaults);
         }
         catch
         {

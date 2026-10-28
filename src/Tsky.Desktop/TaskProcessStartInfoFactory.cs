@@ -190,9 +190,16 @@ internal static class TaskProcessStartInfoFactory
         }
 
         var expandedDirectory = ExpandEnvironmentPlaceholders(task.WorkingDirectory.Trim(), processStartInfo.Environment);
-        var resolvedDirectory = Path.IsPathRooted(expandedDirectory)
-            ? expandedDirectory
-            : Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, expandedDirectory));
+        var normalizedDirectory = NormalizePathValue(expandedDirectory);
+
+        if (string.IsNullOrWhiteSpace(normalizedDirectory))
+        {
+            return true;
+        }
+
+        var resolvedDirectory = Path.IsPathRooted(normalizedDirectory)
+            ? normalizedDirectory
+            : Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, normalizedDirectory));
 
         if (!Directory.Exists(resolvedDirectory))
         {
@@ -202,6 +209,18 @@ internal static class TaskProcessStartInfoFactory
 
         processStartInfo.WorkingDirectory = resolvedDirectory;
         return true;
+    }
+
+    private static string NormalizePathValue(string value)
+    {
+        var trimmed = value.Trim();
+
+        if (trimmed.Length >= 2 && trimmed.StartsWith('"') && trimmed.EndsWith('"'))
+        {
+            trimmed = trimmed[1..^1].Trim();
+        }
+
+        return trimmed;
     }
 
     private static string ExpandEnvironmentPlaceholders(string value, IDictionary<string, string?> environment)

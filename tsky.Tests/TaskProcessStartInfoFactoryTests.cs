@@ -37,4 +37,51 @@ public sealed class TaskProcessStartInfoFactoryTests
         Assert.Equal(commandLine, startInfo.Arguments);
         Assert.Empty(startInfo.ArgumentList);
     }
+
+    [Fact]
+    public void TryBuild_WorkingDirectoryQuotedAbsolutePath_UsesUnquotedPath()
+    {
+        var workingDirectory = Path.Combine(Path.GetTempPath(), "tsky-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workingDirectory);
+
+        try
+        {
+            var task = new LauncherTask
+            {
+                Name = "Quoted working directory",
+                Group = "Tests",
+                Runner = "cmd",
+                CommandLine = "echo hi",
+                WorkingDirectory = $"\"{workingDirectory}\""
+            };
+
+            var success = TaskProcessStartInfoFactory.TryBuild(task, out ProcessStartInfo startInfo, out var error);
+
+            Assert.True(success, error);
+            Assert.Equal(workingDirectory, startInfo.WorkingDirectory);
+        }
+        finally
+        {
+            Directory.Delete(workingDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void TryBuild_WorkingDirectoryQuotedMissingPath_ReturnsDirectPathError()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(), "tsky-tests", Guid.NewGuid().ToString("N"));
+        var task = new LauncherTask
+        {
+            Name = "Missing quoted working directory",
+            Group = "Tests",
+            Runner = "cmd",
+            CommandLine = "echo hi",
+            WorkingDirectory = $"\"{missingDirectory}\""
+        };
+
+        var success = TaskProcessStartInfoFactory.TryBuild(task, out _, out var error);
+
+        Assert.False(success);
+        Assert.Equal($"Working directory does not exist: {missingDirectory}", error);
+    }
 }

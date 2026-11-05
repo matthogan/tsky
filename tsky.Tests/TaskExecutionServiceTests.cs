@@ -176,6 +176,40 @@ public sealed class TaskExecutionServiceTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_FireAndForgetSlowStart_DoesNotBlockCallerThread()
+    {
+        using var seamScope = new TaskExecutionServiceSeamScope();
+        TaskExecutionService.StartProcessOverride = process =>
+        {
+            Thread.Sleep(500);
+            process.Start();
+            return true;
+        };
+
+        var task = new LauncherTask
+        {
+            Name = "Slow fire-and-forget start",
+            Group = "Tests",
+            Runner = "cmd",
+            WaitForExit = false,
+            CommandLine = "echo hi"
+        };
+
+        var stopwatch = Stopwatch.StartNew();
+        var pending = TaskExecutionService.ExecuteAsync(task);
+        var synchronousElapsedMilliseconds = stopwatch.ElapsedMilliseconds;
+
+        Assert.True(
+            synchronousElapsedMilliseconds < 250,
+            $"ExecuteAsync should return control quickly for fire-and-forget launches. Elapsed: {synchronousElapsedMilliseconds} ms.");
+
+        var result = await pending;
+        Assert.True(result.Started);
+        Assert.False(result.WaitedForExit);
+        Assert.Equal(TaskExecutionOutcome.Started, result.Outcome);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_MissingEnvironmentPlaceholderInCommandLine_ReturnsConfigurationError()
     {
         var variableName = "TSKY_MISSING_" + Guid.NewGuid().ToString("N").ToUpperInvariant();

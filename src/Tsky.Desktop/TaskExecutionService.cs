@@ -111,7 +111,7 @@ public static class TaskExecutionService
         try
         {
             using var process = new Process { StartInfo = processStartInfo };
-            StartProcess(process);
+            await StartProcessAsync(process);
 
             if (!waitForExit)
             {
@@ -415,6 +415,13 @@ public static class TaskExecutionService
         }
 
         process.Start();
+    }
+
+    private static Task StartProcessAsync(Process process)
+    {
+        // Process.Start can block for GUI-heavy launches (for example IDE bootstrap).
+        // Run startup on a worker thread so task launch does not stall the UI thread.
+        return Task.Run(() => StartProcess(process));
     }
 
     private static Task WaitForExitAsync(Process process, CancellationToken cancellationToken)

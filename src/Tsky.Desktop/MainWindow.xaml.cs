@@ -145,6 +145,11 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _graphRenderDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(45) };
     private readonly DispatcherTimer _graphAutoPanTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private TaskSurfaceViewMode _taskSurfaceViewMode = TaskSurfaceViewMode.Task;
+    private readonly TaskGroupSurfaceSession _taskGroupSurfaceSession = new();
+    private TaskGroupPopoutManager? _taskGroupPopoutManager;
+    private string? _popoutPinnedGroupName;
+    private TaskSurfaceViewMode _popoutTaskSurfaceViewMode = TaskSurfaceViewMode.Task;
+    private int? _popoutSelectedTaskIndex;
     private int _sidebarSpinnerFrameIndex;
     private bool _isHandlingBottomPanePortTabSelection;
     private bool _isSyncingBottomPaneToSelection;
@@ -821,9 +826,15 @@ public partial class MainWindow : Window
         _agentStatusRefreshTimer.Start();
 
         LoadTaskButtons();
+        _taskGroupPopoutManager = new TaskGroupPopoutManager(
+            _taskGroupSurfaceSession,
+            BuildTaskGroupSurfaceSnapshot,
+            CreateTaskGroupChildWindowActions());
         StartSchedulerPoller();
         ConfigureResultEvaluatorEditor();
         UpdateTaskSurfaceToggleUi();
+        UpdateGroupPopoutButtonState();
+        PublishTaskGroupSurfaceSession("Startup");
         SyncTaskSurfaceToViewport();
         DebugTraceLog.Write($"[Startup] MainWindow initialized. LogPath='{DebugTraceLog.CurrentLogPath}'");
     }
@@ -1121,6 +1132,8 @@ public partial class MainWindow : Window
         _sidebarStatusTimer.Stop();
         _graphRenderDebounceTimer.Stop();
         _agentStatusRefreshTimer.Stop();
+        _taskGroupPopoutManager?.Dispose();
+        _taskGroupPopoutManager = null;
         StopSchedulerPoller();
         CommandManager.RemovePreviewExecutedHandler(this, CommandManager_PreviewExecuted);
         _ = _agentGatewayHost.StopAsync();
@@ -2871,6 +2884,7 @@ public partial class MainWindow : Window
         RefreshHistoryView();
         ApplyGroupViewState();
         UpdateTaskSurfaceToggleUi();
+        PublishTaskGroupSurfaceSession("MainReload");
     }
 
     private void RebuildGroupNavigator(IReadOnlyList<GroupSidebarItem> groups)
@@ -3478,6 +3492,7 @@ public partial class MainWindow : Window
         {
             _selectedScheduledItemId = null;
             UpdateSchedulerSidebarVisual();
+            PublishTaskGroupSurfaceSession("MainViewScheduler");
             return;
         }
 
@@ -3493,6 +3508,7 @@ public partial class MainWindow : Window
         }
 
         ApplySchedulerCardSelectionVisuals();
+        PublishTaskGroupSurfaceSession("MainViewScheduler");
     }
 
     private Grid CreateScheduledItemCard(ScheduledItem item, Color cardColor)
@@ -3843,6 +3859,7 @@ public partial class MainWindow : Window
             _selectedTemplateTaskIndex = null;
             ShowTemplateResultEvaluatorSample(selectTab: false);
             UpdateTemplatesSidebarVisual();
+            PublishTaskGroupSurfaceSession("MainViewTemplates");
             return;
         }
 
@@ -3859,6 +3876,7 @@ public partial class MainWindow : Window
         }
 
         ApplyTemplateTaskCardSelectionVisuals();
+        PublishTaskGroupSurfaceSession("MainViewTemplates");
     }
 
     private Grid CreateTemplateTaskCard(LauncherTask templateTask, int templateIndex, Color cardColor)
@@ -4148,6 +4166,7 @@ public partial class MainWindow : Window
         {
             _selectedAgentId = null;
             UpdateAgentSidebarSelectionVisuals();
+            PublishTaskGroupSurfaceSession("MainViewAgents");
             return;
         }
 
@@ -4169,6 +4188,7 @@ public partial class MainWindow : Window
         ApplyAgentCardSelectionVisuals();
         UpdateSelectedAgentRuntimePanel();
         UpdateAgentSidebarSelectionVisuals();
+        PublishTaskGroupSurfaceSession("MainViewAgents");
     }
 
     private Grid CreateAgentCard(AgentDefinition agent, Color cardColor)
@@ -4627,10 +4647,30 @@ public partial class MainWindow : Window
         RefreshHistoryView();
         ApplyGroupViewState();
         UpdateTaskSurfaceToggleUi();
+        PublishTaskGroupSurfaceSession("MainGroupSelect");
         DebugTraceLog.Write($"[Group] SelectGroup applied='{_selectedGroupName ?? "(none)"}', visibleTasks={_visibleTaskIndexes.Count}");
     }
 
     private void RibbonTaskSurfaceToggleButton_Click(object sender, RoutedEventArgs e)
+    {
+        ToggleTaskSurfaceMode();
+    }
+
+    private void GroupPopoutButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!CanOpenSelectedGroupPopout())
+        {
+            return;
+        }
+
+        _popoutPinnedGroupName = NormalizeGroupName(_selectedGroupName);
+        _popoutTaskSurfaceViewMode = _taskSurfaceViewMode;
+        _popoutSelectedTaskIndex = _selectedTaskIndex;
+        _taskGroupPopoutManager?.OpenOrActivate();
+        PublishTaskGroupSurfaceSession("ChildOpen");
+    }
+
+    private void ToggleTaskSurfaceMode()
     {
         if (string.IsNullOrWhiteSpace(_selectedGroupName))
         {
@@ -4650,6 +4690,8 @@ public partial class MainWindow : Window
         {
             RenderSelectedGroupTasks();
         }
+
+        PublishTaskGroupSurfaceSession("MainToggle");
         RecalibrateTaskScrollViewport();
     }
 
@@ -4687,6 +4729,7 @@ public partial class MainWindow : Window
 
         var hasGroupSelection = !string.IsNullOrWhiteSpace(_selectedGroupName);
         RibbonTaskSurfaceToggleButton.IsEnabled = hasGroupSelection && !_isAgentViewSelected && !_isSchedulerViewSelected && !_isTemplateViewSelected;
+        UpdateGroupPopoutButtonState();
 
         if (_taskSurfaceViewMode == TaskSurfaceViewMode.Task)
         {
@@ -4697,6 +4740,309 @@ public partial class MainWindow : Window
 
         RibbonTaskSurfaceToggleLabel.Text = "Task";
         RibbonTaskSurfaceToggleButton.ToolTip = "Switch to Task view";
+    }
+
+    private TaskGroupChildWindowActions CreateTaskGroupChildWindowActions()
+    {
+        return new TaskGroupChildWindowActions
+        {
+            RunChainAsync = RunChainFromPopoutGroupAsync,
+            ToggleViewMode = ToggleTaskSurfaceModeFromPopout,
+            SelectTask = SelectTaskFromPopout,
+            RunTaskAsync = RunTaskFromPopoutAsync,
+            RunChainFromTaskAsync = RunTaskChainFromPopoutAsync,
+            EditTask = EditTask,
+            DeleteTask = DeleteTask,
+            ToggleTaskEnabled = ToggleTaskEnabled
+        };
+    }
+
+    private async Task RunChainFromPopoutGroupAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_popoutPinnedGroupName))
+        {
+            return;
+        }
+
+        var groupTaskIndexes = GetTaskIndexesForGroup(_popoutPinnedGroupName);
+        if (groupTaskIndexes.Count == 0)
+        {
+            return;
+        }
+
+        var firstEnabledTaskIndex = groupTaskIndexes.FirstOrDefault(index => IsTaskEnabled(_currentConfiguration.Tasks[index]));
+        if (!groupTaskIndexes.Contains(firstEnabledTaskIndex))
+        {
+            return;
+        }
+
+        _popoutSelectedTaskIndex = firstEnabledTaskIndex;
+        PublishTaskGroupSurfaceSession("ChildRunChain");
+        _ = await RunTaskChainFromTaskAsync(firstEnabledTaskIndex, syncMainSelection: false);
+    }
+
+    private void ToggleTaskSurfaceModeFromPopout()
+    {
+        _popoutTaskSurfaceViewMode = _popoutTaskSurfaceViewMode == TaskSurfaceViewMode.Task
+            ? TaskSurfaceViewMode.Graph
+            : TaskSurfaceViewMode.Task;
+
+        PublishTaskGroupSurfaceSession("ChildToggle");
+    }
+
+    private void SelectTaskFromPopout(int taskIndex)
+    {
+        if (!IsValidTaskIndex(taskIndex))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_popoutPinnedGroupName) || !TryGetTask(taskIndex, out var task))
+        {
+            return;
+        }
+
+        var taskGroup = NormalizeGroupName(task.Group);
+        if (!string.Equals(taskGroup, _popoutPinnedGroupName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _popoutSelectedTaskIndex = taskIndex;
+        PublishTaskGroupSurfaceSession("ChildSelection");
+    }
+
+    private async Task RunTaskFromPopoutAsync(int taskIndex)
+    {
+        if (!IsValidTaskIndex(taskIndex) || !TryGetTask(taskIndex, out var task))
+        {
+            AppMessageBox.Show(this, TaskUnavailableMessage, TaskEditorTitle, MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_popoutPinnedGroupName)
+            || !string.Equals(NormalizeGroupName(task.Group), _popoutPinnedGroupName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!IsTaskEnabled(task))
+        {
+            AppMessageBox.Show(this, $"Task '{task.Name}' is disabled.", "Task Disabled", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _popoutSelectedTaskIndex = taskIndex;
+        PublishTaskGroupSurfaceSession("ChildRunTask");
+        await ExecuteTaskWithRetriesAsync(task, null, isReplay: false);
+    }
+
+    private async Task RunTaskChainFromPopoutAsync(int taskIndex)
+    {
+        if (!IsValidTaskIndex(taskIndex))
+        {
+            return;
+        }
+
+        _popoutSelectedTaskIndex = taskIndex;
+        PublishTaskGroupSurfaceSession("ChildRunChainFromTask");
+        _ = await RunTaskChainFromTaskAsync(taskIndex, syncMainSelection: false);
+    }
+
+    private bool CanOpenSelectedGroupPopout()
+    {
+        return !_isAgentViewSelected
+            && !_isSchedulerViewSelected
+            && !_isTemplateViewSelected
+            && !string.IsNullOrWhiteSpace(_selectedGroupName);
+    }
+
+    private void UpdateGroupPopoutButtonState()
+    {
+        var canOpenPopout = CanOpenSelectedGroupPopout();
+        if (GroupPopoutButton is not null)
+        {
+            GroupPopoutButton.IsEnabled = canOpenPopout;
+        }
+    }
+
+    private void PublishTaskGroupSurfaceSession(string origin)
+    {
+        var isPopoutOpen = _taskGroupPopoutManager?.IsOpen == true;
+        var groupName = isPopoutOpen && !string.IsNullOrWhiteSpace(_popoutPinnedGroupName)
+            ? _popoutPinnedGroupName
+            : CanOpenSelectedGroupPopout()
+                ? NormalizeGroupName(_selectedGroupName)
+                : null;
+
+        var groupTaskIndexes = !string.IsNullOrWhiteSpace(groupName)
+            ? GetTaskIndexesForGroup(groupName)
+            : [];
+
+        int? selectedTaskIndex;
+        if (isPopoutOpen)
+        {
+            selectedTaskIndex = _popoutSelectedTaskIndex is int popoutTaskIndex && groupTaskIndexes.Contains(popoutTaskIndex)
+                ? popoutTaskIndex
+                : groupTaskIndexes.Count > 0
+                    ? groupTaskIndexes[0]
+                    : (int?)null;
+
+            if (selectedTaskIndex.HasValue)
+            {
+                _popoutSelectedTaskIndex = selectedTaskIndex.Value;
+            }
+        }
+        else
+        {
+            selectedTaskIndex = _selectedTaskIndex is int value && _visibleTaskIndexes.Contains(value)
+                ? value
+                : (int?)null;
+        }
+
+        var isGraphMode = isPopoutOpen
+            ? _popoutTaskSurfaceViewMode == TaskSurfaceViewMode.Graph
+            : _taskSurfaceViewMode == TaskSurfaceViewMode.Graph;
+
+        _taskGroupSurfaceSession.Update(
+            groupName,
+            isGraphMode,
+            selectedTaskIndex,
+            origin);
+
+        _taskGroupPopoutManager?.RefreshIfOpen();
+    }
+
+    private TaskGroupSurfaceSnapshot BuildTaskGroupSurfaceSnapshot()
+    {
+        var isPopoutOpen = _taskGroupPopoutManager?.IsOpen == true;
+        var normalizedGroupName = isPopoutOpen && !string.IsNullOrWhiteSpace(_popoutPinnedGroupName)
+            ? _popoutPinnedGroupName
+            : CanOpenSelectedGroupPopout()
+                ? NormalizeGroupName(_selectedGroupName)
+                : null;
+
+        if (string.IsNullOrWhiteSpace(normalizedGroupName))
+        {
+            return TaskGroupSurfaceSnapshot.Empty;
+        }
+
+        var allTasks = _currentConfiguration.Tasks.ToList();
+        var visibleTaskIndexes = GetTaskIndexesForGroup(normalizedGroupName);
+        int? selectedTaskIndex = _popoutSelectedTaskIndex is int currentSelectedTaskIndex && visibleTaskIndexes.Contains(currentSelectedTaskIndex)
+            ? currentSelectedTaskIndex
+            : visibleTaskIndexes.Count > 0
+                ? visibleTaskIndexes[0]
+                : (int?)null;
+
+        if (visibleTaskIndexes.Count == 0)
+        {
+            selectedTaskIndex = null;
+        }
+        else if (selectedTaskIndex.HasValue)
+        {
+            _popoutSelectedTaskIndex = selectedTaskIndex.Value;
+        }
+
+        var viewMode = isPopoutOpen
+            ? _popoutTaskSurfaceViewMode
+            : _taskSurfaceViewMode;
+        var snapshotCount = _runHistory.Count(entry => string.Equals(entry.Snapshot.Group, normalizedGroupName, StringComparison.OrdinalIgnoreCase));
+        var groupVariables = GetGroupVariablesForGroup(normalizedGroupName);
+
+        var taskItems = new List<TaskGroupSurfaceTaskItem>(visibleTaskIndexes.Count);
+        for (var displayIndex = 0; displayIndex < visibleTaskIndexes.Count; displayIndex++)
+        {
+            var taskIndex = visibleTaskIndexes[displayIndex];
+            if (!TryGetTask(taskIndex, out var task))
+            {
+                continue;
+            }
+
+            var state = MapTaskGroupSurfaceTaskState(task);
+            var stateLabel = BuildTaskGroupSurfaceStateLabel(state);
+            var variableUsages = TaskVariableService.GetGroupVariableUsages(
+                task,
+                groupVariables,
+                includeDataflowFields: false);
+            var hasVariableUsage = variableUsages.Count > 0;
+            var hasImportedSource = !string.IsNullOrWhiteSpace(task.ImportedFromFile);
+            var inputPortNames = GetInputPortNames(task);
+            var outputPortNames = GetOutputPortNames(task);
+
+            taskItems.Add(new TaskGroupSurfaceTaskItem(
+                taskIndex,
+                displayIndex + 1,
+                string.IsNullOrWhiteSpace(task.Name) ? "(Unnamed Task)" : task.Name,
+                task.Description ?? string.Empty,
+                inputPortNames,
+                outputPortNames,
+                IsTaskEnabled(task),
+                selectedTaskIndex.HasValue && selectedTaskIndex.Value == taskIndex,
+                state,
+                stateLabel,
+                hasVariableUsage,
+                hasVariableUsage ? BuildTaskVariableUsageTooltip(variableUsages) : string.Empty,
+                !string.IsNullOrWhiteSpace(task.ResultEvaluatorScript),
+                hasImportedSource,
+                hasImportedSource ? BuildImportedTaskTooltip(task) : string.Empty,
+                task.RequiresElevation));
+        }
+
+        var emptyStateText = $"No tasks in '{normalizedGroupName}'. Use Add Task to populate this group.";
+
+        return new TaskGroupSurfaceSnapshot(
+            normalizedGroupName,
+            $"Snapshots in this group: {snapshotCount}",
+            emptyStateText,
+            viewMode == TaskSurfaceViewMode.Graph,
+            selectedTaskIndex,
+            allTasks,
+            visibleTaskIndexes,
+            taskItems);
+    }
+
+    private List<int> GetTaskIndexesForGroup(string groupName)
+    {
+        var indexes = new List<int>();
+        for (var index = 0; index < _currentConfiguration.Tasks.Count; index++)
+        {
+            var task = _currentConfiguration.Tasks[index];
+            if (string.Equals(NormalizeGroupName(task.Group), groupName, StringComparison.OrdinalIgnoreCase))
+            {
+                indexes.Add(index);
+            }
+        }
+
+        return indexes;
+    }
+
+    private TaskGroupSurfaceTaskState MapTaskGroupSurfaceTaskState(LauncherTask task)
+    {
+        if (!IsTaskEnabled(task))
+        {
+            return TaskGroupSurfaceTaskState.Disabled;
+        }
+
+        return GetTaskRunState(task) switch
+        {
+            TaskRunState.Running => TaskGroupSurfaceTaskState.Running,
+            TaskRunState.Succeeded => TaskGroupSurfaceTaskState.Succeeded,
+            TaskRunState.Failed => TaskGroupSurfaceTaskState.Failed,
+            _ => TaskGroupSurfaceTaskState.Ready
+        };
+    }
+
+    private static string BuildTaskGroupSurfaceStateLabel(TaskGroupSurfaceTaskState state)
+    {
+        return state switch
+        {
+            TaskGroupSurfaceTaskState.Disabled => "Disabled",
+            TaskGroupSurfaceTaskState.Running => "Running",
+            TaskGroupSurfaceTaskState.Succeeded => "Last run: Succeeded",
+            TaskGroupSurfaceTaskState.Failed => "Last run: Failed",
+            _ => "Ready"
+        };
     }
 
     private void NextGroupCommand_Executed(object sender, ExecutedRoutedEventArgs e)
@@ -5993,6 +6339,7 @@ public partial class MainWindow : Window
             EmptyStateText.Text = "No groups are configured. Add a task to create your first group.";
             EmptyStateText.Visibility = Visibility.Visible;
             ApplyTaskSurfaceModeVisibility();
+            PublishTaskGroupSurfaceSession("MainRender");
             return;
         }
 
@@ -6035,6 +6382,8 @@ public partial class MainWindow : Window
             {
                 OpenVariablesEditor(selectTab: false);
             }
+
+            PublishTaskGroupSurfaceSession("MainRender");
             return;
         }
 
@@ -6350,6 +6699,8 @@ public partial class MainWindow : Window
         {
             OpenVariablesEditor(selectTab: false);
         }
+
+        PublishTaskGroupSurfaceSession("MainRender");
     }
 
     private void ApplyTaskSurfaceModeVisibility()
@@ -9032,6 +9383,7 @@ public partial class MainWindow : Window
         }
         UpdateSidebarStatusAnimation();
         RebuildGroupNavigator(GetGroupSidebarItems(GetGroupNames()));
+        _taskGroupPopoutManager?.RefreshIfOpen();
     }
 
     private void ApplyTaskCardRunningVisual(LauncherTask task)
@@ -9692,6 +10044,11 @@ public partial class MainWindow : Window
     }
 
     private async void RibbonRunChainButton_Click(object sender, RoutedEventArgs e)
+    {
+        await RunChainFromCurrentGroupAsync();
+    }
+
+    private async Task RunChainFromCurrentGroupAsync()
     {
         if (_visibleTaskIndexes.Count == 0)
         {
@@ -11660,6 +12017,7 @@ public partial class MainWindow : Window
 
         UpdateRibbonTaskActionState();
         SyncBottomPaneForSelectedTask();
+        PublishTaskGroupSurfaceSession("MainSelection");
     }
 
     private static Brush BuildTaskSelectionBorderBrush(Brush? taskCardBackground)
@@ -12754,6 +13112,7 @@ public partial class MainWindow : Window
             RibbonToggleTaskEnabledButton.IsEnabled = false;
             RibbonToggleTaskEnabledLabel.Text = "Enable";
             RibbonTaskSurfaceToggleButton.IsEnabled = false;
+            UpdateGroupPopoutButtonState();
             return;
         }
 
@@ -12776,6 +13135,7 @@ public partial class MainWindow : Window
             RibbonGroupsDropDownButton.IsEnabled = false;
             RibbonShareButton.IsEnabled = false;
             RibbonImportButton.IsEnabled = false;
+            UpdateGroupPopoutButtonState();
             return;
         }
 
@@ -12795,6 +13155,7 @@ public partial class MainWindow : Window
             RibbonDeleteTaskButton.IsEnabled = _selectedTemplateTaskIndex.HasValue;
             RibbonShareButton.IsEnabled = _templateConfiguration.Tasks.Count > 0;
             RibbonImportButton.IsEnabled = true;
+            UpdateGroupPopoutButtonState();
             return;
         }
 
@@ -12810,10 +13171,12 @@ public partial class MainWindow : Window
         if (!hasVisibleTasks || !TryGetSelectedVisibleTaskIndex(out var taskIndex) || !TryGetTask(taskIndex, out var task))
         {
             RibbonToggleTaskEnabledLabel.Text = "Enable";
+            UpdateGroupPopoutButtonState();
             return;
         }
 
         RibbonToggleTaskEnabledLabel.Text = IsTaskEnabled(task) ? "Disable" : "Enable";
+        UpdateGroupPopoutButtonState();
     }
 
     private void TaskMenuButton_Click(object sender, RoutedEventArgs e)
@@ -13741,7 +14104,10 @@ public partial class MainWindow : Window
         await ExecuteTaskWithRetriesAsync(task, button, isReplay: false);
     }
 
-    private async Task<bool> RunTaskChainFromTaskAsync(int startTaskIndex, ExecutionTargetSelection? forcedExecutionTargetSelection = null)
+    private async Task<bool> RunTaskChainFromTaskAsync(
+        int startTaskIndex,
+        ExecutionTargetSelection? forcedExecutionTargetSelection = null,
+        bool syncMainSelection = true)
     {
         if (!TryGetTask(startTaskIndex, out var startTask))
         {
@@ -13750,7 +14116,10 @@ public partial class MainWindow : Window
         }
 
         var groupName = NormalizeGroupName(startTask.Group);
-        SelectGroup(groupName);
+        if (syncMainSelection)
+        {
+            SelectGroup(groupName);
+        }
 
         var sameGroupTasks = _currentConfiguration.Tasks
             .Select((task, index) => new { Task = task, Index = index })
